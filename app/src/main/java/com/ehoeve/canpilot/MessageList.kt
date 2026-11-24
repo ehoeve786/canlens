@@ -214,7 +214,8 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
 
 @Composable
 private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit) {
-    Column(modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
+    // from the top, not centred: on a tall phone centring leaves a gap under the title
+    Column(modifier.fillMaxSize().padding(horizontal = 32.dp).padding(top = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedLogo(Modifier.size(120.dp))
         Text("Read a CAN bus", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 12.dp))
         Hint("Open rlog, candump, ASC or CSV logs, or stream live from a comma device or a DashKit.", Modifier.padding(bottom = 8.dp))
