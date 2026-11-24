@@ -112,17 +112,17 @@ private class Change(val time: Float, val plot: PlotData, val from: String, val 
 fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
     val revision = model.revision
     val store = model.store
-    val view = model.chartView
-    val following = model.followLive && model.live != LiveSource.NONE
+    val view = model.plot.view
+    val following = model.trace.followLive && model.live.source != LiveSource.NONE
     if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
-    val plots = model.plots.toList()
-    val dbcs = model.dbcs.toList()
+    val plots = model.plot.keys.toList()
+    val dbcs = model.dbc.files.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE
     val data by produceState(emptyList<PlotData>(), revision, plots, dbcs, liveFrom) {
         value = withContext(Dispatchers.Default) {
             plots.mapIndexedNotNull { position, key ->
                 val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapIndexedNotNull null
-                val decoder = model.decoder(key.bus, key.id) ?: return@mapIndexedNotNull null
+                val decoder = model.dbc.decoder(key.bus, key.id) ?: return@mapIndexedNotNull null
                 val signal = decoder.signals.firstOrNull { it.name == key.signal } ?: return@mapIndexedNotNull null
                 PlotData(key, signal, decoder.name, store.series(message, decoder, signal, liveFrom), SIGNAL_COLORS[position % SIGNAL_COLORS.size])
             }
@@ -130,8 +130,8 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
     }
     var query by remember { mutableStateOf("") }
     val matches = remember(query, revision, dbcs, plots) { model.signalsMatching(query, 40) }
-    val a = model.markA
-    val b = model.markB
+    val a = model.trace.markA
+    val b = model.trace.markB
     val marked = a != null && b != null
     val changes = remember(data, a, b) {
         val from = if (marked) seconds(minOf(a!!, b!!)) else -Float.MAX_VALUE
@@ -147,10 +147,10 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
         found.sortBy { it.time }
         found
     }
-    val cursor = seconds(model.cursorNow)
-    val markers = model.markers.map { seconds(it.time) }
-    val moveCursor: (Float) -> Unit = { model.cursor = ticks(it); model.followLive = false }
-    val moved = { model.followLive = false }
+    val cursor = seconds(model.trace.cursorNow)
+    val markers = model.trace.markers.map { seconds(it.time) }
+    val moveCursor: (Float) -> Unit = { model.trace.cursor = ticks(it); model.trace.followLive = false }
+    val moved = { model.trace.followLive = false }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -172,7 +172,7 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
             }
             items(matches.size, key = { "match:${matches[it].first}" }) { index ->
                 val (key, messageName) = matches[index]
-                Surface(onClick = { model.plots += key }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Surface(onClick = { model.plot.keys += key }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(key.signal, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
@@ -188,7 +188,7 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { view.show(seconds(store.firstTime), seconds(store.lastTime)); moved() }, label = { Text("Show everything") })
                     if (marked) AssistChip(onClick = { view.show(seconds(minOf(a!!, b!!)), seconds(maxOf(a!!, b!!))); moved() }, label = { Text("Zoom to A–B") })
-                    AssistChip(onClick = { model.plots.clear() }, label = { Text("Remove all") })
+                    AssistChip(onClick = { model.plot.keys.clear() }, label = { Text("Remove all") })
                 }
             }
             items(data.size, key = { "plot:${data[it].key}" }) { index ->
@@ -202,7 +202,7 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
                                 Hint("bus ${plot.key.bus} · ${hexId(plot.key.id)} · ${plot.messageName}")
                             }
                             Text(plot.labelAt(cursor), fontFamily = MONO, fontWeight = FontWeight.Bold, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
-                            IconButton(onClick = { model.plots.remove(plot.key) }) { Icon(Icons.Default.Close, "Remove ${plot.key.signal}", Modifier.size(18.dp)) }
+                            IconButton(onClick = { model.plot.keys.remove(plot.key) }) { Icon(Icons.Default.Close, "Remove ${plot.key.signal}", Modifier.size(18.dp)) }
                         }
                         Box(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
                             if (plot.stateLabels != null) StateStrip(plot, view, cursor, a?.let { seconds(it) }, b?.let { seconds(it) }, markers, moveCursor, moved)

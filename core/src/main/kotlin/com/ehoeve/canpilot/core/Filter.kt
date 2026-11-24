@@ -82,7 +82,8 @@ class Filter private constructor(private val root: Node) {
         }
 
         private fun term(token: String): Node {
-            val parts = TERM.matchEntire(token) ?: return word(token)
+            val parts = TERM.matchEntire(token)
+                ?: return if (token.any { it in "=<>:&" }) fail("Can't read \"$token\". Write it like bus=1, id=249 or d0&0F=3.") else word(token)
             val (field, mask, operator, value) = parts.destructured
             val name = field.lowercase()
             val byte = BYTE.matchEntire(name)?.groupValues?.get(1)?.toInt()

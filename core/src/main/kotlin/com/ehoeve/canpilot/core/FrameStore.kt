@@ -335,7 +335,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
 
     /**
      * Keeps the rows passing [filter] up to date while frames arrive: an [update] reads only the frames added since
-     * the one before, and starts over when the store was cleared or dropped its oldest chunk. One thread at a time.
+     * the one before, and starts over when the store was cleared or dropped its oldest chunk.
      */
     inner class RowScan(private val filter: Filter?) {
         private var scanned = emptyArray<Chunk>()
@@ -344,6 +344,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         private var doneChunk = 0
         private var doneIndex = 0
 
+        @Synchronized
         fun update(): Rows {
             val all = chunks
             val sizes = IntArray(all.size) { all[it].size }

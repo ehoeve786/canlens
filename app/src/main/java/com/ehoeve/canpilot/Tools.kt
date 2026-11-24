@@ -58,7 +58,7 @@ import com.ehoeve.canpilot.core.Suggestion
 @Composable
 fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit) {
     var tolerance by remember { mutableStateOf("1") }
-    val results = model.findResults
+    val results = model.signals.findResults
     val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     Scaffold(
         topBar = {
@@ -74,39 +74,39 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
                 SectionTitle("By its value")
                 Hint("Move the cursor to a moment when you know what the value was, add a point and type the value. Points with different values narrow it down; three or more also find an offset.")
             }
-            items(model.findPoints.size) { index ->
-                val point = model.findPoints[index]
+            items(model.signals.findPoints.size) { index ->
+                val point = model.signals.findPoints[index]
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("%.2f s".format(seconds(point.time)), Modifier.width(96.dp), fontFamily = MONO)
                     OutlinedTextField(point.value, { point.value = it }, Modifier.weight(1f), singleLine = true, label = { Text("Value then") }, keyboardOptions = numbers)
-                    IconButton(onClick = { model.findPoints.removeAt(index) }) { Icon(Icons.Default.Delete, "Remove point") }
+                    IconButton(onClick = { model.signals.findPoints.removeAt(index) }) { Icon(Icons.Default.Delete, "Remove point") }
                 }
             }
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(onClick = { model.findPoints += FindPoint(model.cursorNow) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Point at cursor") }
+                    OutlinedButton(onClick = { model.signals.findPoints += FindPoint(model.trace.cursorNow) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Point at cursor") }
                     OutlinedTextField(tolerance, { tolerance = it }, Modifier.width(88.dp), singleLine = true, label = { Text("±") }, keyboardOptions = numbers)
-                    Button(enabled = !model.searching && model.findPoints.isNotEmpty(), onClick = { model.searchByValue(tolerance.toDoubleOrNull()?.takeIf { it > 0 } ?: 1.0) }) {
+                    Button(enabled = !model.signals.searching && model.signals.findPoints.isNotEmpty(), onClick = { model.signals.searchByValue(tolerance.toDoubleOrNull()?.takeIf { it > 0 } ?: 1.0) }) {
                         Icon(Icons.Default.Search, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("Search")
                     }
                 }
                 HorizontalDivider(Modifier.padding(top = 12.dp, bottom = 6.dp))
                 SectionTitle("By a signal it moves with")
-                if (model.plots.isEmpty()) Hint("Plot a known signal first: open its message and tick it. It then appears here.")
+                if (model.plot.keys.isEmpty()) Hint("Plot a known signal first: open its message and tick it. It then appears here.")
                 else Hint("Lists the fields in other messages that rise and fall with a plotted signal, scaled to its units.")
                 Row(Modifier.fillMaxWidth().padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        for (key in model.plots.toList()) {
-                            AssistChip(enabled = !model.searching, onClick = { model.searchCorrelated(key) }, label = { Text("${hexId(key.id)} · ${key.signal}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        for (key in model.plot.keys.toList()) {
+                            AssistChip(enabled = !model.signals.searching, onClick = { model.signals.searchCorrelated(key) }, label = { Text("${hexId(key.id)} · ${key.signal}", maxLines = 1, overflow = TextOverflow.Ellipsis) },
                                 leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
                         }
                     }
                 }
-                if (model.findStatus.isNotEmpty()) {
+                if (model.signals.findStatus.isNotEmpty()) {
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
-                    Hint(model.findStatus)
+                    Hint(model.signals.findStatus)
                 }
-                if (model.searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
+                if (model.signals.searching) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
             }
             items(results.size) { index ->
                 val match = results[index]
@@ -117,13 +117,13 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
                         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(hexId(match.message.id), fontFamily = MONO, fontWeight = FontWeight.Bold)
-                                Text(model.decoder(match.message.bus, match.message.id)?.name ?: "", Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                Text(model.dbc.decoder(match.message.bus, match.message.id)?.name ?: "", Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis,
                                     style = MaterialTheme.typography.bodyMedium)
                             }
                             Hint("start ${signal.start} · ${signal.size} bits · ${if (signal.littleEndian) "little" else "big"}-endian${if (signal.signed) " · signed" else ""} · ×${"%.4g".format(signal.factor)}" +
                                 if (signal.offset != 0.0) " ${"%+.4g".format(signal.offset)}" else "")
                         }
-                        Pill(if (model.findByCorrelation) "r %.3f".format(match.score) else "±%.2g".format(match.score))
+                        Pill(if (model.signals.findByCorrelation) "r %.3f".format(match.score) else "±%.2g".format(match.score))
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.outline)
                     }
                 }
@@ -135,7 +135,7 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
 /** Asks for the note of a marker whose moment was already taken. Tapping outside keeps the marker with its default note. */
 @Composable
 fun MarkerDialog(model: AppModel, pending: PendingMarker, onClose: () -> Unit) {
-    val default = "Marker ${model.markers.size + 1}"
+    val default = "Marker ${model.trace.markers.size + 1}"
     var note by remember { mutableStateOf("") }
     fun save() { model.addMarker(pending, note.trim().ifEmpty { default }); onClose() }
     AlertDialog(
@@ -158,16 +158,16 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Markers", style = MaterialTheme.typography.titleLarge)
             Hint("Tap one to move the cursor there. A–B puts the marks from 1 s before to 2 s after it.")
-            model.markers.toList().forEach { marker ->
-                Surface(onClick = { model.cursor = marker.time; model.followLive = false; onClose() }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            model.trace.markers.toList().forEach { marker ->
+                Surface(onClick = { model.trace.cursor = marker.time; model.trace.followLive = false; onClose() }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("%.2f s".format(seconds(marker.time)), Modifier.width(88.dp), fontFamily = MONO)
                         Text(marker.note, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = {
-                            model.markA = (marker.time - FrameStore.TICKS_PER_SECOND.toInt()).coerceAtLeast(model.store.firstTime)
-                            model.markB = (marker.time + 2 * FrameStore.TICKS_PER_SECOND.toInt()).coerceAtMost(model.store.lastTime)
+                            model.trace.markA = (marker.time - FrameStore.TICKS_PER_SECOND.toInt()).coerceAtLeast(model.store.firstTime)
+                            model.trace.markB = (marker.time + 2 * FrameStore.TICKS_PER_SECOND.toInt()).coerceAtMost(model.store.lastTime)
                         }) { Text("A–B") }
-                        IconButton(onClick = { model.markers.remove(marker) }) { Icon(Icons.Default.Delete, "Remove marker") }
+                        IconButton(onClick = { model.trace.markers.remove(marker) }) { Icon(Icons.Default.Delete, "Remove marker") }
                     }
                 }
             }
@@ -180,9 +180,9 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
 fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
     val unticked = remember { mutableStateListOf<Suggestion>() }
-    val all = model.autoResults
-    val plain = all.count { it.confidence < AppModel.NAMED }
-    val shown = if (showPlain) all else all.filter { it.confidence >= AppModel.NAMED }
+    val all = model.signals.autoResults
+    val plain = all.count { it.confidence < SignalState.NAMED }
+    val shown = if (showPlain) all else all.filter { it.confidence >= SignalState.NAMED }
     val ticked = shown.filter { it !in unticked }
     Scaffold(
         topBar = {
@@ -197,11 +197,11 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                 Hint("Works out the layout of every message that has no DBC entry: fields, counters, checksums, multiplexing. Fields that follow a signal you have already decoded, " +
                     "or that changed only at one of your markers, get a name. These are suggestions: check them before you rely on them.")
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(enabled = !model.decoding && model.store.frameCount > 0, onClick = { unticked.clear(); model.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
-                    if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.decoding, onClick = { model.accept(ticked) }) { Text("Add ${ticked.size} to the DBC") }
+                    Button(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { unticked.clear(); model.signals.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
+                    if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.signals.decoding, onClick = { model.signals.accept(ticked) }) { Text("Add ${ticked.size} to the DBC") }
                 }
-                if (model.autoStatus.isNotEmpty()) Hint(model.autoStatus, Modifier.padding(top = 8.dp))
-                if (model.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
+                if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
+                if (model.signals.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                 if (plain > 0) FilterChip(selected = showPlain, onClick = { showPlain = !showPlain }, label = { Text("Show the $plain unnamed fields") })
             }
             items(shown.size) { index ->
