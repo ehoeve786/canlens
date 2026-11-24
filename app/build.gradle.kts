@@ -29,6 +29,8 @@ android {
 
     buildTypes {
         debug { signingConfig = signingConfigs.getByName("debug") }
+        // signed with the same key, so a release installs over a debug build and the other way round
+        release { signingConfig = signingConfigs.getByName("debug") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
