@@ -127,6 +127,11 @@ class CoreTest {
         val cabana = read("time,addr,bus,data\n12.25,0x257,2,0xaabbccdd\n").second
         assertEquals(0x257, cabana[0].id); assertEquals(2, cabana[0].bus); assertEquals(12_250_000L, cabana[0].time)
         assertArrayEquals(bytes("aabbccdd"), cabana[0].data)
+        val dashPilot = read("ms,bus,id,data\n1500,1,103,22B388068E462132\n1501,16,1DA50001,0000000000000000\n2000,0,18DAF110,AABB\n").second
+        assertEquals(listOf(0x103, 0x18DAF110), dashPilot.map { it.id })            // the bus 16 row is the firmware's statistics
+        assertEquals(listOf(1, 0), dashPilot.map { it.bus })
+        assertEquals(listOf(1_500_000L, 2_000_000L), dashPilot.map { it.time })
+        assertArrayEquals(bytes("22B388068E462132"), dashPilot[0].data)
     }
 
     @Test fun dashKitUsbLines() {

@@ -4,7 +4,7 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
 
 ## What it does
 
-- **Logs**: openpilot `rlog` (plain, `.zst`, `.bz2`), candump logs (the format DashPilot records), Vector ASC, and CSV exports from SavvyCAN and Cabana. Open several route segments at once; they are loaded in order.
+- **Logs**: openpilot `rlog` (plain, `.zst`, `.bz2`), candump logs and `ms,bus,id,data` CSV files (the two formats DashPilot records), Vector ASC, and CSV exports from SavvyCAN and Cabana. Open several route segments at once; they are loaded in order.
 - **Live**: a comma device over Wi-Fi (its `can` service over ZeroMQ) or a DashKit on the phone's USB-C port. A live stream can be recorded to `Download/CanPilot/` as a candump log.
 - **DBC**: any number of DBC files, each for all buses or one bus. Message names, signal values at the cursor, value names.
 - **Finding signals**:

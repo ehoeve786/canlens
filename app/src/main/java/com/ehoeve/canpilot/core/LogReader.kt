@@ -129,10 +129,14 @@ object LogReader {
         return sink.frame(time, channel - 1, id.toInt(), buffer, 0, length)
     }
 
-    /** SavvyCAN (`Time Stamp,ID,Extended,Dir,Bus,LEN,D1..D8`, µs) and Cabana (`time,addr,bus,data`, seconds) exports. */
+    /**
+     * SavvyCAN (`Time Stamp,ID,Extended,Dir,Bus,LEN,D1..D8`, µs) and Cabana (`time,addr,bus,data`, seconds) exports, and
+     * DashPilot's older recordings (`ms,bus,id,data`; a bus of 16 or 17 marks the DashKit firmware's own statistics).
+     */
     private class CsvColumns(header: String) {
         private val names = header.lowercase().split(',').map { it.trim() }
-        private val time = names.indexOfFirst { it == "time stamp" || it == "time" || it == "timestamp" }
+        private val milliseconds = names.indexOf("ms")
+        private val time = if (milliseconds >= 0) milliseconds else names.indexOfFirst { it == "time stamp" || it == "time" || it == "timestamp" }
         private val id = names.indexOfFirst { it == "id" || it == "addr" || it == "address" }
         private val bus = names.indexOf("bus")
         private val data = names.indexOf("data")
@@ -146,7 +150,13 @@ object LogReader {
             if (c.size <= maxOf(time, id, data, firstByte)) return true
             val stamp = c[time].trim()
             // a decimal point means seconds; SavvyCAN writes whole microseconds
-            val micros = if ('.' in stamp) micros(stamp, 0, stamp.length) else stamp.toLongOrNull() ?: return true
+            val micros = when {
+                milliseconds >= 0 -> (stamp.toLongOrNull() ?: return true) * 1000
+                '.' in stamp -> micros(stamp, 0, stamp.length)
+                else -> stamp.toLongOrNull() ?: return true
+            }
+            val frameBus = c.getOrNull(bus)?.trim()?.toIntOrNull() ?: 0
+            if (milliseconds >= 0 && frameBus and 0x10 != 0) return true
             val frameId = c[id].trim().removePrefix("0x").removePrefix("0X").toLongOrNull(16) ?: return true
             val n = if (data >= 0) {
                 val text = c[data].trim().removePrefix("0x").removePrefix("0X")
@@ -158,7 +168,7 @@ object LogReader {
                 if (ok) count else -1
             }
             if (micros < 0 || n < 0) return true
-            return sink.frame(micros, c.getOrNull(bus)?.trim()?.toIntOrNull() ?: 0, frameId.toInt(), buffer, 0, n)
+            return sink.frame(micros, frameBus, frameId.toInt(), buffer, 0, n)
         }
     }
 
