@@ -8,6 +8,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -52,7 +54,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,6 +75,7 @@ import kotlinx.coroutines.withContext
 
 // ---- message list
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     var filter by remember { mutableStateOf("") }
@@ -117,7 +120,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
     val empty = model.store.frameCount == 0L && !live && !model.busy
     Scaffold(
         topBar = {
-            TopAppBar(
+            CenterAlignedTopAppBar(
                 title = { Text("CanPilot", fontWeight = FontWeight.SemiBold) },
                 actions = {
                     if (model.live.recording != null) Pill("REC", RECORDING, Color.White)
@@ -131,19 +134,20 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
         if (empty) {
             EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size)
         } else Column(Modifier.padding(padding)) {
-            Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                AssistChip(onClick = { openLogs.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Open logs") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+            // short labels, so that all of them fit in two rows without scrolling
+            FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(onClick = { openLogs.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Open") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
                 if (live) {
                     AssistChip(onClick = { model.live.stop() }, label = { Text("Stop") }, leadingIcon = { Icon(Icons.Default.Close, null, Modifier.size(18.dp)) })
                     FilterChip(selected = model.live.recording != null, onClick = { model.live.setRecording(model.live.recording == null) }, label = { Text("Record") },
                         leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 } else AssistChip(onClick = { showLive = true }, label = { Text("Live") }, leadingIcon = { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = { showDbcs = true }, label = { Text("DBC · ${dbcs.size}") })
-                AssistChip(onClick = onFind, label = { Text("Find signal") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
-                AssistChip(onClick = onAuto, label = { Text("Decode everything") })
-                FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed only in A–B") },
+                AssistChip(onClick = onFind, label = { Text("Find") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
+                AssistChip(onClick = onAuto, label = { Text("Decode") })
+                FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed A–B") },
                     leadingIcon = if (changedOnly) ({ Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }) else null)
-                if (other == null) AssistChip(onClick = { openOther.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Compare with a log") })
+                if (other == null) AssistChip(onClick = { openOther.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Compare") })
                 else FilterChip(selected = differentOnly, onClick = { differentOnly = !differentOnly }, label = { Text("Differs from ${model.otherName}", maxLines = 1) },
                     trailingIcon = { Icon(Icons.Default.Close, "Stop comparing", Modifier.size(18.dp).clickable { model.clearCompare(); differentOnly = false }) })
             }
