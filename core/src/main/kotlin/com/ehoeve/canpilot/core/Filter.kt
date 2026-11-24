@@ -3,7 +3,7 @@ package com.ehoeve.canpilot.core
 /**
  * A condition on frames, written as text:
  *
- *     bus=1 id=249            terms side by side must all hold; `or`, `not` and brackets combine them
+ *     bus=1 id=249            terms side by side (commas are fine too) must all hold; `or`, `not` and brackets combine them
  *     id=100-1FF len>4        ids and data bytes are hexadecimal, a-b is a range
  *     d0=FF d2&0F!=3          byte 0 is FF, the low nibble of byte 2 is not 3
  *     t=73.5-75               seconds since the start
@@ -167,7 +167,7 @@ class Filter private constructor(private val root: Node) {
          * when messages or DBCs were added. Throws IllegalArgumentException, with a message for the user, on a mistake.
          */
         fun compile(text: String, messages: Array<FrameStore.Message>, decoder: (FrameStore.Message) -> DbcMessage?): Filter? {
-            val tokens = TOKEN.findAll(text.replace(SPACED, "$1")).map { it.value }.toList()
+            val tokens = TOKEN.findAll(text.replace(',', ' ').replace(SPACED, "$1")).map { it.value }.toList()
             return if (tokens.isEmpty()) null else Filter(Parser(tokens, messages, decoder).all())
         }
     }

@@ -364,6 +364,7 @@ class CoreTest {
         assertEquals(220, count(store, ""))
         assertEquals(20, count(store, "bus=1"))
         assertEquals(20, count(store, "bus = 1 id : 249"))
+        assertEquals(20, count(store, "bus=1, id=249,d0=29 , t<73."))
         assertEquals(200, count(store, "id=100-1FF"))
         assertEquals(20, count(store, "len<8"))
         assertEquals(10, count(store, "d1=3"))
