@@ -1,5 +1,17 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.Modifier
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.Canvas
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
@@ -40,3 +52,23 @@ val VARIES_IN_ONE = Color(0xFF7E5A1E)
 
 @Composable
 fun CanPilotTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = Colors, shapes = AppShapes, content = content)
+
+/** The app's logo, a square wave like a CAN signal, running from right to left as if on a scope. */
+@Composable
+fun AnimatedLogo(modifier: Modifier = Modifier) {
+    val phase by rememberInfiniteTransition(label = "logo").animateFloat(0f, 1f, infiniteRepeatable(tween(1600, easing = LinearEasing)), label = "wave")
+    Canvas(modifier) {
+        val unit = size.minDimension / 48f   // the launcher icon's 48-unit grid
+        drawRoundRect(Color(0xFF15181C), cornerRadius = CornerRadius(11f * unit))
+        val path = Path()
+        // one period is 16 units (8 high, 8 low); start a period early so the left edge is always covered
+        var x = 6f - 16f * phase - 16f
+        path.moveTo(x * unit, 32f * unit)
+        while (x < 42f) {
+            path.lineTo((x + 8f) * unit, 32f * unit); path.lineTo((x + 8f) * unit, 16f * unit)
+            path.lineTo((x + 16f) * unit, 16f * unit); path.lineTo((x + 16f) * unit, 32f * unit)
+            x += 16f
+        }
+        clipRect(6f * unit, 0f, 42f * unit, size.height) { drawPath(path, Color(0xFF4FC3F7), style = Stroke(3f * unit)) }
+    }
+}

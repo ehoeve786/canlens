@@ -1,7 +1,5 @@
 package com.ehoeve.canpilot
 
-import androidx.compose.ui.res.painterResource
-import androidx.compose.foundation.Image
 import androidx.compose.material3.TextButton
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -217,7 +215,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
 @Composable
 private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit) {
     Column(modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
-        Image(painterResource(R.drawable.ic_launcher), null, Modifier.size(120.dp).clip(RoundedCornerShape(28.dp)))
+        AnimatedLogo(Modifier.size(120.dp))
         Text("Read a CAN bus", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 12.dp))
         Hint("Open rlog, candump, ASC or CSV logs, or stream live from a comma device or a DashKit.", Modifier.padding(bottom = 8.dp))
         Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Open logs") }
