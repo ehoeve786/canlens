@@ -71,6 +71,26 @@ class CoreTest {
         assertEquals("UNK_228_alive", back.withSignal(0x228, "NEW_228", 2, Signal("crc", 8, 8, true, false, 1.0, 0.0, "", -1, false)).messages[0x228]!!.name)
     }
 
+    @Test fun savingKeepsCommentsAttributesAndUntouchedMessages() {
+        val text = "VERSION \"1\"\n\nBU_: VEH CH\n\nBO_ 100 A: 2 VEH\n SG_ a1 : 0|8@1+ (1,0) [0|255] \"\" CH\n\n" +
+            "BO_ 200 B: 1 CH\n SG_ b1 : 0|2@1+ (1,0) [0|3] \"\" VEH\n\n" +
+            "CM_ BO_ 100 \"Seen on this car:\nfit good.\";\nBA_ \"GenMsgCycleTime\" BO_ 200 100;\n" +
+            "VAL_ 100 a1 0 \"OFF\" 1 \"ON\" ;\nVAL_ 200 b1 2 \"TWO\" ;\n"
+        val original = Dbc.parse(text, "t")
+        assertEquals(text, original.write())   // nothing changed: the same text
+        val changed = original.withSignal(200, "B", 1, Signal("b2", 4, 2, true, false, 1.0, 0.0, "", -1, false))
+        val written = changed.write()
+        assertTrue(written.startsWith("VERSION \"1\"\n\nBU_: VEH CH\n\nBO_ 100 A: 2 VEH\n SG_ a1 : 0|8@1+ (1,0) [0|255] \"\" CH\n\n"))
+        assertTrue("CM_ BO_ 100 \"Seen on this car:\nfit good.\";" in written)
+        assertTrue("BA_ \"GenMsgCycleTime\" BO_ 200 100;" in written)
+        assertEquals(1, Regex("VAL_ 200 b1").findAll(written).count())
+        val back = Dbc.parse(written, "t")
+        assertEquals(listOf("b1", "b2"), back.messages[200]!!.signals.map { it.name })
+        assertEquals("TWO", back.messages[200]!!.signals[0].valueNames[2])
+        assertEquals("ON", back.messages[100]!!.signals[0].valueNames[1])
+        assertEquals(written, back.write())   // stable: saving again changes nothing
+    }
+
     @Test fun dbcSurvivesWritingAndReading() {
         val added = dbc.withSignal(0x123, "NEW_123", 8, Signal("guess", 7, 10, false, false, 0.1, 5.0, "V", -1, false))
         val again = Dbc.parse(added.write(), "again")

@@ -65,34 +65,44 @@ class Signal(
     }
 }
 
-class DbcMessage(val id: Int, val name: String, val length: Int, val signals: List<Signal>) {
+/** [source] is the message's text in the file it was read from, written back as it was while the message is unchanged. */
+class DbcMessage(val id: Int, val name: String, val length: Int, val signals: List<Signal>, val source: String? = null) {
     val multiplexor: Signal? = signals.firstOrNull { it.isMultiplexor }
 }
 
-class Dbc(val name: String, val messages: Map<Int, DbcMessage>) {
+/**
+ * A DBC file. [head] is its text before the first message, [tail] the lines after the messages that are not signals:
+ * comments, attributes, value names. Both are written back unchanged, so editing one message in the app keeps
+ * everything else in the file as it was.
+ */
+class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String = "", val tail: List<String> = emptyList()) {
 
     /** A copy with [signal] added to message [id] (created as [messageName], [length] bytes, if new), replacing one of the same name. */
     fun withSignal(id: Int, messageName: String, length: Int, signal: Signal): Dbc {
         val old = messages[id]
         val signals = (old?.signals.orEmpty().filter { it.name != signal.name } + signal).sortedBy { it.bits.min() }
-        return Dbc(name, messages + (id to DbcMessage(id, old?.name ?: messageName, maxOf(old?.length ?: 0, length), signals)))
+        return Dbc(name, messages + (id to DbcMessage(id, old?.name ?: messageName, maxOf(old?.length ?: 0, length), signals)), head, tail)
     }
 
     /** A copy with message [id] named [messageName]; a message it doesn't have yet is added, [length] bytes, without signals. */
     fun withMessageName(id: Int, messageName: String, length: Int): Dbc {
         val old = messages[id]
-        return Dbc(name, messages + (id to DbcMessage(id, messageName, old?.length ?: length, old?.signals.orEmpty())))
+        return Dbc(name, messages + (id to DbcMessage(id, messageName, old?.length ?: length, old?.signals.orEmpty())), head, tail)
     }
 
     fun withoutSignal(id: Int, signalName: String): Dbc {
         val old = messages[id] ?: return this
-        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })))
+        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })), head, tail)
     }
 
-    /** DBC text with the messages, signals and value names; comments and attributes of the file it was read from are not kept. */
+    /**
+     * DBC text: the file it was read from with only the changed messages written anew (their value names too; their
+     * comments and attributes stay). Ranges and receivers of a changed message's signals are not kept.
+     */
     fun write(): String = buildString {
-        append("VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: XXX\n\n")
+        append(head.ifEmpty { "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: XXX\n\n" })
         for (m in messages.values) {
+            if (m.source != null) { append(m.source); continue }
             append("BO_ ").append(if (m.id > 0x7FF) m.id.toLong() or 0x80000000L else m.id.toLong()).append(' ').append(m.name).append(": ").append(m.length).append(" XXX\n")
             for (s in m.signals) {
                 append(" SG_ ").append(s.name).append(' ')
@@ -104,7 +114,12 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>) {
             }
             append('\n')
         }
-        for (m in messages.values) for (s in m.signals) if (s.valueNames.isNotEmpty()) {
+        val changed = messages.values.filter { it.source == null }.mapTo(HashSet()) { it.id }
+        for (line in tail) {
+            val values = VALUES.find(line)
+            if (values == null || id(values.groupValues[1]) !in changed) append(line).append('\n')
+        }
+        for (m in messages.values) if (m.id in changed) for (s in m.signals) if (s.valueNames.isNotEmpty()) {
             append("VAL_ ").append(if (m.id > 0x7FF) m.id.toLong() or 0x80000000L else m.id.toLong()).append(' ').append(s.name)
             for ((value, label) in s.valueNames) append(' ').append(value).append(" \"").append(label).append('"')
             append(" ;\n")
@@ -123,18 +138,31 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>) {
 
         fun parse(text: String, name: String): Dbc {
             val messages = LinkedHashMap<Int, DbcMessage>()
+            val head = StringBuilder()
+            val tail = ArrayList<String>()
+            val block = StringBuilder()
             var id = 0
             var messageName = ""
             var length = 0
             var signals: ArrayList<Signal>? = null
-            fun finish() { signals?.let { messages[id] = DbcMessage(id, messageName, length, it) }; signals = null }
-            for (line in text.lineSequence()) {
+            var seenMessage = false
+            fun finish() {
+                signals?.let { messages[id] = DbcMessage(id, messageName, length, it, block.append('\n').toString()) }
+                signals = null
+                block.setLength(0)
+            }
+            for (line in text.replace("\r\n", "\n").lineSequence()) {
                 if (line.startsWith("BO_ ")) {
                     finish()
+                    seenMessage = true
                     val m = MESSAGE.find(line) ?: continue
                     id = id(m.groupValues[1]); messageName = m.groupValues[2]; length = m.groupValues[3].toInt()
                     signals = ArrayList()
+                    block.append(line).append('\n')
+                } else if (!seenMessage) {
+                    head.append(line).append('\n')
                 } else if (signals != null && line.trimStart().startsWith("SG_ ")) {
+                    block.append(line).append('\n')
                     val m = SIGNAL.find(line) ?: continue
                     val g = m.groupValues
                     val mux = g[2]
@@ -145,15 +173,16 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>) {
                         muxValue = if (mux.startsWith("m")) mux.substring(1).trimEnd('M').toInt() else -1,
                         isMultiplexor = mux.endsWith("M"),
                     )
-                } else if (line.startsWith("VAL_ ")) {
+                } else {
                     finish()
-                    val m = VALUES.find(line) ?: continue
-                    val signal = messages[id(m.groupValues[1])]?.signals?.firstOrNull { it.name == m.groupValues[2] } ?: continue
+                    if (line.isNotBlank()) tail += line
+                    val m = if (line.startsWith("VAL_ ")) VALUES.find(line) else null
+                    val signal = m?.let { messages[id(it.groupValues[1])]?.signals?.firstOrNull { s -> s.name == it.groupValues[2] } } ?: continue
                     signal.valueNames = VALUE.findAll(m.groupValues[3]).associate { it.groupValues[1].toLong() to it.groupValues[2] }
                 }
             }
             finish()
-            return Dbc(name, messages)
+            return Dbc(name, messages, head.toString(), tail)
         }
     }
 }
