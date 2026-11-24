@@ -308,6 +308,24 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Decoded signals in the open data whose name, or whose message's name, contains [query] and that are not plotted yet; with the message's name. */
+    fun signalsMatching(query: String, limit: Int): List<Pair<PlotKey, String>> {
+        val needle = query.trim().lowercase()
+        val found = ArrayList<Pair<PlotKey, String>>()
+        if (needle.isEmpty()) return found
+        for (message in store.messages) {
+            val decoder = decoder(message.bus, message.id) ?: continue
+            val wholeMessage = needle in decoder.name.lowercase()
+            for (signal in decoder.signals) {
+                if (!wholeMessage && needle !in signal.name.lowercase()) continue
+                val key = PlotKey(message.bus, message.id, signal.name)
+                if (key !in plots) found += key to decoder.name
+                if (found.size == limit) return found
+            }
+        }
+        return found
+    }
+
     // ---- markers
 
     fun beginMarker() = PendingMarker(cursorNow, recorder?.now())

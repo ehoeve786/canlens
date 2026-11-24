@@ -111,11 +111,12 @@ fun App(model: AppModel = viewModel()) {
     val message = selected?.let { key -> model.store.messages.firstOrNull { it.bus == key.first && it.id == key.second } }
     var finding by remember { mutableStateOf(false) }
     var autoDecoding by remember { mutableStateOf(false) }
+    var plotting by remember { mutableStateOf(false) }
     CanPilotTheme {
         when {
             message != null -> {
                 BackHandler { selected = null }
-                MessageDetail(model, message) { selected = null }
+                MessageDetail(model, message, onPlots = { selected = null; finding = false; autoDecoding = false; plotting = true }) { selected = null }
             }
             finding -> {
                 BackHandler { finding = false }
@@ -125,7 +126,11 @@ fun App(model: AppModel = viewModel()) {
                 BackHandler { autoDecoding = false }
                 AutoDecodeScreen(model, onBack = { autoDecoding = false }) { suggestion -> model.pendingSignal = suggestion.signal; selected = suggestion.message.bus to suggestion.message.id }
             }
-            else -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }) { selected = it.bus to it.id }
+            plotting -> {
+                BackHandler { plotting = false }
+                PlotsScreen(model) { plotting = false }
+            }
+            else -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }, onPlots = { plotting = true }) { selected = it.bus to it.id }
         }
     }
 }
@@ -158,7 +163,7 @@ fun Hint(text: String, modifier: Modifier = Modifier) =
 // ---- message list
 
 @Composable
-private fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
+private fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onPlots: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     var filter by remember { mutableStateOf("") }
     var changedOnly by remember { mutableStateOf(false) }
     var showDbcs by remember { mutableStateOf(false) }
@@ -224,6 +229,7 @@ private fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit,
                         leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 } else AssistChip(onClick = { showLive = true }, label = { Text("Live") }, leadingIcon = { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = { showDbcs = true }, label = { Text("DBC · ${dbcs.size}") })
+                AssistChip(onClick = onPlots, label = { Text(if (model.plots.isEmpty()) "Plots" else "Plots · ${model.plots.size}") })
                 AssistChip(onClick = onFind, label = { Text("Find signal") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onAuto, label = { Text("Decode everything") })
                 FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed only in A–B") },
@@ -381,7 +387,7 @@ fun TimeBar(model: AppModel) {
 // ---- one message: bits, signals, plots
 
 @Composable
-private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: () -> Unit) {
+private fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit, onBack: () -> Unit) {
     val revision = model.revision
     val store = model.store
     val decoder = model.decoder(message.bus, message.id)
@@ -462,6 +468,7 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
             if (plots.isNotEmpty()) item {
                 Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("Plots", Modifier.weight(1f))
+                    TextButton(onClick = onPlots) { Text("Open plots view") }
                     TextButton(onClick = { model.plots.clear() }) { Text("Clear all") }
                 }
             }

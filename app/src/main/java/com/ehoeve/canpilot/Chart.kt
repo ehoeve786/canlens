@@ -32,6 +32,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ehoeve.canpilot.core.FrameStore
@@ -105,11 +106,11 @@ fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: (
 @Composable
 fun Chart(
     series: FrameStore.Series?, title: String, color: Color, view: ChartView, cursor: Float, markA: Float?, markB: Float?,
-    onCursor: (Float) -> Unit, onMoved: () -> Unit, markers: List<Float> = emptyList(),
+    onCursor: (Float) -> Unit, onMoved: () -> Unit, markers: List<Float> = emptyList(), labels: Boolean = true, height: Dp = 140.dp,
 ) {
     val text = remember { Paint().apply { this.color = android.graphics.Color.WHITE; isAntiAlias = true } }
     Canvas(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp).height(140.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E))
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).height(height).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E))
             .timeGestures(view, onCursor, onMoved)
     ) {
         val width = size.width
@@ -169,11 +170,11 @@ fun Chart(
                 canvas.drawText(number(low), width - 12f, height - 8f, text)
                 // the value under the cursor: the last sample at or before it
                 val at = lowerBound(times, n, cursor + 1e-6f) - 1
-                if (at >= 0) canvas.drawText(number(values[at]), width - 12f, height / 2, text)
+                if (labels && at >= 0) canvas.drawText(number(values[at]), width - 12f, height / 2, text)
             }
         }
         text.textAlign = Paint.Align.LEFT
-        drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data" else title, 12f, text.textSize + 6f, text)
+        if (labels || n == 0) drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data".removePrefix(": ") else title, 12f, text.textSize + 6f, text)
         for (marker in markers) { val markerX = x(marker); if (markerX in 0f..width) drawLine(MARKER, Offset(markerX, 0f), Offset(markerX, height)) }
         val cursorX = x(cursor)
         if (cursorX in 0f..width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, height))
