@@ -78,6 +78,21 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
 object DashKitLine {
     /** A line that asks the firmware for every frame of both buses for the next two seconds; sent once a second. */
     const val STREAM_ALL = "L,1\n"
+    /** Arms transmitting for the next two seconds (sent once a second while armed), and ends it at once. */
+    const val ARM = "X,1\n"
+    const val DISARM = "X,0\n"
+
+    /** A line that asks the firmware to put a frame on a bus: standard ids, at most 8 bytes, bus 0 or 1; null for anything else. */
+    fun transmit(bus: Int, id: Int, data: ByteArray): String? {
+        if (bus !in 0..1 || id !in 0..0x7FF || data.isEmpty() || data.size > 8) return null
+        return buildString(32) {
+            append("T,").append(bus).append(',').append(Integer.toHexString(id)).append(',')
+            for (b in data) append(HEX[b.toInt() shr 4 and 15]).append(HEX[b.toInt() and 15])
+            append('\n')
+        }
+    }
+
+    private const val HEX = "0123456789abcdef"
 
     fun parse(line: String, timeMicros: Long, buffer: ByteArray, sink: FrameSink): Boolean {
         if (!line.startsWith("A,")) return true

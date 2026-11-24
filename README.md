@@ -36,7 +36,8 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
 ## Live sources
 
 - **comma**: the device must publish over ZeroMQ, which openpilot's `cereal/messaging/bridge` does. Enter its IP address (add `:port` to override the port of the `can` service).
-- **DashKit over USB**: the app reads the `A,<bus>,<id>,<data>` lines the fork firmware writes to its USB serial port and asks for every frame with an `L,1` line once a second. Firmware that doesn't know `L,1` only sends the few chassis-bus messages it always forwards.
+- **DashKit over USB**: the phone takes the place of the comma 3X on the DashKit's USB-C port. With the `canpilot-link` firmware the app gets every frame of both buses (`L,1` once a second) and the bus error counters. Older firmware only sends the few chassis-bus messages it always forwards.
+- **Sending through the DashKit** (Message tab › Send, while the DashKit is the live source): one frame, the same frame repeated, a message's frames between marks A and B again, or each bit flipped in turn. Transmitting has to be armed. The firmware sends an id the car's own modules also send only right after the car's frame of that id, and drops the frame if no such moment comes: two senders of one id that start together can knock a module off the bus. Flipping bits is offered only while a decoded gear signal says Park, and never for messages that steer, brake, drive, restrain or carry the stalks. Frames go out as written: counters and checksums are not updated.
 
 ## Building
 

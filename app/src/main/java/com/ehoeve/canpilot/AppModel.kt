@@ -23,7 +23,7 @@ import java.io.IOException
 
 /**
  * The open data and what ties the parts together: loading logs, and resetting every part when other data comes.
- * The parts keep their own state: [dbc], [plot], [trace], [live], [signals]; [session] saves and restores all of it.
+ * The parts keep their own state: [dbc], [plot], [trace], [live], [signals], [tx]; [session] saves and restores all of it.
  */
 class AppModel(application: Application) : AndroidViewModel(application) {
     private val context: Context get() = getApplication()
@@ -40,6 +40,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val live = LiveState(application, preferences, viewModelScope, store, { status = it }, { liveStarted() }) { revision++ }
     val trace = TraceState(store, preferences) { live.source != LiveSource.NONE }
     val signals = SignalState(store, viewModelScope, dbc, trace) { status = it }
+    val tx = TxState(store, viewModelScope, live, dbc)
     val session = SessionState(this, application, preferences)
 
     /** The log files the open data came from, and those merged onto its timeline after them; a session reopens both. */

@@ -40,6 +40,9 @@ class LiveState(
     /** The last recording of the stream that is, or was last, running: what a session can reopen of it. */
     var recorded: Uri? = null
 
+    /** The DashKit on USB while that is the live source: the way to ask it to transmit. */
+    @Volatile var dashKit: DashKitUsb? = null; private set
+
     private var job: Job? = null
     private var connection: Closeable? = null
     @Volatile private var recorder: Recorder? = null
@@ -59,7 +62,7 @@ class LiveState(
     }
 
     fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink ->
-        DashKitUsb(context).also { connection = it }.use { it.run(sink) }
+        DashKitUsb(context).also { connection = it; dashKit = it }.use { it.run(sink) }
     }
 
     private fun start(from: LiveSource, name: String, connect: (FrameSink) -> Unit) {
@@ -103,7 +106,7 @@ class LiveState(
     fun stop() {
         generation++
         job?.cancel(); job = null
-        runCatching { connection?.close() }; connection = null
+        runCatching { connection?.close() }; connection = null; dashKit = null
         setRecording(false)
         if (source != LiveSource.NONE) { source = LiveSource.NONE; report("Stopped: ${store.frameCount} frames kept") }
     }

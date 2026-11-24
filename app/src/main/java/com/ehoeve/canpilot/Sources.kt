@@ -1,5 +1,7 @@
 package com.ehoeve.canpilot
 
+import java.util.concurrent.ConcurrentLinkedQueue
+import com.ehoeve.canpilot.core.DashKitStatus
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.ContentValues
@@ -114,6 +116,15 @@ class DashKitUsb(private val context: Context) : Closeable {
     private val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     @Volatile private var closed = false
 
+    /** What the DashKit last reported about transmitting and its CAN controllers. */
+    val status = DashKitStatus()
+    /** While true the firmware is kept armed to transmit; it disarms itself two seconds after this stops. */
+    @Volatile var armed = false
+    private val outbox = ConcurrentLinkedQueue<ByteArray>()
+
+    /** Queues a line for the DashKit ([DashKitLine.transmit]); it goes out within a few milliseconds. */
+    fun send(line: String) { outbox += line.toByteArray(Charsets.US_ASCII) }
+
     fun find(): UsbDevice? = manager.deviceList.values.firstOrNull { it.vendorId == ESPRESSIF && it.productId == USB_SERIAL_JTAG }
 
     /** Asks the user for access to [device] if needed; blocks until answered. */
@@ -157,12 +168,19 @@ class DashKitUsb(private val context: Context) : Closeable {
             val line = StringBuilder(64)
             val payload = ByteArray(64)
             val request = DashKitLine.STREAM_ALL.toByteArray()
+            val arm = DashKitLine.ARM.toByteArray()
             var lastRequest = 0L
             var silentSince = SystemClock.elapsedRealtime()
             while (!closed) {
                 val now = SystemClock.elapsedRealtime()
-                if (output != null && now - lastRequest >= 1000) { connection.bulkTransfer(output, request, request.size, 100); lastRequest = now }
-                val n = connection.bulkTransfer(input, chunk, chunk.size, 200)
+                if (output != null && now - lastRequest >= 1000) {
+                    connection.bulkTransfer(output, request, request.size, 100)
+                    if (armed) connection.bulkTransfer(output, arm, arm.size, 100)
+                    lastRequest = now
+                }
+                while (output != null) { val next = outbox.poll() ?: break; connection.bulkTransfer(output, next, next.size, 100) }
+                // a short wait, so that a line to send never sits long behind a silent bus
+                val n = connection.bulkTransfer(input, chunk, chunk.size, 20)
                 if (n <= 0) {
                     // a timeout and a pulled cable both give -1: tell them apart by whether the device is still listed
                     if (now - silentSince > 1000 && find() == null) throw IOException("DashKit unplugged")
@@ -173,7 +191,7 @@ class DashKitUsb(private val context: Context) : Closeable {
                 for (i in 0 until n) {
                     val c = chunk[i].toInt().toChar()
                     if (c == '\n') {
-                        if (!DashKitLine.parse(line.toString(), time, payload, sink)) return
+                        if (line.startsWith("A,")) { if (!DashKitLine.parse(line.toString(), time, payload, sink)) return } else status.read(line.toString())
                         line.setLength(0)
                     } else if (c != '\r' && line.length < 200) line.append(c)
                 }

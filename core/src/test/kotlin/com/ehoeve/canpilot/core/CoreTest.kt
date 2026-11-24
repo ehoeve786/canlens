@@ -455,6 +455,36 @@ class CoreTest {
         assertEquals(0x55, car.messages[0].id)
     }
 
+    @Test fun dashKitTransmitLinesStatusAndGuards() {
+        assertEquals("T,1,249,ce0f0000\n", DashKitLine.transmit(1, 0x249, bytes("CE0F0000")))
+        assertNull(DashKitLine.transmit(2, 0x249, bytes("00")))
+        assertNull(DashKitLine.transmit(0, 0x800, bytes("00")))
+        assertNull(DashKitLine.transmit(0, 0x100, ByteArray(9)))
+        assertNull(DashKitLine.transmit(0, 0x100, ByteArray(0)))
+        val status = DashKitStatus()
+        status.read("A,0,249,00")
+        status.read("H,1,12,3,4,0,0")
+        assertTrue(status.armed && status.sent == 12L && status.refused == 3L && status.expired == 4L && !status.unhealthy)
+        status.read("D,1,1da50006,8a7f200102030405")
+        assertEquals(listOf(-1, 0x8A, -1, 0x7F, 0, 0x20), listOf(status.transmitErrors[0], status.transmitErrors[1], status.receiveErrors[0], status.receiveErrors[1], status.flags[0], status.flags[1]))
+        assertTrue(status.unhealthy)
+        status.read("D,1,1da50001,ffffffffffffffff")   // another record: not the error state
+        status.read("D,7,1da50006,0000000000000000")
+        status.read("H,x")
+        assertEquals(0x8A, status.transmitErrors[1])
+        for (name in listOf("EPAS3P_status", "SCCM_leftStalk", "DI_torque", "ESP_brakeTorque", "RCM_inertial1", "IBST_status", "DI_systemStatus")) assertTrue(name, TxGuard.critical(name))
+        for (name in listOf("VCLEFT_doorStatus", "UI_gpsVehicleSpeed", "VCRIGHT_hvacStatus", "BMS_hvBusStatus")) assertFalse(name, TxGuard.critical(name))
+        val gears = Dbc.parse("BO_ 280 DI_systemStatus: 3 XXX\n SG_ DI_gear : 21|3@1+ (1,0) [0|0] \"\" XXX\nVAL_ 280 DI_gear 1 \"DI_GEAR_P\" 4 \"DI_GEAR_D\" ;\n", "g")
+        val store = FrameStore()
+        assertNull(TxGuard.inPark(store) { gears.messages[it.id] })
+        store.frame(0, 0, 0x118, bytes("000020"), 0, 3)
+        assertEquals(true, TxGuard.inPark(store) { gears.messages[it.id] })
+        store.frame(1000, 0, 0x118, bytes("000080"), 0, 3)
+        assertEquals(false, TxGuard.inPark(store) { gears.messages[it.id] })
+        store.frame(2000, 0, 0x118, bytes("0000E0"), 0, 3)   // a value without a name: unknown
+        assertNull(TxGuard.inPark(store) { gears.messages[it.id] })
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)

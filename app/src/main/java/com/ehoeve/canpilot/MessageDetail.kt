@@ -57,6 +57,7 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit) {
+    var transmitting by remember { mutableStateOf(false) }
     val revision = model.revision
     val store = model.store
     val decoder = model.dbc.decoder(message.bus, message.id)
@@ -107,9 +108,11 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
         signals.any { it.name == editing.original } -> signals.map { if (it.name == editing.original) drafted else it }
         else -> signals + drafted
     }
+    if (transmitting) TxSheet(model, message, frame) { transmitting = false }
     Scaffold(
         topBar = {
             TopAppBar(
+                actions = { if (model.live.source == LiveSource.DASHKIT) TextButton(onClick = { transmitting = true }) { Text("Send") } },
                 title = {
                     Column {
                         Text(decoder?.name ?: "Message ${hexId(message.id)}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
