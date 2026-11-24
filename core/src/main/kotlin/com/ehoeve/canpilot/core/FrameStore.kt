@@ -96,6 +96,54 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         return true
     }
 
+    /**
+     * Puts the frames of [other] on this store's timeline, in time order with its own: [shiftMicros] is added to their
+     * time stamps and [busOffset] to their bus numbers, which keeps the two recordings apart. Time 0 moves when
+     * [other] starts earlier; the return value is how many ticks to add to times taken before the merge.
+     */
+    @Synchronized
+    fun merge(other: FrameStore, shiftMicros: Long, busOffset: Int): Int {
+        val merged = FrameStore(maxChunks)
+        val oldOrigin = originMicros
+        val mine = Cursor(this, 0, 0)
+        val theirs = Cursor(other, shiftMicros, busOffset)
+        while (mine.micros != Long.MAX_VALUE || theirs.micros != Long.MAX_VALUE) {
+            val next = if (mine.micros <= theirs.micros) mine else theirs
+            if (!next.moveInto(merged)) break
+        }
+        chunks = merged.chunks; messages = merged.messages
+        byKey.clear(); byKey.putAll(merged.byKey)
+        originMicros = merged.originMicros; lastTime = merged.lastTime; frameCount = merged.frameCount; truncated = merged.truncated
+        return if (oldOrigin == Long.MIN_VALUE || originMicros == Long.MIN_VALUE) 0 else ((oldOrigin - originMicros) / MICROS_PER_TICK).toInt()
+    }
+
+    /** Walks a store's frames in order; [micros] is the current frame's shifted time, Long.MAX_VALUE after the last. */
+    private class Cursor(private val store: FrameStore, private val shiftMicros: Long, private val busOffset: Int) {
+        private val chunks = store.chunks
+        private val known = store.messages
+        private var chunk = 0
+        private var index = 0
+        var micros = Long.MAX_VALUE; private set
+
+        init { settle() }
+
+        private fun settle() {
+            while (chunk < chunks.size && index >= chunks[chunk].size) { chunk++; index = 0 }
+            micros = if (chunk < chunks.size) store.originMicros + chunks[chunk].time[index] * MICROS_PER_TICK + shiftMicros else Long.MAX_VALUE
+        }
+
+        /** Hands the current frame to [sink] and steps to the next; false when the sink is full. */
+        fun moveInto(sink: FrameStore): Boolean {
+            val from = chunks[chunk]
+            val message = known[from.message[index].toInt() and 0xFFFF]
+            val start = from.start(index)
+            val taken = sink.frame(micros, message.bus + busOffset, message.id, from.blob, start, from.end[index] - start)
+            index++
+            settle()
+            return taken
+        }
+    }
+
     /** First time still held (later than 0 once a live stream has dropped chunks). */
     val firstTime: Int get() = chunks.firstOrNull()?.takeIf { it.size > 0 }?.time?.get(0) ?: 0
 

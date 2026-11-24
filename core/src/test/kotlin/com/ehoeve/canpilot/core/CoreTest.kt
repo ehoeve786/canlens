@@ -398,6 +398,63 @@ class CoreTest {
         assertEquals(listOf("bus=1", "( id=249 or id=118 )", "not changed"), Filter.compile("bus = 1 (id=249 or id=118) && not changed", store.messages) { null }!!.terms)
     }
 
+    @Test fun exportsFramesAndSignalsThatReadBack() {
+        val store = traceStore(1)
+        val rows = store.RowScan(Filter.compile("bus=1", store.messages) { null }).update()
+        val log = StringBuilder()
+        assertEquals(5, Export.frames(store, rows, 0, 4_100, false, log))
+        val back = read(log.toString()).second
+        assertEquals(listOf(0L, 100_000L, 200_000L, 300_000L, 400_000L), back.map { it.time })   // times are kept to 100 µs
+        assertTrue(back.all { it.bus == 1 && it.id == 0x249 && it.data.contentEquals(bytes("29551000")) })
+        val csv = StringBuilder()
+        assertEquals(110, Export.frames(store, store.RowScan(null).update(), Int.MIN_VALUE, Int.MAX_VALUE, true, csv))
+        val (format, frames) = read(csv.toString())
+        assertEquals("CSV", format)
+        assertEquals(110, frames.size)
+        assertEquals(listOf(0x118, 0x249, 0x118), frames.take(3).map { it.id })
+        assertEquals(990_000L, frames.last().time)
+        assertArrayEquals(byteArrayOf(99, 2, 0, 0, 0, 0, 0, 0), frames.last().data)
+        val table = StringBuilder()
+        val message = store.messages[0]
+        Export.signals(listOf("DI_state" to store.series(message, traceDbc.messages[0x118]!!, traceDbc.messages[0x118]!!.signals[1])), 0.5f, 0.515f, table)
+        assertEquals("time,signal,value\n0.5,DI_state,3.0\n0.51,DI_state,3.0\n", table.toString())
+    }
+
+    /** A message whose payload never repeats: a counter and a value that wanders. */
+    private fun wandering(store: FrameStore, startMicros: Long, bus: Int, keep: (Int) -> Boolean) {
+        var value = 12345
+        for (i in 0 until 3000) {
+            value = value * 1103515245 + 12345
+            if (keep(i)) store.frame(startMicros + i * 10_000L, bus, 0x129, byteArrayOf(i.toByte(), (value shr 16).toByte(), (value shr 8).toByte(), (i and 15).toByte()), 0, 4)
+            if (i % 10 == 0 && keep(i)) store.frame(startMicros + i * 10_000L + 300, bus, 0x3C2, bytes("0055"), 0, 2)
+        }
+    }
+
+    @Test fun alignsAndMergesTwoRecordingsOfOneDrive() {
+        val car = FrameStore()
+        wandering(car, 1_000_000_000L, 0) { true }
+        val phone = FrameStore()
+        // another clock (5.4321 s ahead), another bus number, started 2 s later, and every 37th frame lost
+        wandering(phone, 1_005_432_100L, 3) { it >= 200 && it % 37 != 0 }
+        val shift = Align.offsetMicros(car, phone)!!
+        assertEquals(-5_432_100L, shift)
+        assertNull(Align.offsetMicros(car, FrameStore().apply { for (i in 0 until 100) frame(i * 1000L, 0, 0x129, bytes("00000000"), 0, 4) }))
+        val before = car.frameCount
+        assertEquals(0, car.merge(phone, shift, 10))
+        assertEquals(before + phone.frameCount, car.frameCount)
+        assertEquals(listOf(0 to 0x129, 0 to 0x3C2, 13 to 0x129, 13 to 0x3C2), car.messages.map { it.bus to it.id })
+        val both = car.RowScan(Filter.compile("id=129 t=5-5.0101", car.messages) { null }).update()
+        assertEquals(4, both.size)   // frames 500 and 501 of either recording, side by side
+        assertEquals(listOf(50_000, 50_000, 50_100, 50_100), (0 until 4).map { both.time(it) })
+        var last = Int.MIN_VALUE
+        val all = car.RowScan(null).update()
+        for (row in 0 until all.size) { assertTrue(all.time(row) >= last); last = all.time(row) }
+        // a recording that starts earlier moves time 0: older times shift by the difference
+        val early = FrameStore().apply { frame(999_000_000L, 0, 0x55, bytes("01"), 0, 1) }
+        assertEquals(10_000, car.merge(early, 0, 20))
+        assertEquals(0x55, car.messages[0].id)
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)
