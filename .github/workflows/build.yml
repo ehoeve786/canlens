@@ -7,8 +7,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write   # a v* tag publishes a release
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -22,11 +20,11 @@ jobs:
         with:
           name: canpilot-debug
           path: app/build/outputs/apk/debug/app-debug.apk
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Release APK
         run: |
           ./gradlew :app:assembleRelease -PversionCode=${{ github.run_number }}
-          cp app/build/outputs/apk/release/app-release.apk "canpilot-${GITHUB_REF_NAME}.apk"
-          gh release create "$GITHUB_REF_NAME" "canpilot-${GITHUB_REF_NAME}.apk" --generate-notes
+          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/canpilot-release.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: canpilot-release
+          path: app/build/outputs/apk/release/canpilot-release.apk
