@@ -284,7 +284,8 @@ object AutoDecode {
         for (m in snapshots.messages.indices) {
             for (signal in known(snapshots.messages[m])?.signals.orEmpty()) {
                 val name = signal.name.lowercase()
-                if (signal.muxValue >= 0 || "checksum" in name || "counter" in name || "crc" in name) continue
+                // a multiplexor only says which page a frame carries: anything else that pages through in step matches it
+                if (signal.muxValue >= 0 || signal.isMultiplexor || "checksum" in name || "counter" in name || "crc" in name) continue
                 vector(snapshots, m, signal)?.let { references += Reference(snapshots.messages[m], signal, it) }
             }
         }
