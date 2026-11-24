@@ -546,6 +546,16 @@ class CoreTest {
         assertTrue(found.any { it.signal.name == "COUNTER_3" })
     }
 
+    @Test fun diagnosticTrafficIsNotDecoded() {
+        val store = FrameStore()
+        // UDS on 0x7DF and an answer on 0x7E8: single and first/consecutive frames
+        for (i in 0 until 200) {
+            store.frame(i * 10_000L, 2, 0x7DF, byteArrayOf(0x02, 0x3E, (i % 3).toByte(), 0x55, 0x55, 0x55, 0x55, 0x55), 0, 8)
+            store.frame(i * 10_000L + 5, 2, 0x7E8, byteArrayOf((0x10 + i % 3).toByte(), 0x0A, 0x62, (i * 7).toByte(), (i * 3).toByte(), 0, 0, 0), 0, 8)
+        }
+        assertTrue(AutoDecode.run(store, { null }, emptyList()).isEmpty())
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)

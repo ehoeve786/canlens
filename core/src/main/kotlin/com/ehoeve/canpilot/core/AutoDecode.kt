@@ -13,6 +13,9 @@ class Suggestion(val message: FrameStore.Message, val signal: Signal, val eviden
 object AutoDecode {
     private const val GRID = 400
     private const val MATCH = 0.95
+    /** How closely the moments of change must agree too, and how many changes a signal needs to be compared at all. */
+    private const val MATCH_CHANGES = 0.8f
+    private const val MIN_CHANGES = 5
 
     /**
      * [known] gives the DBC entry of a message, if any; its signals are left alone and used as references.
@@ -29,6 +32,7 @@ object AutoDecode {
             if (payloads.size < 4) continue
             // the same id on a lower bus sending the same frames: a copy (forwarded, or a comma's echo of what it sent)
             if (messages.any { it.id == message.id && it.bus < message.bus && copies(payloads, payloads(it)) }) continue
+            if (diagnostic(message, payloads)) continue
             val free = BooleanArray(payloads.length * 8) { true }
             known(message)?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
             checksums(message, payloads, free, result)
@@ -40,6 +44,18 @@ object AutoDecode {
         progress("Comparing ${result.size} fields with the decoded signals")
         nameAfterKnownSignals(store, known, result)
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
+    }
+
+    /**
+     * Diagnostic traffic (ISO-TP: OBD and UDS requests and answers) on the ids set aside for it: its first byte is a
+     * frame type and length, not a field, and its contents are a conversation, not a signal.
+     */
+    private fun diagnostic(message: FrameStore.Message, p: FrameStore.Payloads): Boolean {
+        val id = message.id
+        if (id !in 0x700..0x7FF && id ushr 16 != 0x18DA && id ushr 16 != 0x18DB) return false
+        var typed = 0
+        for (k in 0 until p.size) if (p.data[k * p.length].toInt() and 0xF0 <= 0x30) typed++
+        return typed * 20 >= p.size * 19
     }
 
     /** True when nearly every one of the first frames of [mine] is also a frame of [other]. */
@@ -216,8 +232,27 @@ object AutoDecode {
         }
     }
 
-    /** One decoded or guessed signal at the [GRID] moments, with mean 0 and length 1, so a dot product is a correlation. */
-    private class Vector(val values: FloatArray, val mean: Double, val spread: Double)
+    /**
+     * One decoded or guessed signal at the [GRID] moments, with mean 0 and length 1, so a dot product is a correlation;
+     * and the same for its changes from one moment to the next. Two signals that only both drift, or both step once,
+     * agree in value but not in when they change.
+     */
+    private class Vector(val values: FloatArray, val changes: FloatArray, val mean: Double, val spread: Double)
+
+    private fun normalized(raw: DoubleArray): FloatArray? {
+        val mean = raw.average()
+        var spread = 0.0
+        for (v in raw) spread += (v - mean) * (v - mean)
+        if (spread < 1e-12) return null
+        val norm = sqrt(spread)
+        return FloatArray(raw.size) { ((raw[it] - mean) / norm).toFloat() }
+    }
+
+    private fun dot(a: FloatArray, b: FloatArray): Float {
+        var r = 0f
+        for (k in a.indices) r += a[k] * b[k]
+        return r
+    }
 
     private fun vector(snapshots: FrameStore.Snapshots, m: Int, signal: Signal): Vector? {
         val length = snapshots.length[m]
@@ -232,9 +267,12 @@ object AutoDecode {
         mean /= GRID
         var spread = 0.0
         for (k in 0 until GRID) spread += (raw[k] - mean) * (raw[k] - mean)
-        if (spread < 1e-12) return null
+        // a clock changes by the same step every time: its changes have no spread and it matches nothing
+        val steps = DoubleArray(GRID - 1) { raw[it + 1] - raw[it] }
+        if (spread < 1e-12 || steps.count { it != 0.0 } < MIN_CHANGES) return null
+        val changes = normalized(steps) ?: return null
         val norm = sqrt(spread)
-        return Vector(FloatArray(GRID) { ((raw[it] - mean) / norm).toFloat() }, mean, norm)
+        return Vector(FloatArray(GRID) { ((raw[it] - mean) / norm).toFloat() }, changes, mean, norm)
     }
 
     /** Renames and scales the unnamed fields that follow a decoded signal: the same quantity sent again, often on another bus. */
@@ -262,10 +300,9 @@ object AutoDecode {
                 // its own message, or that id on another bus: a field that repeats a signal of the same frame says nothing new;
                 // a single bit can't stand for a signal of several bits
                 if (reference.message.id == suggestion.message.id || (field.size == 1 && reference.signal.size > 1)) continue
-                var r = 0f
-                val other = reference.vector.values
-                for (k in 0 until GRID) r += mine.values[k] * other[k]
-                if (abs(r) > abs(bestR)) { bestR = r; best = reference }
+                val r = dot(mine.values, reference.vector.values)
+                if (abs(r) <= abs(bestR) || dot(mine.changes, reference.vector.changes) * Math.signum(r) < MATCH_CHANGES) continue
+                bestR = r; best = reference
             }
             if (best == null || abs(bestR) < MATCH) continue
             val factor = bestR * best.vector.spread / mine.spread
