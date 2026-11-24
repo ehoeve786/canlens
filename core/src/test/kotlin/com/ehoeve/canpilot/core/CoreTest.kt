@@ -510,6 +510,22 @@ class CoreTest {
         }
     }
 
+    @Test fun autoDecodeSkipsCopiesAndSignalsRepeatedInTheirOwnFrame() {
+        val dbc = Dbc.parse("BO_ 256 M: 2 XXX\n SG_ level : 0|8@1+ (1,0) [0|0] \"\" XXX\n", "d")
+        val store = FrameStore()
+        for (i in 0 until 400) {
+            val level = (i / 20).toByte()
+            // byte 1 repeats byte 0 in the same frame; bus 130 is the comma's echo of bus 2
+            val frame = byteArrayOf(level, level)
+            store.frame(i * 10_000L, 2, 0x100, frame, 0, 2)
+            store.frame(i * 10_000L + 1, 130, 0x100, frame, 0, 2)
+        }
+        val found = AutoDecode.run(store, { if (it.id == 0x100) dbc.messages[0x100] else null }, emptyList())
+        assertTrue(found.isNotEmpty())
+        assertTrue(found.all { it.message.bus == 2 })
+        assertTrue(found.none { it.signal.name.startsWith("LIKE_") })
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)

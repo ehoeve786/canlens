@@ -69,7 +69,10 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     LaunchedEffect(model.signals.pendingSignal) { model.signals.pendingSignal?.let { drafts[draftKey] = SignalDraft(null, it); model.signals.pendingSignal = null } }
     val cursor = model.trace.cursorNow
     val following = model.trace.followLive && model.live.source != LiveSource.NONE
-    val frame = remember(revision, cursor, following) { if (following) message.data else store.frameAt(message, cursor) }
+    val frame = remember(revision, cursor, following) {
+        // before the message's first frame: that frame, so its fields can be read anyway
+        if (following) message.data else store.frameAt(message, cursor) ?: store.frameAt(message, message.firstTime)
+    }
     val a = model.trace.markA
     val b = model.trace.markB
     val activity by produceState<FrameStore.BitActivity?>(null, revision, a, b, message) {

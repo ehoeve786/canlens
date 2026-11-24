@@ -70,6 +70,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ehoeve.canpilot.core.Dbc
 import com.ehoeve.canpilot.core.FrameStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -226,6 +227,14 @@ private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, o
 
 @Composable
 private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
+    // per bus: how many of the DBC's messages on it have the frame length the DBC gives them. A DBC for another bus
+    // shares ids by chance and mostly gets the lengths wrong: assign it to the bus where it fits.
+    val messages = model.store.messages
+    val fits = { dbc: Dbc ->
+        messages.filter { it.id in dbc.messages && it.bus < 128 }.groupBy { it.bus }.toSortedMap().entries.joinToString("") { (bus, onBus) ->
+            "\nBus $bus: ${onBus.count { dbc.messages[it.id]!!.length == it.data.size } * 100 / onBus.size}% of ${onBus.size} fit"
+        }
+    }
     val open = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) model.dbc.open(it) }
     var exporting by remember { mutableStateOf(-1) }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
@@ -242,7 +251,7 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
                     Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(loaded.dbc.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Medium)
-                            Hint("${loaded.dbc.messages.size} messages")
+                            Hint("${loaded.dbc.messages.size} messages" + fits(loaded.dbc))
                         }
                         Box {
                             AssistChip(onClick = { menu = true }, label = { Text(if (loaded.bus == ALL_BUSES) "All buses" else "Bus ${loaded.bus}") })

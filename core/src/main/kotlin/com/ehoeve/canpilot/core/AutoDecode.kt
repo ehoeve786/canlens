@@ -22,9 +22,13 @@ object AutoDecode {
         val messages = store.messages
         val result = ArrayList<Suggestion>()
         progress("Working out the layout of ${messages.size} messages")
+        val samples = HashMap<Int, FrameStore.Payloads>()
+        fun payloads(message: FrameStore.Message) = samples.getOrPut(message.index) { store.payloads(message) }
         for (message in messages) {
-            val payloads = store.payloads(message)
+            val payloads = payloads(message)
             if (payloads.size < 4) continue
+            // the same id on a lower bus sending the same frames: a copy (forwarded, or a comma's echo of what it sent)
+            if (messages.any { it.id == message.id && it.bus < message.bus && copies(payloads, payloads(it)) }) continue
             val free = BooleanArray(payloads.length * 8) { true }
             known(message)?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
             checksums(message, payloads, free, result)
@@ -36,6 +40,17 @@ object AutoDecode {
         progress("Comparing ${result.size} fields with the decoded signals")
         nameAfterKnownSignals(store, known, result)
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
+    }
+
+    /** True when nearly every one of the first frames of [mine] is also a frame of [other]. */
+    private fun copies(mine: FrameStore.Payloads, other: FrameStore.Payloads): Boolean {
+        if (mine.length != other.length) return false
+        val seen = HashSet<java.nio.ByteBuffer>(other.size * 2)
+        for (k in 0 until other.size) seen += java.nio.ByteBuffer.wrap(other.data, k * other.length, other.length).slice()
+        val n = minOf(mine.size, 200)
+        var found = 0
+        for (k in 0 until n) if (java.nio.ByteBuffer.wrap(mine.data, k * mine.length, mine.length).slice() in seen) found++
+        return found * 10 >= n * 9
     }
 
     private fun field(name: String, start: Int, size: Int, signed: Boolean = false, mux: Int = -1, multiplexor: Boolean = false) =
@@ -240,6 +255,9 @@ object AutoDecode {
             var best: Reference? = null
             var bestR = 0f
             for (reference in references) {
+                // its own message, or that id on another bus: a field that repeats a signal of the same frame says nothing new;
+                // a single bit can't stand for a signal of several bits
+                if (reference.message.id == suggestion.message.id || (field.size == 1 && reference.signal.size > 1)) continue
                 var r = 0f
                 val other = reference.vector.values
                 for (k in 0 until GRID) r += mine.values[k] * other[k]
