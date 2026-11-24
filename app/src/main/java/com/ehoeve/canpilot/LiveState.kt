@@ -94,6 +94,10 @@ class LiveState(
         recorded = null
         onStart()
         source = from
+        LiveService.title = { (if (recording != null) "Recording · " else "Live · ") + name }
+        LiveService.status = { "${store.frameCount} frames, ${store.messages.size} messages" + (recording?.let { " · Download/CanPilot/$it" } ?: "") }
+        LiveService.stop = { stop() }
+        LiveService.begin(context)
         report("Connecting to $name")
         val sink = FrameSink { time, bus, id, data, offset, length ->
             synchronized(store) {
@@ -129,7 +133,12 @@ class LiveState(
         job?.cancel(); job = null
         runCatching { connection?.close() }; connection = null; dashKit = null
         setRecording(false)
-        if (source != LiveSource.NONE) { source = LiveSource.NONE; report("Stopped: ${store.frameCount} frames kept") }
+        if (source != LiveSource.NONE) {
+            source = LiveSource.NONE
+            LiveService.stop = null; LiveService.status = null; LiveService.title = null
+            LiveService.end(context)
+            report("Stopped: ${store.frameCount} frames kept")
+        }
     }
 
     fun setRecording(on: Boolean) {

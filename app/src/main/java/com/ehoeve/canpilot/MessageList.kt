@@ -1,5 +1,14 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.ui.platform.LocalContext
+import android.provider.Settings
+import android.os.PowerManager
+import android.os.Build
+import android.net.Uri
+import android.content.pm.PackageManager
+import android.content.Intent
+import android.content.Context
+import android.Manifest
 import androidx.compose.material3.TextButton
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -276,6 +285,26 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
 
 @Composable
 private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
+    // A stream keeps going in the background (LiveService): its notification needs permission from Android 13, and
+    // Samsung's battery saver stops it unless the app may run unrestricted, which is asked for once.
+    val context = LocalContext.current
+    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val startAndAsk = { start: () -> Unit ->
+        start()
+        val preferences = context.getSharedPreferences("canpilot", Context.MODE_PRIVATE)
+        if (!context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName) && !preferences.getBoolean("askedBattery", false)) {
+            preferences.edit().putBoolean("askedBattery", true).apply()
+            runCatching { context.startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + context.packageName))) }
+        }
+        onClose()
+    }
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { pending?.let(startAndAsk); pending = null }
+    val go = { start: () -> Unit ->
+        if (Build.VERSION.SDK_INT >= 33 && context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            pending = start
+            notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else startAndAsk(start)
+    }
     var address by remember { mutableStateOf(model.live.commaAddress) }
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -284,11 +313,11 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
                 placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
             Hint("Can stay empty: the app finds the comma on this phone's Wi-Fi or hotspot, also after its address changed. The comma must run cereal's bridge. All of its buses are streamed.")
-            Button(onClick = { model.live.startComma(address); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Connect to comma") }
+            Button(onClick = { go { model.live.startComma(address) } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to comma") }
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             SectionTitle("DashKit over USB")
             Hint("Plug the DashKit's USB-C port into this phone.")
-            FilledTonalButton(onClick = { model.live.startDashKit(); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit") }
+            FilledTonalButton(onClick = { go { model.live.startDashKit() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit") }
         }
     }
 }
