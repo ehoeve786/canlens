@@ -58,7 +58,7 @@ class CoreTest {
         val m = dbc.messages[0x18FEF110]!!
         assertEquals("index", m.multiplexor!!.name)
         assertEquals(1, m.signals.first { it.name == "whenOne" }.muxValue)
-        assertEquals(-1, m.multiplexor!!.muxValue)
+        assertEquals(-1, m.multiplexor.muxValue)
     }
 
     @Test fun dbcSurvivesWritingAndReading() {

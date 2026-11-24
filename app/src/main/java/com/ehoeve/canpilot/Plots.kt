@@ -135,8 +135,8 @@ fun PlotsScreen(model: AppModel) {
     val b = model.trace.markB
     val marked = a != null && b != null
     val changes = remember(data, a, b) {
-        val from = if (marked) seconds(minOf(a!!, b!!)) else -Float.MAX_VALUE
-        val to = if (marked) seconds(maxOf(a!!, b!!)) else Float.MAX_VALUE
+        val from = if (marked) seconds(minOf(a, b)) else -Float.MAX_VALUE
+        val to = if (marked) seconds(maxOf(a, b)) else Float.MAX_VALUE
         val found = ArrayList<Change>()
         for (plot in data) {
             val labels = plot.stateLabels ?: continue
@@ -193,7 +193,7 @@ fun PlotsScreen(model: AppModel) {
             } else item {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { view.show(seconds(store.firstTime), seconds(store.lastTime)); moved() }, label = { Text("Show everything") })
-                    if (marked) AssistChip(onClick = { view.show(seconds(minOf(a!!, b!!)), seconds(maxOf(a!!, b!!))); moved() }, label = { Text("Zoom to A–B") })
+                    if (marked) AssistChip(onClick = { view.show(seconds(minOf(a, b)), seconds(maxOf(a, b))); moved() }, label = { Text("Zoom to A–B") })
                     FilterChip(selected = model.plot.overlay, onClick = { model.plot.overlay = !model.plot.overlay }, label = { Text("Overlay") })
                     if (model.plot.overlay) FilterChip(selected = model.plot.sharedScale, onClick = { model.plot.sharedScale = !model.plot.sharedScale }, label = { Text("One scale") })
                     AssistChip(onClick = { model.plot.keys.clear() }, label = { Text("Remove all") })

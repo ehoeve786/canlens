@@ -78,7 +78,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     val activity by produceState<FrameStore.BitActivity?>(null, revision, a, b, message) {
         val window = a != null && b != null
         value = withContext(Dispatchers.Default) {
-            store.bitActivity(if (window) minOf(a!!, b!!) else Int.MIN_VALUE, if (window) maxOf(a!!, b!!) else Int.MAX_VALUE, message).getOrNull(message.index)
+            store.bitActivity(if (window) minOf(a, b) else Int.MIN_VALUE, if (window) maxOf(a, b) else Int.MAX_VALUE, message).getOrNull(message.index)
         }
     }
     val view = model.plot.view
@@ -181,7 +181,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                         Checkbox(plotKey in plots, onCheckedChange = null)
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
                         Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                        Text(if (active) format(signal, signal.raw(frame!!)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        Text(if (active) format(signal, signal.raw(frame)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
                         IconButton(onClick = { drafts[draftKey] = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
