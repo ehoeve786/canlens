@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -49,6 +52,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ehoeve.canpilot.core.FieldMatch
 import com.ehoeve.canpilot.core.FrameStore
+import com.ehoeve.canpilot.core.Suggestion
 
 /** Finds where a signal lives: by what its value was at known moments, or by a known signal it moves with. */
 @Composable
@@ -164,6 +168,57 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
                             model.markB = (marker.time + 2 * FrameStore.TICKS_PER_SECOND.toInt()).coerceAtMost(model.store.lastTime)
                         }) { Text("A–B") }
                         IconButton(onClick = { model.markers.remove(marker) }) { Icon(Icons.Default.Delete, "Remove marker") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Runs the automatic decoder and lists what it proposes, to be reviewed and added to the DBC. */
+@Composable
+fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
+    var showPlain by remember { mutableStateOf(false) }
+    val unticked = remember { mutableStateListOf<Suggestion>() }
+    val all = model.autoResults
+    val plain = all.count { it.confidence < AppModel.NAMED }
+    val shown = if (showPlain) all else all.filter { it.confidence >= AppModel.NAMED }
+    val ticked = shown.filter { it !in unticked }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
+                title = { Text("Decode everything", style = MaterialTheme.typography.titleMedium) },
+            )
+        },
+    ) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            item {
+                Hint("Works out the layout of every message that has no DBC entry: fields, counters, checksums, multiplexing. Fields that follow a signal you have already decoded, " +
+                    "or that changed only at one of your markers, get a name. These are suggestions: check them before you rely on them.")
+                Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Button(enabled = !model.decoding && model.store.frameCount > 0, onClick = { unticked.clear(); model.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
+                    if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.decoding, onClick = { model.accept(ticked) }) { Text("Add ${ticked.size} to the DBC") }
+                }
+                if (model.autoStatus.isNotEmpty()) Hint(model.autoStatus, Modifier.padding(top = 8.dp))
+                if (model.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
+                if (plain > 0) FilterChip(selected = showPlain, onClick = { showPlain = !showPlain }, label = { Text("Show the $plain unnamed fields") })
+            }
+            items(shown.size) { index ->
+                val suggestion = shown[index]
+                val signal = suggestion.signal
+                Surface(onClick = { onPick(suggestion) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(suggestion !in unticked, onCheckedChange = { if (it) unticked.remove(suggestion) else unticked += suggestion })
+                        BusBadge(suggestion.message.bus)
+                        Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(hexId(suggestion.message.id), fontFamily = MONO, fontWeight = FontWeight.Bold)
+                                Text(signal.name, Modifier.weight(1f).padding(start = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Hint("bits ${signal.start}–${signal.start + signal.size - 1}" + (if (signal.muxValue >= 0) " · when the multiplexor is ${signal.muxValue}" else "") + " · " + suggestion.evidence)
+                        }
+                        Pill("${(suggestion.confidence * 100).toInt()}%")
                     }
                 }
             }

@@ -14,6 +14,7 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
   - *Find signal* by value (what the value was at moments you pick) or by a known signal it moves with.
   - *Compare with a log*: the bits that are constant in both logs but not the same, or that change in only one.
   - Suggested fields per message, guessed from how the bits flip, with counters and checksum-like bytes named.
+- **Decode everything**: works out the layout of every message without a DBC entry (fields, counters, verified checksums, multiplexing) and names the fields that follow an already decoded signal or changed only at a marker. Each suggestion comes with its evidence and a confidence, to review and add to the DBC.
 - **Defining signals**: tap a bit, a suggestion or a search result to start a signal; adjust size, byte order, sign, factor and offset while a plot and a histogram of the whole log update; add value names and multiplexing; save it. Export the DBC when done.
 - **Plots**: any signals over time, from one message or several; plots stay up while you move between messages. Pinch to zoom, drag to pan, tap to move the cursor.
 

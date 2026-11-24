@@ -284,4 +284,49 @@ class CoreTest {
         assertEquals(listOf(5_000_000L, 7_000_000L), frames)
         assertEquals(listOf(5_000_001L to "first line", 6_500_000L to "opened, the door now"), markers)
     }
+
+    @Test fun decodesAWholeBusAutomatically() {
+        val store = FrameStore()
+        var noise = 99
+        for (i in 0 until 800) {
+            val t = i * 20_000L
+            val speed = (300 + 250 * Math.sin(i / 60.0)).toInt()
+            store.frame(t, 0, 0x118, byteArrayOf((speed shl 4 and 0xF0).toByte(), (speed shr 4).toByte()), 0, 2)             // decoded by the DBC
+            store.frame(t + 1, 1, 0x400, byteArrayOf(0, (speed / 3).toByte(), if (i in 395..400) 1 else 0), 0, 3)           // the speed again, and a bit for the marker
+            noise = noise * 1103515245 + 12345
+            val body = byteArrayOf((i and 15).toByte(), (noise ushr 16).toByte(), (noise ushr 24).toByte())
+            val sum = body.sumOf { it.toInt() and 0xFF } + 0x57 + 0x02
+            store.frame(t + 2, 0, 0x257, body + sum.toByte(), 0, 4)                                                          // counter, noise, Tesla checksum
+            val torque = (20 * Math.sin(i / 40.0)).toInt()                                                                  // crosses zero
+            store.frame(t + 3, 0, 0x108, byteArrayOf((torque and 0xFF).toByte(), (torque shr 8 and 0x0F).toByte()), 0, 2)
+            val page = i % 3                                                                                                // multiplexed: byte 1 means something else per page
+            val paged = when (page) { 0 -> i / 100; 1 -> 200 - i / 50; else -> 0xAA }
+            store.frame(t + 4, 0, 0x3D2, byteArrayOf(page.toByte(), paged.toByte(), (i / 7 and 0x3F).toByte()), 0, 3)
+        }
+        val speed = Signal("DI_vehicleSpeed", 4, 12, true, false, 0.1, 0.0, "kph", -1, false)
+        val dbc = DbcMessage(0x118, "DI_speed", 2, listOf(speed))
+        val found = AutoDecode.run(store, { if (it.id == 0x118) dbc else null }, listOf(397 * 200 to "opened the door!"))
+        fun of(id: Int) = found.filter { it.message.id == id }
+        assertTrue(of(0x118).isEmpty())                                           // already decoded: left alone
+        val copy = of(0x400).first { it.signal.start == 8 }
+        assertEquals("LIKE_DI_vehicleSpeed_8", copy.signal.name)
+        assertEquals("kph", copy.signal.unit)
+        assertEquals(0.3, copy.signal.factor, 0.01)
+        assertTrue(copy.confidence > 0.99)
+        val event = of(0x400).first { it.signal.start == 16 }
+        assertEquals("EVT_OPENED_THE_DOOR_16", event.signal.name)
+        assertEquals(1, event.signal.size)
+        assertEquals(listOf("CHECKSUM_24", "COUNTER_0"), of(0x257).filter { it.confidence >= 0.9 }.map { it.signal.name }.sorted())
+        assertTrue(of(0x257).first { it.signal.name == "CHECKSUM_24" }.evidence.contains("Tesla"))
+        val torque = of(0x108).single()
+        assertTrue(torque.signal.signed)
+        assertEquals(0, torque.signal.start)
+        val mux = of(0x3D2)
+        val selector = mux.first { it.signal.isMultiplexor }
+        assertEquals(0, selector.signal.start); assertEquals(2, selector.signal.size)
+        assertEquals(setOf(0, 1), mux.filter { it.signal.muxValue >= 0 }.map { it.signal.muxValue }.toSet())   // page 2 is constant
+        assertTrue(mux.filter { it.signal.muxValue >= 0 }.all { it.signal.start in 8..15 })
+        assertTrue(mux.any { it.signal.muxValue < 0 && !it.signal.isMultiplexor && it.signal.start == 16 })   // byte 2 is the same on every page
+        assertEquals(found.map { it.confidence }.sortedDescending(), found.map { it.confidence })
+    }
 }

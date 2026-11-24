@@ -11,6 +11,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ehoeve.canpilot.core.Analysis
+import com.ehoeve.canpilot.core.AutoDecode
+import com.ehoeve.canpilot.core.Suggestion
 import com.ehoeve.canpilot.core.BitSummary
 import com.ehoeve.canpilot.core.CommaStream
 import com.ehoeve.canpilot.core.FieldMatch
@@ -71,6 +73,11 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     var findByCorrelation by mutableStateOf(false); private set
     var searching by mutableStateOf(false); private set
     var pendingSignal by mutableStateOf<Signal?>(null)
+
+    /** What the automatic decoder proposed and has not been added to a DBC yet. */
+    var autoResults by mutableStateOf<List<Suggestion>>(emptyList()); private set
+    var autoStatus by mutableStateOf(""); private set
+    var decoding by mutableStateOf(false); private set
     /** The time range all plots show; replaced when other data is loaded. */
     var chartView by mutableStateOf(ChartView(0f, 1f)); private set
 
@@ -139,7 +146,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             cursor = store.firstTime; markA = null; markB = null; followLive = false
             chartView = ChartView(seconds(store.firstTime), seconds(store.lastTime))
             markers.clear()
-            findResults = emptyList(); findPoints.clear(); findStatus = ""
+            findResults = emptyList(); findPoints.clear(); findStatus = ""; autoResults = emptyList(); autoStatus = ""
             if (store.frameCount > 0) markers += notes.map { Marker(((it.first - store.originMicros) / FrameStore.MICROS_PER_TICK).toInt(), it.second) }.sortedBy { it.time }
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +
                 if (problems.isEmpty()) "" else "\n" + problems.joinToString("\n")
@@ -206,7 +213,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         if (index >= 0) replaceDbc(index, LoadedDbc(dbcs[index].dbc.withoutSignal(message.id, name), dbcs[index].bus))
     }
 
-    private fun dbcIndex(message: FrameStore.Message): Int {
+    private fun dbcIndex(message: FrameStore.Message) = dbcIndex(dbcs, message)
+
+    /** The DBC in [dbcs] a signal of [message] belongs in, or -1: one that has the message, else one for its bus, else one for all buses. */
+    private fun dbcIndex(dbcs: List<LoadedDbc>, message: FrameStore.Message): Int {
         val exact = dbcs.indexOfFirst { it.bus == message.bus && message.id in it.dbc.messages }
         if (exact >= 0) return exact
         val shared = dbcs.indexOfFirst { it.bus == ALL_BUSES && message.id in it.dbc.messages }
@@ -247,7 +257,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         cursor = 0; markA = null; markB = null; followLive = true
         chartView = ChartView(0f, LIVE_WINDOW_SECONDS)
         markers.clear(); clearCompare()
-        findResults = emptyList(); findPoints.clear(); findStatus = ""
+        findResults = emptyList(); findPoints.clear(); findStatus = ""; autoResults = emptyList(); autoStatus = ""
         live = source
         status = "Connecting to $name"
         val sink = FrameSink { time, bus, id, data, offset, length ->
@@ -360,9 +370,49 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- automatic decoding
+
+    fun decodeEverything() {
+        if (decoding || store.frameCount == 0L) return
+        decoding = true
+        autoStatus = "Starting"
+        val notes = markers.map { it.time to it.note }
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.Default) {
+                runCatching { AutoDecode.run(store, { decoder(it.bus, it.id) }, notes) { step -> launch(Dispatchers.Main) { autoStatus = step } } }
+            }
+            autoResults = result.getOrDefault(emptyList())
+            autoStatus = result.fold(
+                { found -> if (found.isEmpty()) "Nothing left to decode" else "${found.size} suggestions, ${found.count { it.confidence >= NAMED }} of them with a name or a check behind them" },
+                { "Decoding failed: ${it.message ?: it.javaClass.simpleName}" },
+            )
+            decoding = false
+        }
+    }
+
+    /** Adds [accepted] to the DBCs (each DBC file is written once) and takes them off the list. */
+    fun accept(accepted: List<Suggestion>) {
+        val working = dbcs.toMutableList()
+        val changed = LinkedHashSet<Int>()
+        for (suggestion in accepted) {
+            val message = suggestion.message
+            var index = dbcIndex(working, message)
+            if (index < 0) { working += LoadedDbc(Dbc("canpilot-bus${message.bus}.dbc", emptyMap()), message.bus); index = working.lastIndex }
+            working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, suggestion.signal), working[index].bus)
+            changed += index
+        }
+        val existing = dbcs.size
+        for (index in changed) replaceDbc(if (index < existing) index else -1, working[index])
+        autoResults = autoResults - accepted.toSet()
+        status = "${accepted.size} signals added. Export the DBC to keep a copy outside the app."
+    }
+
     override fun onCleared() = stopLive()
 
     companion object {
+        /** Suggestions from this confidence up have a name or a verification behind them; below it they are plain layout guesses. */
+        const val NAMED = 0.7
+
         /** Compares names with their numbers as numbers. */
         fun naturalCompare(a: String, b: String): Int {
             var i = 0

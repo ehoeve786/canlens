@@ -110,6 +110,7 @@ fun App(model: AppModel = viewModel()) {
     model.revision   // re-resolve the selection when the data changes
     val message = selected?.let { key -> model.store.messages.firstOrNull { it.bus == key.first && it.id == key.second } }
     var finding by remember { mutableStateOf(false) }
+    var autoDecoding by remember { mutableStateOf(false) }
     CanPilotTheme {
         when {
             message != null -> {
@@ -120,7 +121,11 @@ fun App(model: AppModel = viewModel()) {
                 BackHandler { finding = false }
                 FindScreen(model, onBack = { finding = false }) { match -> model.pendingSignal = match.signal; selected = match.message.bus to match.message.id }
             }
-            else -> MessageList(model, onFind = { finding = true }) { selected = it.bus to it.id }
+            autoDecoding -> {
+                BackHandler { autoDecoding = false }
+                AutoDecodeScreen(model, onBack = { autoDecoding = false }) { suggestion -> model.pendingSignal = suggestion.signal; selected = suggestion.message.bus to suggestion.message.id }
+            }
+            else -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }) { selected = it.bus to it.id }
         }
     }
 }
@@ -153,7 +158,7 @@ fun Hint(text: String, modifier: Modifier = Modifier) =
 // ---- message list
 
 @Composable
-private fun MessageList(model: AppModel, onFind: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
+private fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     var filter by remember { mutableStateOf("") }
     var changedOnly by remember { mutableStateOf(false) }
     var showDbcs by remember { mutableStateOf(false) }
@@ -220,6 +225,7 @@ private fun MessageList(model: AppModel, onFind: () -> Unit, onOpen: (FrameStore
                 } else AssistChip(onClick = { showLive = true }, label = { Text("Live") }, leadingIcon = { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = { showDbcs = true }, label = { Text("DBC · ${dbcs.size}") })
                 AssistChip(onClick = onFind, label = { Text("Find signal") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
+                AssistChip(onClick = onAuto, label = { Text("Decode everything") })
                 FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed only in A–B") },
                     leadingIcon = if (changedOnly) ({ Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }) else null)
                 if (other == null) AssistChip(onClick = { openOther.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Compare with a log") })
