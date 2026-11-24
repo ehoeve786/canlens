@@ -17,7 +17,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -74,7 +76,7 @@ fun Chart(
 ) {
     val text = remember { Paint().apply { this.color = android.graphics.Color.WHITE; isAntiAlias = true } }
     Canvas(
-        Modifier.fillMaxWidth().padding(vertical = 2.dp).height(130.dp).background(Color(0xFF15181C))
+        Modifier.fillMaxWidth().padding(vertical = 4.dp).height(140.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E))
             .pointerInput(view) { detectTapGestures { onCursor(view.start + it.x / size.width * (view.end - view.start)) } }
             .pointerInput(view) {
                 awaitEachGesture {
@@ -153,15 +155,15 @@ fun Chart(
                 }
                 val canvas = drawContext.canvas.nativeCanvas
                 text.textAlign = Paint.Align.RIGHT
-                canvas.drawText(number(high), width - 6f, text.textSize + 2f, text)
-                canvas.drawText(number(low), width - 6f, height - 4f, text)
+                canvas.drawText(number(high), width - 12f, text.textSize + 6f, text)
+                canvas.drawText(number(low), width - 12f, height - 8f, text)
                 // the value under the cursor: the last sample at or before it
                 val at = lowerBound(times, n, cursor + 1e-6f) - 1
-                if (at >= 0) canvas.drawText(number(values[at]), width - 6f, height / 2, text)
+                if (at >= 0) canvas.drawText(number(values[at]), width - 12f, height / 2, text)
             }
         }
         text.textAlign = Paint.Align.LEFT
-        drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data" else title, 6f, text.textSize + 2f, text)
+        drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data" else title, 12f, text.textSize + 6f, text)
         val cursorX = x(cursor)
         if (cursorX in 0f..width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, height))
     }
