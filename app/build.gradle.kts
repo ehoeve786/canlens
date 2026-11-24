@@ -46,6 +46,7 @@ android {
 }
 
 dependencies {
+    implementation(project(":core"))
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
@@ -55,5 +56,4 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.core)
     implementation("com.github.luben:zstd-jni:${libs.versions.zstd.get()}@aar")
     implementation(libs.commons.compress)
-    testImplementation(libs.junit)
 }

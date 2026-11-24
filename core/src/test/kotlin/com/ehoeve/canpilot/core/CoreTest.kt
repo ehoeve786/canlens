@@ -334,4 +334,113 @@ class CoreTest {
         assertTrue(mux.any { it.signal.muxValue < 0 && !it.signal.isMultiplexor && it.signal.start == 16 })   // byte 2 is the same on every page
         assertEquals(found.map { it.confidence }.sortedDescending(), found.map { it.confidence })
     }
+
+    /** Bus 0: 0x118 every 10 ms with a counter in byte 0 and a state in byte 1; bus 1: 0x249 every 100 ms, constant. */
+    private fun traceStore(seconds: Int = 2): FrameStore {
+        val store = FrameStore()
+        for (i in 0 until seconds * 100) {
+            store.frame(i * 10_000L, 0, 0x118, byteArrayOf(i.toByte(), (if (i in 50..59) 3 else 2).toByte(), 0, 0, 0, 0, 0, 0), 0, 8)
+            if (i % 10 == 0) store.frame(i * 10_000L + 5, 1, 0x249, bytes("29551000"), 0, 4)
+        }
+        return store
+    }
+
+    private val traceDbc = Dbc.parse(
+        """
+        BO_ 280 DI_systemStatus: 8 XXX
+         SG_ DI_counter : 0|8@1+ (1,0) [0|0] "" XXX
+         SG_ DI_state : 8|3@1+ (1,0) [0|0] "" XXX
+        BO_ 585 SCCM_leftStalk: 4 XXX
+         SG_ SCCM_washWipe : 14|2@1+ (1,0) [0|0] "" XXX
+        VAL_ 280 DI_state 2 "STANDBY" 3 "FAULT" ;
+        """.trimIndent(), "trace",
+    )
+
+    private fun count(store: FrameStore, filter: String): Int =
+        store.RowScan(Filter.compile(filter, store.messages) { traceDbc.messages[it.id] }).update().size
+
+    @Test fun filterByFieldsBytesSignalsAndNames() {
+        val store = traceStore()
+        assertEquals(220, count(store, ""))
+        assertEquals(20, count(store, "bus=1"))
+        assertEquals(20, count(store, "bus = 1 id : 249"))
+        assertEquals(200, count(store, "id=100-1FF"))
+        assertEquals(20, count(store, "len<8"))
+        assertEquals(10, count(store, "d1=3"))
+        assertEquals(30, count(store, "d[1]&01==1"))
+        assertEquals(190, count(store, "id=118 d1!=3"))
+        assertEquals(10, count(store, "DI_state=FAULT"))
+        assertEquals(10, count(store, "di_state>2"))
+        assertEquals(190, count(store, "DI_state=standby"))
+        assertEquals(30, count(store, "DI_state=3 or bus=1"))
+        assertEquals(2, count(store, "(DI_state=3 or bus=1) t=0.5-0.5049"))
+        assertEquals(210, count(store, "!d1=3"))
+        assertEquals(200, count(store, "not (bus=1)"))
+        assertEquals(20, count(store, "stalk"))
+        assertEquals(20, count(store, "249"))
+        assertEquals(200, count(store, "counter"))
+        assertEquals(199, count(store, "changed"))   // every 0x118 frame but its first; 0x249 never changes
+        assertEquals(11, count(store, "t<0.1"))
+        for (wrong in listOf("bus=", "bus=x", "(bus=1", "bus=1)", "nothing=1", "bus&1=1", "bus<1-2", "or", "bus=1 and"))
+            assertTrue(wrong, runCatching { count(store, wrong) }.exceptionOrNull() is IllegalArgumentException)
+    }
+
+    @Test fun rowsFollowTheStoreAndFindTimes() {
+        val store = traceStore(1)
+        val all = store.RowScan(null)
+        val filtered = store.RowScan(Filter.compile("bus=1", store.messages) { null })
+        assertEquals(110, all.update().size)
+        var rows = filtered.update()
+        assertEquals(10, rows.size)
+        assertEquals(1_000, rows.time(1))
+        assertEquals(5, rows.rowAt(5_500))
+        assertEquals(0, rows.rowAt(-1))
+        assertEquals(9, rows.rowAt(Int.MAX_VALUE))
+        val third = all.update().position(2)   // 0x118, 0x249, 0x118
+        assertEquals(2, third and FrameStore.CAPACITY - 1)
+        store.frame(2_000_000, 1, 0x249, bytes("29551001"), 0, 4)
+        assertEquals(111, all.update().size)
+        assertEquals(10, rows.size)   // rows handed out earlier don't change
+        rows = filtered.update()
+        assertEquals(11, rows.size)
+        assertEquals(20_000, rows.time(10))
+        store.clear()
+        assertEquals(0, filtered.update().size)
+        store.frame(0, 1, 0x249, bytes("00"), 0, 1)
+        assertEquals(1, filtered.update().size)
+    }
+
+    @Test fun rowsStartOverWhenALiveStreamDropsItsOldestChunk() {
+        val store = FrameStore(maxChunks = 2).apply { dropOldest = true }
+        val odd = store.RowScan(Filter.compile("d0&01=1", emptyArray()) { null })
+        val data = ByteArray(1)
+        for (i in 0 until FrameStore.CAPACITY + 10) { data[0] = i.toByte(); store.frame(i * 100L, 0, 1, data, 0, 1) }
+        assertEquals(FrameStore.CAPACITY / 2 + 5, odd.update().size)
+        for (i in 0 until FrameStore.CAPACITY) { data[0] = 1; store.frame((FrameStore.CAPACITY + 10 + i) * 100L, 0, 1, data, 0, 1) }
+        val rows = odd.update()
+        assertEquals(store.chunks.sumOf { it.size }, rows.size + 5)   // of the 10 frames 0..9 left from before, 5 are even
+        assertEquals(store.chunks[0].time[1], rows.time(0))
+    }
+
+    @Test fun changedBytesAndTheFixedView() {
+        val store = FrameStore()
+        store.frame(0, 0, 0x10, bytes("0102030405060708"), 0, 8)
+        store.frame(1_000, 0, 0x10, bytes("0102FF0405060709"), 0, 8)
+        store.frame(2_000, 0, 0x20, bytes("AA"), 0, 1)
+        store.frame(3_000, 0, 0x10, bytes("0102FF04050607090A0B"), 0, 10)
+        val chunk = store.chunks[0]
+        assertEquals(listOf(0, 0x84, 0, 0x80), (0 until 4).map { chunk.changed[it].toInt() and 0xFF })
+        assertEquals(0x80, store.messages[0].changed)
+        var latest = store.latest(null)
+        assertEquals(listOf(10, 1), latest.map { it.data.size })
+        assertEquals(listOf(3L, 1L), latest.map { it.count })
+        latest = store.latest(15)
+        assertEquals(1, latest.size)
+        assertEquals(0x84, latest[0].changed)
+        assertEquals(2L, latest[0].count)
+        assertEquals(10, latest[0].time)
+        assertArrayEquals(bytes("0102FF0405060709"), latest[0].data)
+        assertEquals(0, store.latest(-1).size)
+        assertEquals(listOf(0x20), store.latest(null, Filter.compile("len=1", store.messages) { null }).map { it.message.id })
+    }
 }

@@ -10,7 +10,7 @@ fun interface FrameSink {
 
 /**
  * All frames of the open logs or the live stream, in arrival order, in fixed-size chunks of primitive arrays
- * (about 18 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
+ * (about 19 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
  * [chunks] and each chunk's [Chunk.size] once and may read everything below them without locking.
  */
 class FrameStore(private val maxChunks: Int = 40) : FrameSink {
@@ -23,6 +23,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         /** End of each frame's payload in [blob]; it starts where the previous one ends. */
         @JvmField val end = IntArray(CAPACITY)
         @JvmField val blob = ByteArray(CAPACITY * 8)
+        /** Bit b: byte b differs from the message's previous frame; bit 7 stands for byte 7 and all after it. 0 for a message's first frame. */
+        @JvmField val changed = ByteArray(CAPACITY)
         @Volatile @JvmField var size = 0
 
         fun start(index: Int) = if (index == 0) 0 else end[index - 1]
@@ -33,6 +35,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         @Volatile @JvmField var lastTime = firstTime
         /** Payload of the latest frame; replaced, never modified. */
         @Volatile @JvmField var data = ByteArray(0)
+        /** Which bytes of [data] differ from the frame before it, as in [Chunk.changed]. */
+        @Volatile @JvmField var changed = 0
 
         /** Average frames per second over the time this message was seen. */
         val rate: Double get() = if (lastTime > firstTime) (count - 1) * TICKS_PER_SECOND / (lastTime - firstTime) else 0.0
@@ -76,8 +80,15 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         chunk.time[index] = time
         chunk.message[index] = message.index.toShort()
         chunk.end[index] = start + length
+        val previous = message.data
+        var changed = 0
+        if (message.count > 0) {
+            for (b in 0 until length) if (b >= previous.size || data[offset + b] != previous[b]) changed = changed or (1 shl minOf(b, 7))
+        }
+        chunk.changed[index] = changed.toByte()
         chunk.size = index + 1
         message.data = data.copyOfRange(offset, offset + length)
+        message.changed = changed
         message.lastTime = time
         message.count++
         lastTime = time
@@ -258,10 +269,114 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         return Payloads(times, data, length, n)
     }
 
+    /** One row of the fixed view: what a message last sent, and how many frames it had sent by then. */
+    class Latest(@JvmField val message: Message, @JvmField val time: Int, @JvmField val data: ByteArray, @JvmField val changed: Int, @JvmField val count: Long)
+
+    /**
+     * Every message's last frame at or before [time] (null: the newest, which needs no pass over the frames),
+     * left out where [filter] rejects that frame. Ordered like [messages].
+     */
+    fun latest(time: Int?, filter: Filter? = null): List<Latest> {
+        val known = messages
+        val result = ArrayList<Latest>(known.size)
+        fun add(message: Message, at: Int, data: ByteArray, changed: Int, count: Long) {
+            if (filter == null || filter.test(message, at, data, 0, data.size, changed)) result += Latest(message, at, data, changed, count)
+        }
+        if (time == null) {
+            for (message in known) add(message, message.lastTime, message.data, message.changed, message.count)
+            return result
+        }
+        val all = chunks
+        val position = IntArray(known.size) { -1 }
+        val count = IntArray(known.size)
+        scan@ for (c in all.indices) {
+            val chunk = all[c]
+            for (i in 0 until chunk.size) {
+                if (chunk.time[i] > time) break@scan
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m < known.size) { position[m] = c shl CHUNK_BITS or i; count[m]++ }
+            }
+        }
+        for (m in known.indices) {
+            if (position[m] < 0) continue
+            val chunk = all[position[m] ushr CHUNK_BITS]
+            val i = position[m] and CAPACITY - 1
+            add(known[m], chunk.time[i], chunk.blob.copyOfRange(chunk.start(i), chunk.end[i]), chunk.changed[i].toInt() and 0xFF, count[m].toLong())
+        }
+        return result
+    }
+
+    /**
+     * A frozen selection of held frames, oldest first: all of them, or those a filter let through.
+     * [position] packs a row's place as chunk shl [CHUNK_BITS] or index, into [chunks].
+     */
+    class Rows internal constructor(@JvmField val chunks: Array<Chunk>, private val starts: IntArray?, private val picked: IntArray?, @JvmField val size: Int) {
+        fun position(row: Int): Int {
+            if (picked != null) return picked[row]
+            var c = java.util.Arrays.binarySearch(starts!!, row)
+            if (c < 0) c = -c - 2
+            return c shl CHUNK_BITS or (row - starts[c])
+        }
+
+        fun time(row: Int): Int = position(row).let { chunks[it ushr CHUNK_BITS].time[it and CAPACITY - 1] }
+
+        /** The last row at or before [time]; 0 when there is none. */
+        fun rowAt(time: Int): Int {
+            var low = 0
+            var high = size - 1
+            var found = 0
+            while (low <= high) {
+                val middle = (low + high) ushr 1
+                if (time(middle) <= time) { found = middle; low = middle + 1 } else high = middle - 1
+            }
+            return found
+        }
+    }
+
+    /**
+     * Keeps the rows passing [filter] up to date while frames arrive: an [update] reads only the frames added since
+     * the one before, and starts over when the store was cleared or dropped its oldest chunk. One thread at a time.
+     */
+    inner class RowScan(private val filter: Filter?) {
+        private var scanned = emptyArray<Chunk>()
+        private var picked = IntArray(0)
+        private var count = 0
+        private var doneChunk = 0
+        private var doneIndex = 0
+
+        fun update(): Rows {
+            val all = chunks
+            val sizes = IntArray(all.size) { all[it].size }
+            if (filter == null) {
+                val starts = IntArray(all.size)
+                var total = 0
+                for (c in all.indices) { starts[c] = total; total += sizes[c] }
+                return Rows(all, starts, null, total)
+            }
+            // a fresh array, as rows handed out earlier still read the old one
+            if (all.isEmpty() || scanned.isEmpty() || scanned[0] !== all[0]) { picked = IntArray(1024); count = 0; doneChunk = 0; doneIndex = 0 }
+            scanned = all
+            val known = messages
+            for (c in doneChunk until all.size) {
+                val chunk = all[c]
+                for (i in (if (c == doneChunk) doneIndex else 0) until sizes[c]) {
+                    val m = chunk.message[i].toInt() and 0xFFFF
+                    val start = chunk.start(i)
+                    if (m >= known.size || !filter.test(known[m], chunk.time[i], chunk.blob, start, chunk.end[i] - start, chunk.changed[i].toInt() and 0xFF)) continue
+                    if (count == picked.size) picked = picked.copyOf(count * 2)
+                    picked[count++] = c shl CHUNK_BITS or i
+                }
+            }
+            if (all.isNotEmpty()) { doneChunk = all.size - 1; doneIndex = sizes[doneChunk] }
+            return Rows(all, null, picked, count)
+        }
+    }
+
     class Series(@JvmField val times: FloatArray, @JvmField val values: FloatArray, @JvmField val size: Int)
 
     companion object {
-        const val CAPACITY = 1 shl 18
+        const val CHUNK_BITS = 18
+        const val CAPACITY = 1 shl CHUNK_BITS
         const val MAX_PAYLOAD = 64
         const val MICROS_PER_TICK = 100L
         const val TICKS_PER_SECOND = 10_000.0

@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "canpilot"
-include(":app")
+include(":app", ":core")
