@@ -61,6 +61,16 @@ class CoreTest {
         assertEquals(-1, m.multiplexor.muxValue)
     }
 
+    @Test fun messagesCanBeRenamedOrNamedBeforeTheyHaveSignals() {
+        val renamed = dbc.withMessageName(280, "DI_status", 8).withMessageName(0x228, "UNK_228_alive", 2)
+        val back = Dbc.parse(renamed.write(), "back")
+        assertEquals("DI_status", back.messages[280]!!.name)
+        assertEquals(dbc.messages[280]!!.signals.size, back.messages[280]!!.signals.size)
+        assertEquals("UNK_228_alive", back.messages[0x228]!!.name)
+        assertEquals(2, back.messages[0x228]!!.length)
+        assertEquals("UNK_228_alive", back.withSignal(0x228, "NEW_228", 2, Signal("crc", 8, 8, true, false, 1.0, 0.0, "", -1, false)).messages[0x228]!!.name)
+    }
+
     @Test fun dbcSurvivesWritingAndReading() {
         val added = dbc.withSignal(0x123, "NEW_123", 8, Signal("guess", 7, 10, false, false, 0.1, 5.0, "V", -1, false))
         val again = Dbc.parse(added.write(), "again")

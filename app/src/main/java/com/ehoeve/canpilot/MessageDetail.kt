@@ -1,5 +1,7 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.AlertDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -58,6 +60,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit) {
     var transmitting by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<String?>(null) }
     val revision = model.revision
     val store = model.store
     val decoder = model.dbc.decoder(message.bus, message.id)
@@ -112,13 +115,24 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
         else -> signals + drafted
     }
     if (transmitting) TxSheet(model, message, frame) { transmitting = false }
+    renaming?.let { name ->
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename ${hexId(message.id)}") },
+            text = { OutlinedTextField(name, { renaming = it }, singleLine = true, label = { Text("Message name") }, supportingText = { Text("Letters, digits and _. Saved in the DBC for bus ${message.bus}.") }) },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { model.dbc.renameMessage(message, name); renaming = null }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+        )
+    }
     Scaffold(
         topBar = {
             TopAppBar(
                 actions = { TextButton(onClick = { transmitting = true }) { Text("Send") } },
                 title = {
                     Column {
-                        Text(decoder?.name ?: "Message ${hexId(message.id)}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
+                        // tap the name to rename the message
+                        Text(decoder?.name ?: "Message ${hexId(message.id)}", Modifier.clickable { renaming = decoder?.name ?: "UNK_${hexId(message.id)}" },
+                            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
                         Hint("bus ${message.bus} · ${hexId(message.id)} · ${message.count} frames · ${"%.1f".format(message.rate)} Hz")
                     }
                 },

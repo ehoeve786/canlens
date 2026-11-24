@@ -102,6 +102,15 @@ class DbcState(
         replace(index, LoadedDbc(dbc, old.bus))
     }
 
+    /** Names [message] in the DBC that decodes it, or in a new DBC for its bus if none does. A DBC name is letters, digits and _. */
+    fun renameMessage(message: FrameStore.Message, name: String) {
+        val clean = name.trim().replace(Regex("\\W"), "_")
+        if (clean.isEmpty()) return
+        val index = indexFor(files, message)
+        val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canpilot-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus))
+        replace(index, LoadedDbc(old.dbc.withMessageName(message.id, clean, message.data.size), old.bus))
+    }
+
     fun deleteSignal(message: FrameStore.Message, name: String) {
         val index = indexFor(files, message)
         plots.remove(PlotKey(message.bus, message.id, name))

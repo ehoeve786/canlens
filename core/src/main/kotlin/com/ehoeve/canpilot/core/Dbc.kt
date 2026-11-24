@@ -78,6 +78,12 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>) {
         return Dbc(name, messages + (id to DbcMessage(id, old?.name ?: messageName, maxOf(old?.length ?: 0, length), signals)))
     }
 
+    /** A copy with message [id] named [messageName]; a message it doesn't have yet is added, [length] bytes, without signals. */
+    fun withMessageName(id: Int, messageName: String, length: Int): Dbc {
+        val old = messages[id]
+        return Dbc(name, messages + (id to DbcMessage(id, messageName, old?.length ?: length, old?.signals.orEmpty())))
+    }
+
     fun withoutSignal(id: Int, signalName: String): Dbc {
         val old = messages[id] ?: return this
         return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })))
