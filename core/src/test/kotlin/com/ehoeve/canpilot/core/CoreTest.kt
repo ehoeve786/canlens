@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.InetAddress
 
 class CoreTest {
     private class Frame(val time: Long, val bus: Int, val id: Int, val data: ByteArray)
@@ -483,6 +484,30 @@ class CoreTest {
         assertEquals(false, TxGuard.inPark(store) { gears.messages[it.id] })
         store.frame(2000, 0, 0x118, bytes("0000E0"), 0, 3)   // a value without a name: unknown
         assertNull(TxGuard.inPark(store) { gears.messages[it.id] })
+    }
+
+    @Test fun findsTheCommaByItsZeroMqGreeting() {
+        // a publisher on 127.0.0.3, a server that says nothing on .4, one that says something else on .5
+        fun server(last: Int, answer: ByteArray?) = java.net.ServerSocket(0, 8, InetAddress.getByName("127.0.0.$last")).also { server ->
+            Thread {
+                while (!server.isClosed) runCatching { server.accept().use { if (answer == null) Thread.sleep(1000) else it.getOutputStream().write(answer) } }
+            }.apply { isDaemon = true }.start()
+        }
+        val greeting = ByteArray(64).also { it[0] = 0xFF.toByte(); it[9] = 0x7F; it[10] = 3 }
+        val publisher = server(3, greeting)
+        val port = publisher.localPort
+        val silent = java.net.ServerSocket(port, 8, InetAddress.getByName("127.0.0.4"))
+        val other = java.net.ServerSocket(port, 8, InetAddress.getByName("127.0.0.5"))
+        Thread { runCatching { while (true) silent.accept() } }.apply { isDaemon = true }.start()
+        Thread { runCatching { while (true) other.accept().use { it.getOutputStream().write("HTTP/1.1 400\r\n\r\n".toByteArray()) } } }.apply { isDaemon = true }.start()
+        try {
+            val candidates = (1..6).map { InetAddress.getByName("127.0.0.$it") }
+            assertEquals(InetAddress.getByName("127.0.0.3"), CommaFinder.find(candidates, port))
+            assertNull(CommaFinder.find(candidates.filter { it.address[3].toInt() != 3 }, port))
+            assertNull(CommaFinder.find(emptyList(), port))
+        } finally {
+            publisher.close(); silent.close(); other.close()
+        }
     }
 
     @Test fun rowsFollowTheStoreAndFindTimes() {

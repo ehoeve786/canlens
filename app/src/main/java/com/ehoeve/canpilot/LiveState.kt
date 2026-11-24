@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.ehoeve.canpilot.core.CommaFinder
 import com.ehoeve.canpilot.core.CommaStream
 import com.ehoeve.canpilot.core.FrameSink
 import com.ehoeve.canpilot.core.FrameStore
@@ -17,6 +18,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.Closeable
+import java.io.IOException
+import java.net.InetAddress
 
 enum class LiveSource { NONE, COMMA, DASHKIT }
 
@@ -49,16 +52,29 @@ class LiveState(
     /** Changes with every stream start and stop, so a stream that is still shutting down can't write into the next one's data. */
     @Volatile private var generation = 0
 
-    /** [address] is the comma device's IP, optionally with `:port` when its `can` service isn't on the default port. */
+    /**
+     * [address] is where the comma was last, optionally with `:port` when its `can` service isn't on the default port;
+     * it may be empty. Each time the stream (re)connects, a comma that no longer answers there is looked for on the
+     * phone's Wi-Fi and hotspot, and the address it is found at is kept for the next time.
+     */
     fun startComma(address: String) {
-        val host = address.trim().substringBefore(':')
-        val port = address.substringAfter(':', "").trim().toIntOrNull() ?: CommaStream.cerealPort("can")
-        if (host.isEmpty()) { report("Enter the comma device's IP address"); return }
-        commaAddress = address.trim()
-        preferences.edit().putString("comma", commaAddress).apply()
-        start(LiveSource.COMMA, "comma $host") { sink ->
+        val typed = address.trim()
+        val port = typed.substringAfter(':', "").trim().toIntOrNull() ?: CommaStream.cerealPort("can")
+        start(LiveSource.COMMA, "comma") { sink ->
+            val host = findComma(typed.substringBefore(':'), port)
             CommaStream(host, port).also { connection = it }.use { it.run(sink) }
         }
+    }
+
+    private fun findComma(last: String, port: Int): String {
+        val known = last.takeIf { it.isNotEmpty() }?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+        if (known != null && CommaFinder.publishes(known, port)) return last
+        scope.launch { report("Looking for the comma on this phone's Wi-Fi and hotspot") }
+        val found = CommaFinder.find(CommaFinder.neighbours(), port)?.hostAddress ?: throw IOException("no comma found on this phone's Wi-Fi or hotspot (is its bridge running?)")
+        val saved = if (port == CommaStream.cerealPort("can")) found else "$found:$port"
+        preferences.edit().putString("comma", saved).apply()
+        scope.launch { commaAddress = saved; report("Found the comma at $found") }
+        return found
     }
 
     fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink ->

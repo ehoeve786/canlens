@@ -3,9 +3,64 @@ package com.ehoeve.canpilot.core
 import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
+import java.net.Inet4Address
+import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+
+/** Finds a comma device by the ZeroMQ publisher it runs (cereal's bridge), on the networks this device is in. */
+object CommaFinder {
+    /** Wi-Fi, a hotspot's own interface, Ethernet: not the mobile network, whose neighbours are strangers. */
+    private val LOCAL = Regex("^(wlan|swlan|ap|softap|wifi|eth)", RegexOption.IGNORE_CASE)
+    private val SIGNATURE = ByteArray(10).also { it[0] = 0xFF.toByte(); it[9] = 0x7F }
+
+    /** True if [host] answers on [port] with the signature that opens every ZeroMQ greeting. */
+    fun publishes(host: InetAddress, port: Int, timeoutMs: Int = 400): Boolean = try {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(host, port), timeoutMs)
+            socket.soTimeout = timeoutMs
+            socket.getOutputStream().write(SIGNATURE)
+            val answer = ByteArray(10)
+            DataInputStream(socket.getInputStream()).readFully(answer)
+            answer[0] == 0xFF.toByte() && answer[9] == 0x7F.toByte()
+        }
+    } catch (e: IOException) {
+        false
+    }
+
+    /** Every other address of the /24 this device has on each local network (a phone's hotspot clients among them). */
+    fun neighbours(): List<InetAddress> {
+        val found = ArrayList<InetAddress>()
+        for (network in NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()) {
+            if (!network.isUp || network.isLoopback || !LOCAL.containsMatchIn(network.name)) continue
+            for (address in network.interfaceAddresses) {
+                val own = (address.address as? Inet4Address)?.takeIf { it.isSiteLocalAddress }?.address ?: continue
+                for (last in 1..254) if (last != (own[3].toInt() and 0xFF)) found += InetAddress.getByAddress(byteArrayOf(own[0], own[1], own[2], last.toByte()))
+            }
+        }
+        return found
+    }
+
+    /** The first of [candidates] that [publishes]; all are tried at once, so a /24 takes about a second. Null if none. */
+    fun find(candidates: List<InetAddress>, port: Int): InetAddress? {
+        if (candidates.isEmpty()) return null
+        val pool = Executors.newFixedThreadPool(minOf(THREADS, candidates.size))
+        return try {
+            pool.invokeAny(candidates.map { host -> Callable { if (publishes(host, port)) host else throw IOException("no publisher") } })
+        } catch (e: ExecutionException) {
+            null
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    private const val THREADS = 64
+}
 
 /**
  * Subscribes to one openpilot service that the device publishes over ZeroMQ (cereal's `bridge`, or a process

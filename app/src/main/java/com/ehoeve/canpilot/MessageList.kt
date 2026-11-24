@@ -270,8 +270,8 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             Text("Live stream", style = MaterialTheme.typography.titleLarge)
             SectionTitle("comma over Wi-Fi")
             OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-            Hint("The comma must publish over ZeroMQ: run cereal's bridge on it. All of its buses are streamed.")
+                placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+            Hint("Can stay empty: the app finds the comma on this phone's Wi-Fi or hotspot, also after its address changed. The comma must run cereal's bridge. All of its buses are streamed.")
             Button(onClick = { model.live.startComma(address); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Connect to comma") }
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             SectionTitle("DashKit over USB")
