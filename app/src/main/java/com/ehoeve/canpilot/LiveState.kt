@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.ehoeve.canpilot.core.CandumpStream
 import com.ehoeve.canpilot.core.CommaFinder
 import com.ehoeve.canpilot.core.CommaStream
 import com.ehoeve.canpilot.core.FrameSink
@@ -20,6 +21,7 @@ import kotlinx.coroutines.withContext
 import java.io.Closeable
 import java.io.IOException
 import java.net.InetAddress
+import kotlin.concurrent.thread
 
 enum class LiveSource { NONE, COMMA, DASHKIT }
 
@@ -62,7 +64,10 @@ class LiveState(
         val port = typed.substringAfter(':', "").trim().toIntOrNull() ?: CommaStream.cerealPort("can")
         start(LiveSource.COMMA, "comma") { sink ->
             val host = findComma(typed.substringBefore(':'), port)
-            CommaStream(host, port).also { connection = it }.use { it.run(sink) }
+            // the DashKit's chassis bus, from dashkitd on the comma, as bus 3; a comma without it just has no bus 3
+            val chassis = CandumpStream(host)
+            thread(isDaemon = true) { runCatching { chassis.run(sink) } }
+            try { CommaStream(host, port).also { connection = it }.use { it.run(sink) } } finally { chassis.close() }
         }
     }
 

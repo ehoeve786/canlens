@@ -13,6 +13,29 @@ import java.util.concurrent.Callable
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 
+/**
+ * Reads candump lines from a TCP port, as dashkitd on the comma serves the DashKit's chassis bus ([PORT]): the bus the
+ * comma's harness doesn't reach, stamped with the comma's monotonic clock like its own `can` events, so the two line up.
+ */
+class CandumpStream(private val host: String, private val port: Int = PORT) : Closeable {
+    private val socket = Socket()
+
+    /** Blocks until [close], the sink says stop, or the connection ends (IOException). */
+    fun run(sink: FrameSink) {
+        socket.connect(InetSocketAddress(host, port), 5000)
+        val buffer = ByteArray(FrameStore.MAX_PAYLOAD)
+        socket.getInputStream().bufferedReader(Charsets.US_ASCII).forEachLine { line ->
+            if (!LogReader.candump(line, buffer, sink)) throw IOException("stopped")
+        }
+    }
+
+    override fun close() = socket.close()
+
+    companion object {
+        const val PORT = 62401
+    }
+}
+
 /** Finds a comma device by the ZeroMQ publisher it runs (cereal's bridge), on the networks this device is in. */
 object CommaFinder {
     /** Wi-Fi, a hotspot's own interface, Ethernet: not the mobile network, whose neighbours are strangers. */

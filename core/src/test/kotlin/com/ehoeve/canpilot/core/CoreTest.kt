@@ -526,6 +526,17 @@ class CoreTest {
         assertTrue(found.none { it.signal.name.startsWith("LIKE_") })
     }
 
+    @Test fun readsCandumpLinesFromTcp() {
+        val server = java.net.ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+        Thread { server.accept().use { it.getOutputStream().write("(12.000100) can3 239#0102\n(12.010200) can3 5D9#AABBCCDD\nbad line\n".toByteArray()) } }.apply { isDaemon = true }.start()
+        val frames = ArrayList<Frame>()
+        CandumpStream("127.0.0.1", server.localPort).use { stream -> stream.run { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true } }
+        server.close()
+        assertEquals(listOf(12_000_100L to 0x239, 12_010_200L to 0x5D9), frames.map { it.time to it.id })
+        assertTrue(frames.all { it.bus == 3 })
+        assertArrayEquals(bytes("AABBCCDD"), frames[1].data)
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)
