@@ -15,7 +15,6 @@ class Signal(
     val isMultiplexor: Boolean,
 ) {
     var valueNames: Map<Long, String> = emptyMap()
-        internal set
 
     private val lastByte = if (littleEndian) (start + size - 1) / 8 else start / 8 + (size - (start % 8 + 1) + 7).coerceAtLeast(0) / 8
 
