@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -63,6 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -79,13 +82,15 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ehoeve.canpilot.core.Analysis
+import com.ehoeve.canpilot.core.BitSummary
 import com.ehoeve.canpilot.core.DbcMessage
 import com.ehoeve.canpilot.core.FrameStore
 import com.ehoeve.canpilot.core.Signal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-private val MONO = FontFamily.Monospace
+val MONO = FontFamily.Monospace
 
 fun seconds(time: Int) = time / FrameStore.TICKS_PER_SECOND.toFloat()
 fun ticks(seconds: Float) = (seconds * FrameStore.TICKS_PER_SECOND).toInt()
@@ -104,11 +109,18 @@ fun App(model: AppModel = viewModel()) {
     var selected by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     model.revision   // re-resolve the selection when the data changes
     val message = selected?.let { key -> model.store.messages.firstOrNull { it.bus == key.first && it.id == key.second } }
+    var finding by remember { mutableStateOf(false) }
     CanPilotTheme {
-        if (message == null) MessageList(model) { selected = it.bus to it.id }
-        else {
-            BackHandler { selected = null }
-            MessageDetail(model, message) { selected = null }
+        when {
+            message != null -> {
+                BackHandler { selected = null }
+                MessageDetail(model, message) { selected = null }
+            }
+            finding -> {
+                BackHandler { finding = false }
+                FindScreen(model, onBack = { finding = false }) { match -> model.pendingSignal = match.signal; selected = match.message.bus to match.message.id }
+            }
+            else -> MessageList(model, onFind = { finding = true }) { selected = it.bus to it.id }
         }
     }
 }
@@ -116,7 +128,7 @@ fun App(model: AppModel = viewModel()) {
 // ---- small pieces
 
 @Composable
-private fun BusBadge(bus: Int) {
+fun BusBadge(bus: Int) {
     val color = BUS_COLORS[bus.coerceAtLeast(0) % BUS_COLORS.size]
     Box(Modifier.size(30.dp).clip(MaterialTheme.shapes.extraSmall).background(color.copy(alpha = 0.16f)), contentAlignment = Alignment.Center) {
         Text(bus.toString(), color = color, fontFamily = MONO, fontWeight = FontWeight.Bold)
@@ -124,29 +136,31 @@ private fun BusBadge(bus: Int) {
 }
 
 @Composable
-private fun Pill(text: String, color: Color = MaterialTheme.colorScheme.surfaceContainerHighest, content: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
+fun Pill(text: String, color: Color = MaterialTheme.colorScheme.surfaceContainerHighest, content: Color = MaterialTheme.colorScheme.onSurfaceVariant) {
     Surface(shape = CircleShape, color = color, contentColor = content) {
         Text(text, Modifier.padding(horizontal = 8.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, maxLines = 1)
     }
 }
 
 @Composable
-private fun SectionTitle(text: String, modifier: Modifier = Modifier) =
+fun SectionTitle(text: String, modifier: Modifier = Modifier) =
     Text(text, modifier, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
 
 @Composable
-private fun Hint(text: String, modifier: Modifier = Modifier) =
+fun Hint(text: String, modifier: Modifier = Modifier) =
     Text(text, modifier, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
 // ---- message list
 
 @Composable
-private fun MessageList(model: AppModel, onOpen: (FrameStore.Message) -> Unit) {
+private fun MessageList(model: AppModel, onFind: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     var filter by remember { mutableStateOf("") }
     var changedOnly by remember { mutableStateOf(false) }
     var showDbcs by remember { mutableStateOf(false) }
     var showLive by remember { mutableStateOf(false) }
+    var differentOnly by remember { mutableStateOf(false) }
     val openLogs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { model.openLogs(it) }
+    val openOther = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { model.openCompare(it); differentOnly = it.isNotEmpty() }
     val revision = model.revision
     val a = model.markA
     val b = model.markB
@@ -155,13 +169,28 @@ private fun MessageList(model: AppModel, onOpen: (FrameStore.Message) -> Unit) {
         value = if (changedOnly && a != null && b != null) withContext(Dispatchers.Default) { model.store.bitActivity(minOf(a, b), maxOf(a, b)) } else null
     }
     val dbcs = model.dbcs.toList()
-    val rows = remember(revision, filter, dbcs, activity) {
+    val other = model.other
+    val mine = model.mine
+    // per message, the bits that are not the same in the other log
+    val different = remember(other, mine, model.store.messages.size) {
+        if (other == null || mine == null) null
+        else IntArray(model.store.messages.size) { index -> model.store.messages[index].let { m -> mine.differences(other, m.bus, m.id, m.data.size * 8)?.count { it != 0 } ?: 0 } }
+    }
+    val rows = remember(revision, filter, dbcs, activity, different, differentOnly) {
         val needle = filter.trim().lowercase()
         val found = activity
+        val differing = if (differentOnly) different else null
         model.store.messages.map { it to model.decoder(it.bus, it.id) }
             .filter { (m, d) -> needle.isEmpty() || needle in hexId(m.id).lowercase() || (d != null && (needle in d.name.lowercase() || d.signals.any { s -> needle in s.name.lowercase() })) }
             .filter { (m, _) -> found == null || (found.getOrNull(m.index)?.onlyInside ?: 0) > 0 }
-            .let { list -> if (found == null) list.sortedWith(compareBy({ it.first.bus }, { it.first.id })) else list.sortedByDescending { found[it.first.index]!!.onlyInside } }
+            .filter { (m, _) -> differing == null || (differing.getOrNull(m.index) ?: 0) > 0 }
+            .let { list ->
+                when {
+                    found != null -> list.sortedByDescending { found[it.first.index]!!.onlyInside }
+                    differing != null -> list.sortedByDescending { differing.getOrNull(it.first.index) ?: 0 }
+                    else -> list.sortedWith(compareBy({ it.first.bus }, { it.first.id }))
+                }
+            }
     }
     val live = model.live != LiveSource.NONE
     val empty = model.store.frameCount == 0L && !live && !model.busy
@@ -190,8 +219,12 @@ private fun MessageList(model: AppModel, onOpen: (FrameStore.Message) -> Unit) {
                         leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 } else AssistChip(onClick = { showLive = true }, label = { Text("Live") }, leadingIcon = { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = { showDbcs = true }, label = { Text("DBC · ${dbcs.size}") })
+                AssistChip(onClick = onFind, label = { Text("Find signal") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
                 FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed only in A–B") },
                     leadingIcon = if (changedOnly) ({ Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }) else null)
+                if (other == null) AssistChip(onClick = { openOther.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Compare with a log") })
+                else FilterChip(selected = differentOnly, onClick = { differentOnly = !differentOnly }, label = { Text("Differs from ${model.otherName}", maxLines = 1) },
+                    trailingIcon = { Icon(Icons.Default.Close, "Stop comparing", Modifier.size(18.dp).clickable { model.clearCompare(); differentOnly = false }) })
             }
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
@@ -226,7 +259,9 @@ private fun MessageList(model: AppModel, onOpen: (FrameStore.Message) -> Unit) {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                             val onlyInside = activity?.getOrNull(m.index)?.onlyInside
+                            val differ = if (differentOnly) different?.getOrNull(m.index) else null
                             if (onlyInside != null) Pill("$onlyInside bits", MaterialTheme.colorScheme.tertiaryContainer, MaterialTheme.colorScheme.onTertiaryContainer)
+                            else if (differ != null) Pill("$differ differ", DIFFERENT, Color.White)
                             else Pill("%.0f Hz".format(m.rate))
                             Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = MaterialTheme.colorScheme.outline)
                         }
@@ -311,12 +346,16 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
 // ---- time cursor and A/B marks
 
 @Composable
-private fun TimeBar(model: AppModel) {
+fun TimeBar(model: AppModel) {
     model.revision
     val first = seconds(model.store.firstTime)
     val last = seconds(model.store.lastTime)
     if (model.store.frameCount == 0L || last <= first) return
     val cursor = seconds(model.cursorNow).coerceIn(first, last)
+    var pending by remember { mutableStateOf<PendingMarker?>(null) }
+    var showMarkers by remember { mutableStateOf(false) }
+    pending?.let { marker -> MarkerDialog(model, marker) { pending = null } }
+    if (showMarkers) MarkerSheet(model) { showMarkers = false }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp).padding(top = 8.dp)) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -325,6 +364,8 @@ private fun TimeBar(model: AppModel) {
                 FilterChip(selected = model.markB != null, onClick = { model.markB = model.cursorNow }, label = { Text(model.markB?.let { "B  %.2f".format(seconds(it)) } ?: "Mark B") })
                 if (model.markA != null || model.markB != null) IconButton(onClick = { model.markA = null; model.markB = null }) { Icon(Icons.Default.Close, "Clear marks") }
                 if (model.live != LiveSource.NONE && !model.followLive) AssistChip(onClick = { model.followLive = true }, label = { Text("Now") })
+                AssistChip(onClick = { pending = model.beginMarker() }, label = { Text("Marker") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+                if (model.markers.isNotEmpty()) AssistChip(onClick = { showMarkers = true }, label = { Text("Markers · ${model.markers.size}") })
             }
             Slider(cursor, { model.cursor = ticks(it); model.followLive = false }, valueRange = first..last)
         }
@@ -340,6 +381,8 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
     val decoder = model.decoder(message.bus, message.id)
     val signals = decoder?.signals.orEmpty()
     var editing by remember { mutableStateOf<SignalDraft?>(null) }
+    // a signal picked in the search opens in the editor, to be checked against its plot and saved
+    LaunchedEffect(model.pendingSignal) { model.pendingSignal?.let { editing = SignalDraft(null, it); model.pendingSignal = null } }
     val cursor = model.cursorNow
     val following = model.followLive && model.live != LiveSource.NONE
     val frame = remember(revision, cursor, following) { if (following) message.data else store.frameAt(message, cursor) }
@@ -353,6 +396,14 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
     }
     val view = model.chartView
     if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
+    val other = model.other
+    val mine = model.mine
+    val different = remember(other, mine, message, message.data.size) { if (other == null || mine == null) null else mine.differences(other, message.bus, message.id, message.data.size * 8) }
+    val payloads by produceState<FrameStore.Payloads?>(null, revision, message) { value = withContext(Dispatchers.Default) { store.payloads(message) } }
+    val guesses by produceState(emptyList<Signal>(), revision, message, signals) {
+        value = withContext(Dispatchers.Default) { Analysis.guessFields(store, message).filter { guess -> signals.none { known -> known.bits.any { it in guess.bits } } } }
+    }
+    val markerTimes = model.markers.map { seconds(it.time) }
     val plots = model.plots.toList()
     val dbcs = model.dbcs.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE
@@ -385,11 +436,19 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
                 Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
                         SectionTitle("Bits", Modifier.padding(horizontal = 14.dp))
-                        Hint(if (a != null && b != null) "Green: changed only between A and B. Tap a bit to define a signal." else "Brighter: changes more often. Tap a bit to define a signal.",
-                            Modifier.padding(horizontal = 14.dp))
-                        BitGrid(frame, activity, a != null && b != null, signals) { bit ->
+                        Hint(
+                            (if (a != null && b != null) "Green: changed only between A and B. " else "Blue: changes, brighter is more often. ") +
+                                (if (different != null) "Orange: constant here and in ${model.otherName}, but not the same. Brown: changes in only one of them. " else "") +
+                                "Tap a bit to define a signal.",
+                            Modifier.padding(horizontal = 14.dp),
+                        )
+                        BitGrid(frame, activity, a != null && b != null, different, signals) { bit ->
                             val owner = signals.firstOrNull { bit in it.bits }
-                            editing = if (owner != null) SignalDraft(owner) else SignalDraft(bit, signals.size)
+                            editing = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
+                        }
+                        Hint("History: time runs left to right, one row per bit.", Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp))
+                        Box(Modifier.padding(horizontal = 14.dp)) {
+                            HistoryStrip(payloads, signals, view, seconds(cursor), onCursor = { model.cursor = ticks(it); model.followLive = false }, onMoved = { model.followLive = false })
                         }
                     }
                 }
@@ -406,12 +465,12 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
                 // this message's signals keep the colour of their outline in the bit grid
                 val color = SIGNAL_COLORS[(if (own) signals.indexOfFirst { it.name == key.signal }.coerceAtLeast(0) else position) % SIGNAL_COLORS.size]
                 Chart(series[key], if (own) key.signal else "${key.bus} · ${hexId(key.id)} · ${key.signal}", color, view, seconds(cursor), a?.let { seconds(it) }, b?.let { seconds(it) },
-                    onCursor = { model.cursor = ticks(it); model.followLive = false }, onMoved = { model.followLive = false })
+                    onCursor = { model.cursor = ticks(it); model.followLive = false }, onMoved = { model.followLive = false }, markers = markerTimes)
             }
             item {
                 Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("Signals", Modifier.weight(1f))
-                    TextButton(onClick = { editing = SignalDraft(0, signals.size) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
+                    TextButton(onClick = { editing = SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", 0, 1, true, false, 1.0, 0.0, "", -1, false)) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
                 }
                 if (signals.isNotEmpty()) Hint("Tick a signal to plot it. Plots stay up when you open another message.", Modifier.padding(horizontal = 4.dp))
                 if (signals.isEmpty()) Hint("No DBC entry for this message. Tap a bit to define a signal.", Modifier.padding(horizontal = 4.dp))
@@ -427,20 +486,34 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
                         Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         Text(if (active) format(signal, signal.raw(frame!!)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-                        IconButton(onClick = { editing = SignalDraft(signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { editing = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                }
+            }
+            if (guesses.isNotEmpty()) item {
+                SectionTitle("Suggested fields", Modifier.padding(start = 4.dp, top = 10.dp))
+                Hint("Guessed from how the bits flip. Tap one to check it in the editor.", Modifier.padding(horizontal = 4.dp))
+            }
+            items(guesses.size, key = { "guess:${guesses[it].start}" }) { index ->
+                val guess = guesses[index]
+                Surface(onClick = { editing = SignalDraft(null, guess) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(guess.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                        Hint("bits ${guess.start}–${guess.start + guess.size - 1}", Modifier.padding(end = 10.dp))
+                        Icon(Icons.Default.Add, "Define ${guess.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
     }
     editing?.let { draft ->
-        SignalEditor(model, message, draft, frame, onClose = { editing = null })
+        SignalEditor(model, message, decoder?.multiplexor, draft, frame, onClose = { editing = null })
     }
 }
 
 /** One row per payload byte, most significant bit on the left. Shade = how often the bit flips; outline = its DBC signal. */
 @Composable
-private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, signals: List<Signal>, onBit: (Int) -> Unit) {
+private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, different: IntArray?, signals: List<Signal>, onBit: (Int) -> Unit) {
     if (frame == null || frame.isEmpty()) { Hint("No frame at the cursor yet", Modifier.padding(14.dp)); return }
     val busiest = activity?.inside?.maxOrNull()?.coerceAtLeast(1) ?: 1
     val cell = MaterialTheme.shapes.extraSmall
@@ -455,6 +528,8 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
                     val heat = if (inside == 0) 0f else (0.25f + 0.75f * (Math.log1p(inside.toDouble()) / Math.log1p(busiest.toDouble())).toFloat())
                     val fill = when {
                         window && inside > 0 && outside == 0 -> Color(0xFF2E7D32)
+                        different?.getOrNull(index) == BitSummary.DIFFERENT -> DIFFERENT
+                        different?.getOrNull(index) == BitSummary.VARIES_IN_ONE -> VARIES_IN_ONE
                         inside > 0 -> Color(0xFF1976D2).copy(alpha = heat)
                         else -> MaterialTheme.colorScheme.surfaceContainerHighest
                     }
@@ -472,39 +547,60 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
     }
 }
 
-/** The fields of the signal editor, as text while they are being typed. */
-private class SignalDraft(val original: String?, name: String, start: Int, size: Int, littleEndian: Boolean, signed: Boolean, factor: String, offset: String, unit: String, val source: Signal?) {
-    constructor(s: Signal) : this(s.name, s.name, s.start, s.size, s.littleEndian, s.signed, s.factor.toString(), s.offset.toString(), s.unit, s)
-    constructor(bit: Int, count: Int) : this(null, "SIGNAL_${count + 1}", bit, 1, true, false, "1", "0", "", null)
+/** The fields of the signal editor, as text while they are being typed. [original] is the name of the signal being edited, null for a new one. */
+private class SignalDraft(val original: String?, from: Signal) {
+    var name by mutableStateOf(from.name)
+    var start by mutableStateOf(from.start)
+    var size by mutableStateOf(from.size)
+    var littleEndian by mutableStateOf(from.littleEndian)
+    var signed by mutableStateOf(from.signed)
+    var factor by mutableStateOf(tidy(from.factor))
+    var offset by mutableStateOf(tidy(from.offset))
+    var unit by mutableStateOf(from.unit)
+    var valueNames by mutableStateOf(from.valueNames.entries.joinToString(", ") { "${it.key}=${it.value}" })
+    var isMultiplexor by mutableStateOf(from.isMultiplexor)
+    var muxValue by mutableStateOf(if (from.muxValue >= 0) from.muxValue.toString() else "")
 
-    var name by mutableStateOf(name)
-    var start by mutableStateOf(start)
-    var size by mutableStateOf(size)
-    var littleEndian by mutableStateOf(littleEndian)
-    var signed by mutableStateOf(signed)
-    var factor by mutableStateOf(factor)
-    var offset by mutableStateOf(offset)
-    var unit by mutableStateOf(unit)
-
-    /** The signal as entered, or null while a field is not valid. Multiplexing and value names of an edited signal are kept. */
+    /** The signal as entered, or null while a field is not valid. */
     fun signal(): Signal? {
         if (!Regex("[A-Za-z_]\\w*").matches(name) || start !in 0 until FrameStore.MAX_PAYLOAD * 8 || size !in 1..64) return null
+        val mux = if (isMultiplexor || muxValue.isBlank()) -1 else muxValue.trim().toIntOrNull()?.takeIf { it >= 0 } ?: return null
+        // "0=PARK, 1=DRIVE"
+        val names = LinkedHashMap<Long, String>()
+        for (entry in valueNames.split(',', '\n')) {
+            if (entry.isBlank()) continue
+            val value = entry.substringBefore('=').trim().toLongOrNull() ?: return null
+            val label = entry.substringAfter('=', "").trim().replace("\"", "")
+            if (label.isEmpty()) return null
+            names[value] = label
+        }
         val result = Signal(name, start, size, littleEndian, signed, factor.toDoubleOrNull() ?: return null, offset.toDoubleOrNull() ?: return null,
-            unit.replace("\"", ""), source?.muxValue ?: -1, source?.isMultiplexor ?: false)
+            unit.replace("\"", ""), mux, isMultiplexor)
         if (result.bits.any { it !in 0 until FrameStore.MAX_PAYLOAD * 8 }) return null
-        result.valueNames = source?.valueNames ?: emptyMap()
+        result.valueNames = names
         return result
+    }
+
+    companion object {
+        /** Six significant digits: a factor found by a search is a division result with noise in its last places. */
+        fun tidy(value: Double): String =
+            if (value.isNaN() || value.isInfinite()) "0" else java.math.BigDecimal(value).round(java.math.MathContext(6)).stripTrailingZeros().toPlainString()
     }
 }
 
 @Composable
-private fun SignalEditor(model: AppModel, message: FrameStore.Message, draft: SignalDraft, frame: ByteArray?, onClose: () -> Unit) {
+private fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Signal?, draft: SignalDraft, frame: ByteArray?, onClose: () -> Unit) {
     val signal = draft.signal()
     val revision = model.revision
     // the whole log decoded with the fields as they are now: change size or byte order and watch the shape
-    val preview by produceState<FrameStore.Series?>(null, signal?.start, signal?.size, signal?.littleEndian, signal?.signed, revision) {
-        value = signal?.let { s -> withContext(Dispatchers.Default) { model.store.series(message, DbcMessage(message.id, "", 0, listOf(s)), s) } }
+    val preview by produceState<FrameStore.Series?>(null, signal?.start, signal?.size, signal?.littleEndian, signal?.signed, signal?.muxValue, revision) {
+        value = signal?.let { s ->
+            // a multiplexed signal is only read from the frames that carry it
+            val selector = multiplexor?.takeIf { s.muxValue >= 0 && it.name != s.name }
+            withContext(Dispatchers.Default) { model.store.series(message, DbcMessage(message.id, "", 0, listOfNotNull(s, selector)), s) }
+        }
     }
+    val histogram = remember(preview) { preview?.let { Analysis.histogram(it) } ?: emptyList() }
     val view = remember { ChartView(seconds(model.store.firstTime), seconds(model.store.lastTime)) }
     AlertDialog(
         onDismissRequest = onClose,
@@ -542,9 +638,40 @@ private fun SignalEditor(model: AppModel, message: FrameStore.Message, draft: Si
                     )
                 }
                 Chart(preview, draft.name, SIGNAL_COLORS[0], view, seconds(model.cursorNow), null, null, onCursor = {}, onMoved = {})
+                Histogram(histogram, signal)
+                OutlinedTextField(draft.valueNames, { draft.valueNames = it }, Modifier.fillMaxWidth(), label = { Text("Value names") }, placeholder = { Text("0=PARK, 1=DRIVE") })
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(draft.isMultiplexor, { draft.isMultiplexor = it }); Hint("Is the multiplexor: selects which signals a frame carries", Modifier.padding(start = 10.dp))
+                }
+                if (!draft.isMultiplexor) OutlinedTextField(draft.muxValue, { draft.muxValue = it }, Modifier.fillMaxWidth(), singleLine = true,
+                    label = { Text("Only when the multiplexor is") }, placeholder = { Text("always present") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
             }
         },
     )
+}
+
+/** How often each value occurs: a row per value when there are few, bars over the value range when there are many. */
+@Composable
+private fun Histogram(histogram: List<Pair<String, Int>>, signal: Signal?) {
+    if (histogram.isEmpty()) return
+    val most = histogram.maxOf { it.second }.coerceAtLeast(1)
+    val bar = MaterialTheme.colorScheme.primary
+    if (histogram.size <= 16) {
+        Hint("${histogram.size} different values")
+        for ((label, count) in histogram) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val named = signal?.let { s -> label.toDoubleOrNull()?.let { v -> s.valueNames[Math.round((v - s.offset) / s.factor)] } }
+                Text(if (named != null) "$label $named" else label, Modifier.width(96.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Box(Modifier.weight(1f)) { Box(Modifier.fillMaxWidth(count.toFloat() / most).height(10.dp).clip(CircleShape).background(bar)) }
+                Text(count.toString(), Modifier.width(56.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.End)
+            }
+        }
+    } else {
+        Hint("Spread of values, ${histogram.first().first} to ${histogram.last().first} and up")
+        Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+            for ((_, count) in histogram) Box(Modifier.weight(1f).fillMaxHeight(maxOf(count.toFloat() / most, 0.02f)).background(bar))
+        }
+    }
 }
 
 @Composable

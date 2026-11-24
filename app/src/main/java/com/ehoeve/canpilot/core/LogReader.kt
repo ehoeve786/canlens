@@ -9,15 +9,18 @@ import java.io.InputStream
 /** Reads CAN logs: openpilot rlog (uncompressed here), candump, Vector ASC and CSV (SavvyCAN or Cabana export). */
 object LogReader {
 
-    /** Reads one log into [sink] until its end or until the sink returns false. Returns the format's name. */
-    fun read(input: InputStream, sink: FrameSink): String {
+    /**
+     * Reads one log into [sink] until its end or until the sink returns false. Returns the format's name.
+     * [onMarker] gets the notes of a recording (time in microseconds, text).
+     */
+    fun read(input: InputStream, sink: FrameSink, onMarker: ((Long, String) -> Unit)? = null): String {
         val stream = BufferedInputStream(input, 1 shl 16)
         stream.mark(512)
         val head = ByteArray(512)
         val n = stream.read(head).coerceAtLeast(0)
         stream.reset()
         val text = (0 until n).all { val c = head[it].toInt(); c in 32..126 || c == 10 || c == 13 || c == 9 }
-        return if (text) readText(stream, sink) else readRlog(stream, sink)
+        return if (text) readText(stream, sink, onMarker) else readRlog(stream, sink)
     }
 
     private fun readRlog(stream: InputStream, sink: FrameSink): String {
@@ -53,7 +56,7 @@ object LogReader {
         return "rlog"
     }
 
-    private fun readText(stream: InputStream, sink: FrameSink): String {
+    private fun readText(stream: InputStream, sink: FrameSink, onMarker: ((Long, String) -> Unit)?): String {
         val reader = stream.bufferedReader(Charsets.ISO_8859_1)
         val buffer = ByteArray(FrameStore.MAX_PAYLOAD)
         var format: String? = null
@@ -62,6 +65,14 @@ object LogReader {
         while (true) {
             val line = reader.readLine() ?: break
             if (line.isBlank()) continue
+            if (line[0] == '#') {
+                val close = line.indexOf(')')
+                if (onMarker != null && close > 0 && line.startsWith(MARKER_PREFIX)) {
+                    val time = micros(line, MARKER_PREFIX.length, close)
+                    if (time >= 0) onMarker(time, line.substring(close + 1).trim())
+                }
+                continue
+            }
             if (format == null) {
                 format = when {
                     line[0] == '(' -> "candump"

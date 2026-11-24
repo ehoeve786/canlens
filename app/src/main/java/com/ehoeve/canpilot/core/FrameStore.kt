@@ -186,6 +186,78 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         return result
     }
 
+    /** Passes every held frame to [sink] in order, until it returns false. */
+    fun replay(sink: FrameSink) {
+        val known = messages
+        for (chunk in chunks) {
+            for (i in 0 until chunk.size) {
+                val m = known.getOrNull(chunk.message[i].toInt() and 0xFFFF) ?: continue
+                val start = chunk.start(i)
+                if (!sink.frame(originMicros + chunk.time[i] * MICROS_PER_TICK, m.bus, m.id, chunk.blob, start, chunk.end[i] - start)) return
+            }
+        }
+    }
+
+    /** The payload every message had at each of a set of times: row k of message m is data[m][k * length[m] until (k + 1) * length[m]]. */
+    class Snapshots(@JvmField val times: IntArray, @JvmField val messages: Array<Message>) {
+        @JvmField val length = IntArray(messages.size) { messages[it].data.size }
+        @JvmField val data = Array(messages.size) { ByteArray(times.size * length[it]) }
+        /** False where the message had not been seen yet, or its frame had another length. */
+        @JvmField val valid = Array(messages.size) { BooleanArray(times.size) }
+    }
+
+    /** One pass over the store; [times] must be ascending. */
+    fun snapshots(times: IntArray): Snapshots {
+        val result = Snapshots(times, messages)
+        val count = result.messages.size
+        val lastChunk = arrayOfNulls<Chunk>(count)
+        val lastIndex = IntArray(count)
+        var k = 0
+        fun take() {
+            for (m in 0 until count) {
+                val chunk = lastChunk[m] ?: continue
+                val start = chunk.start(lastIndex[m])
+                val length = result.length[m]
+                if (chunk.end[lastIndex[m]] - start != length) continue
+                System.arraycopy(chunk.blob, start, result.data[m], k * length, length)
+                result.valid[m][k] = true
+            }
+            k++
+        }
+        scan@ for (chunk in chunks) {
+            for (i in 0 until chunk.size) {
+                val t = chunk.time[i]
+                while (k < times.size && times[k] < t) take()
+                if (k == times.size) break@scan
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m < count) { lastChunk[m] = chunk; lastIndex[m] = i }
+            }
+        }
+        while (k < times.size) take()
+        return result
+    }
+
+    /** Every held frame of one message: frame k is data[k * length until (k + 1) * length], shorter frames zero-padded. */
+    class Payloads(@JvmField val times: IntArray, @JvmField val data: ByteArray, @JvmField val length: Int, @JvmField val size: Int)
+
+    fun payloads(message: Message): Payloads {
+        val length = message.data.size.coerceAtLeast(1)
+        var times = IntArray(1024)
+        var data = ByteArray(1024 * length)
+        var n = 0
+        val wanted = message.index.toShort()
+        for (chunk in chunks) {
+            for (i in 0 until chunk.size) {
+                if (chunk.message[i] != wanted) continue
+                if (n == times.size) { times = times.copyOf(n * 2); data = data.copyOf(n * 2 * length) }
+                val start = chunk.start(i)
+                System.arraycopy(chunk.blob, start, data, n * length, minOf(length, chunk.end[i] - start))
+                times[n++] = chunk.time[i]
+            }
+        }
+        return Payloads(times, data, length, n)
+    }
+
     class Series(@JvmField val times: FloatArray, @JvmField val values: FloatArray, @JvmField val size: Int)
 
     companion object {

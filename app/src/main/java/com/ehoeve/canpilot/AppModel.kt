@@ -10,7 +10,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.ehoeve.canpilot.core.Analysis
+import com.ehoeve.canpilot.core.BitSummary
 import com.ehoeve.canpilot.core.CommaStream
+import com.ehoeve.canpilot.core.FieldMatch
 import com.ehoeve.canpilot.core.Dbc
 import com.ehoeve.canpilot.core.DbcMessage
 import com.ehoeve.canpilot.core.FrameSink
@@ -30,6 +33,15 @@ import java.io.IOException
 /** A DBC in use and the bus it decodes ([ALL_BUSES] for every bus). Kept as a private copy in the app's files. */
 class LoadedDbc(val dbc: Dbc, val bus: Int)
 
+/** A moment the user noted, in store time. */
+class Marker(val time: Int, val note: String)
+
+/** A marker whose note is still being typed: the times were taken when the button was tapped. */
+class PendingMarker(val time: Int, val fileMicros: Long?)
+
+/** A moment at which the user knows what a signal's value was. */
+class FindPoint(val time: Int) { var value by mutableStateOf("") }
+
 /** A plotted signal. Plots stay up while moving between messages, so signals of different messages can be compared. */
 data class PlotKey(val bus: Int, val id: Int, val signal: String)
 
@@ -45,6 +57,20 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val store = FrameStore()
     val dbcs = mutableStateListOf<LoadedDbc>()
     val plots = mutableStateListOf<PlotKey>()
+    val markers = mutableStateListOf<Marker>()
+
+    /** Another log to compare with, summed up bit by bit, and the same summary of the open data. */
+    var other by mutableStateOf<BitSummary?>(null); private set
+    var mine by mutableStateOf<BitSummary?>(null); private set
+    var otherName by mutableStateOf(""); private set
+
+    /** The signal search: its inputs, its results, and a found signal on its way into the editor. */
+    val findPoints = mutableStateListOf<FindPoint>()
+    var findResults by mutableStateOf<List<FieldMatch>>(emptyList()); private set
+    var findStatus by mutableStateOf(""); private set
+    var findByCorrelation by mutableStateOf(false); private set
+    var searching by mutableStateOf(false); private set
+    var pendingSignal by mutableStateOf<Signal?>(null)
     /** The time range all plots show; replaced when other data is loaded. */
     var chartView by mutableStateOf(ChartView(0f, 1f)); private set
 
@@ -86,9 +112,11 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun openLogs(uris: List<Uri>) {
         if (uris.isEmpty() || busy) return
         stopLive()
+        clearCompare()
         busy = true
         viewModelScope.launch {
             val problems = ArrayList<String>()
+            val notes = ArrayList<Pair<Long, String>>()
             withContext(Dispatchers.IO) {
                 store.clear()
                 store.dropOldest = false
@@ -98,7 +126,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     withContext(Dispatchers.Main) { status = "Reading ${file.first} (${index + 1}/${files.size})" }
                     val before = store.frameCount
                     try {
-                        context.openDecompressed(file.second).use { LogReader.read(it, store) }
+                        context.openDecompressed(file.second).use { LogReader.read(it, store) { time, note -> notes += time to note } }
                         if (store.frameCount == before) problems += "${file.first}: no CAN frames"
                     } catch (e: Exception) {
                         problems += "${file.first}: ${e.message ?: e.javaClass.simpleName}"
@@ -110,6 +138,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             }
             cursor = store.firstTime; markA = null; markB = null; followLive = false
             chartView = ChartView(seconds(store.firstTime), seconds(store.lastTime))
+            markers.clear()
+            findResults = emptyList(); findPoints.clear(); findStatus = ""
+            if (store.frameCount > 0) markers += notes.map { Marker(((it.first - store.originMicros) / FrameStore.MICROS_PER_TICK).toInt(), it.second) }.sortedBy { it.time }
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +
                 if (problems.isEmpty()) "" else "\n" + problems.joinToString("\n")
             busy = false
@@ -215,6 +246,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         store.dropOldest = true
         cursor = 0; markA = null; markB = null; followLive = true
         chartView = ChartView(0f, LIVE_WINDOW_SECONDS)
+        markers.clear(); clearCompare()
+        findResults = emptyList(); findPoints.clear(); findStatus = ""
         live = source
         status = "Connecting to $name"
         val sink = FrameSink { time, bus, id, data, offset, length ->
@@ -262,6 +295,68 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             val old = recorder
             recorder = null; recording = null
             viewModelScope.launch(Dispatchers.IO) { runCatching { old?.close() } }
+        }
+    }
+
+    // ---- markers
+
+    fun beginMarker() = PendingMarker(cursorNow, recorder?.now())
+
+    fun addMarker(pending: PendingMarker, note: String) {
+        markers += Marker(pending.time, note)
+        markers.sortBy { it.time }
+        if (pending.fileMicros != null) recorder?.marker(pending.fileMicros, note)
+    }
+
+    // ---- comparing with another log
+
+    /** Reads [uris] only to count, per message, how often each bit was set; the frames themselves are not kept. */
+    fun openCompare(uris: List<Uri>) {
+        if (uris.isEmpty() || busy) return
+        busy = true
+        viewModelScope.launch {
+            val name = context.displayName(uris[0]) + if (uris.size > 1) " +${uris.size - 1}" else ""
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val theirs = BitSummary()
+                    for (uri in uris) context.openDecompressed(uri).use { LogReader.read(it, theirs) }
+                    theirs to BitSummary().also { store.replay(it) }
+                }
+            }
+            result.onSuccess { other = it.first; mine = it.second; otherName = name; status = "Comparing with $name" }
+                .onFailure { status = "Compare: ${it.message ?: it.javaClass.simpleName}" }
+            busy = false
+        }
+    }
+
+    fun clearCompare() { other = null; mine = null; otherName = "" }
+
+    // ---- searching for a signal
+
+    fun searchByValue(tolerance: Double) {
+        val points = findPoints.mapNotNull { point -> point.value.trim().toDoubleOrNull()?.let { point.time to it } }
+        if (points.isEmpty()) { findStatus = "Add a point and enter its value"; return }
+        search(false) { Analysis.findByValue(store, points, tolerance) }
+    }
+
+    fun searchCorrelated(key: PlotKey) {
+        val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id }
+        val decoder = decoder(key.bus, key.id)
+        val signal = decoder?.signals?.firstOrNull { it.name == key.signal }
+        if (message == null || decoder == null || signal == null) { findStatus = "${key.signal} is not in this data"; return }
+        search(true) { Analysis.findCorrelated(store, store.series(message, decoder, signal), message) }
+    }
+
+    private fun search(correlation: Boolean, find: () -> List<FieldMatch>) {
+        if (searching) return
+        searching = true
+        findStatus = "Searching"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.Default) { runCatching(find) }
+            findByCorrelation = correlation
+            findResults = result.getOrDefault(emptyList())
+            findStatus = result.fold({ if (it.isEmpty()) "Nothing found" else "${it.size} candidates, best first. Tap one to check it." }, { "Search failed: ${it.message ?: it.javaClass.simpleName}" })
+            searching = false
         }
     }
 

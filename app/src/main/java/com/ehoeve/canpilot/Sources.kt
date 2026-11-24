@@ -19,6 +19,7 @@ import android.provider.OpenableColumns
 import com.ehoeve.canpilot.core.DashKitLine
 import com.ehoeve.canpilot.core.FrameSink
 import com.ehoeve.canpilot.core.appendCandump
+import com.ehoeve.canpilot.core.appendMarker
 import com.github.luben.zstd.ZstdInputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.BufferedInputStream
@@ -78,6 +79,18 @@ class Recorder(context: Context) : Closeable {
     }
 
     private var closed = false
+
+    /** The time a frame written now would get. */
+    fun now() = clock.micros()
+
+    /** Adds a note at [timeMicros] (from [now]); it is read back as a marker when the log is opened. */
+    @Synchronized
+    fun marker(timeMicros: Long, note: String) {
+        if (closed) return
+        line.setLength(0)
+        line.appendMarker(timeMicros, note)
+        try { writer.append(line) } catch (e: IOException) { closed = true }
+    }
 
     /** A failed write (storage full) ends the recording; it never disturbs the stream. */
     @Synchronized

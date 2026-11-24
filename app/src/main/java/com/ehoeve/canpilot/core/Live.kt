@@ -91,13 +91,25 @@ object DashKitLine {
     }
 }
 
+/** Appends microseconds as decimal seconds with six decimals. */
+fun StringBuilder.appendSeconds(timeMicros: Long): StringBuilder {
+    append(timeMicros / 1_000_000).append('.')
+    val fraction = (timeMicros % 1_000_000).toString()
+    repeat(6 - fraction.length) { append('0') }
+    return append(fraction)
+}
+
+/** A note in a recording: a comment line that candump readers skip and [LogReader] reads back. */
+const val MARKER_PREFIX = "# marker ("
+
+fun StringBuilder.appendMarker(timeMicros: Long, note: String) {
+    append(MARKER_PREFIX).appendSeconds(timeMicros).append(") ").append(note.replace('\n', ' ').replace('\r', ' ')).append('\n')
+}
+
 /** Appends one frame in candump's log format, the one DashPilot records and [LogReader] reads back. */
 fun StringBuilder.appendCandump(timeMicros: Long, bus: Int, id: Int, data: ByteArray, offset: Int, length: Int) {
     val hex = "0123456789ABCDEF"
-    append('(').append(timeMicros / 1_000_000).append('.')
-    val fraction = (timeMicros % 1_000_000).toString()
-    repeat(6 - fraction.length) { append('0') }
-    append(fraction).append(") can").append(bus).append(' ')
+    append('(').appendSeconds(timeMicros).append(") can").append(bus).append(' ')
     for (shift in (if (id in 0..0x7FF) 8 else 28) downTo 0 step 4) append(hex[id ushr shift and 15])
     append('#')
     for (i in offset until offset + length) { append(hex[data[i].toInt() ushr 4 and 15]); append(hex[data[i].toInt() and 15]) }

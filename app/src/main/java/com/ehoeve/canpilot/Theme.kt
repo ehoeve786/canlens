@@ -34,6 +34,9 @@ private val AppShapes = Shapes(
 val SIGNAL_COLORS = listOf(0xFF4FC3F7, 0xFFFFB74D, 0xFF81C784, 0xFFE57373, 0xFFBA68C8, 0xFFFFF176, 0xFF4DB6AC, 0xFFF06292).map { Color(it) }
 val BUS_COLORS = listOf(0xFF4FC3F7, 0xFFFFB74D, 0xFF81C784, 0xFFBA68C8).map { Color(it) }
 val RECORDING = Color(0xFFFF5252)
+val MARKER = Color(0xFFFFB74D)
+val DIFFERENT = Color(0xFFEF6C00)
+val VARIES_IN_ONE = Color(0xFF7E5A1E)
 
 @Composable
 fun CanPilotTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = Colors, shapes = AppShapes, content = content)

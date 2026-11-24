@@ -13,7 +13,7 @@ class CoreTest {
     private fun read(text: String) = read(text.toByteArray())
     private fun read(bytes: ByteArray): Pair<String, List<Frame>> {
         val frames = ArrayList<Frame>()
-        val format = LogReader.read(bytes.inputStream()) { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true }
+        val format = LogReader.read(bytes.inputStream(), { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true })
         return format to frames
     }
 
@@ -187,5 +187,101 @@ class CoreTest {
         assertFalse(live.truncated)
         assertEquals(2, live.chunks.size)
         assertEquals(FrameStore.CAPACITY, live.firstTime)
+    }
+
+    /** A log with a speed (x0.1, 12 bits of room) in 0x118 bits 4..15, a 4-bit counter and a checksum-like byte in 0x257, and a door bit in 0x300. */
+    private fun analysisStore(doorOpen: Boolean = false): FrameStore {
+        val store = FrameStore()
+        var noise = 12345
+        for (i in 0 until 600) {
+            val speed = (300 + 250 * Math.sin(i / 60.0)).toInt()            // raw, 5..55 in physical units
+            store.frame(i * 20_000L, 0, 0x118, byteArrayOf((speed shl 4 and 0xF0 or 5).toByte(), (speed shr 4).toByte(), 0), 0, 3)
+            noise = noise * 1103515245 + 12345
+            store.frame(i * 20_000L + 5, 1, 0x257, byteArrayOf((i and 15).toByte(), (noise ushr 16).toByte()), 0, 2)
+            if (i % 10 == 0) store.frame(i * 20_000L + 7, 0, 0x300, byteArrayOf(if (doorOpen) 0x44 else 0x40, (speed / 3).toByte()), 0, 2)
+        }
+        return store
+    }
+
+    @Test fun findsAFieldByItsValueAtKnownTimes() {
+        val store = analysisStore()
+        fun speedAt(i: Int) = (300 + 250 * Math.sin(i / 60.0)).toInt() * 0.1
+        val points = listOf(100, 300, 500).map { it * 200 + 3 to speedAt(it) }
+        val found = Analysis.findByValue(store, points, 0.05)
+        val best = found.first()
+        assertEquals(0x118, best.message.id)
+        assertEquals(4, best.signal.start); assertEquals(10, best.signal.size)   // the two top bits of the 12 are never set
+        assertEquals(0.1, best.signal.factor, 1e-6)
+        // one point: only the common factors are tried
+        assertTrue(Analysis.findByValue(store, points.take(1), 0.05).any { it.message.id == 0x118 && it.signal.start == 4 && it.signal.factor == 0.1 })
+        assertTrue(Analysis.findByValue(store, listOf(0 to 123456.0), 0.5).isEmpty())
+    }
+
+    @Test fun findsFieldsThatMoveWithAKnownSignal() {
+        val store = analysisStore()
+        val speedMessage = store.messages.first { it.id == 0x118 }
+        val speed = Signal("speed", 4, 12, true, false, 0.1, 0.0, "kph", -1, false)
+        val reference = store.series(speedMessage, DbcMessage(0x118, "", 3, listOf(speed)), speed)
+        val found = Analysis.findCorrelated(store, reference, speedMessage)
+        assertEquals(0x300, found.first().message.id)
+        assertEquals(8, found.first().signal.start)
+        assertTrue(found.first().score > 0.99)
+        assertEquals(0.3, found.first().signal.factor, 0.02)                 // scaled to the reference's units
+        assertTrue(found.none { it.message.id == 0x118 || it.message.id == 0x257 })
+    }
+
+    @Test fun guessesCountersChecksumsAndFields() {
+        val store = analysisStore()
+        val guesses = Analysis.guessFields(store, store.messages.first { it.id == 0x257 })
+        assertEquals(listOf("COUNTER_0", "CHECKSUM_8"), guesses.map { it.name })
+        assertEquals(listOf(4, 8), guesses.map { it.size })
+        val speed = Analysis.guessFields(store, store.messages.first { it.id == 0x118 })
+        assertEquals(listOf(4), speed.map { it.start })
+        assertTrue(speed[0].size in 10..12)
+    }
+
+    @Test fun comparesTwoLogsBitByBit() {
+        val closed = BitSummary().also { analysisStore(false).replay(it) }
+        val open = BitSummary().also { analysisStore(true).replay(it) }
+        val door = closed.differences(open, 0, 0x300, 16)!!
+        assertEquals(BitSummary.DIFFERENT, door[2])
+        assertEquals(1, door.count { it != 0 })
+        assertEquals(0, closed.differences(open, 0, 0x118, 24)!!.count { it != 0 })
+        assertNull(closed.differences(open, 3, 0x999, 8))
+        val still = BitSummary().also { it.frame(0, 0, 0x300, byteArrayOf(0x40, 7), 0, 2); it.frame(1, 0, 0x300, byteArrayOf(0x40, 7), 0, 2) }
+        assertTrue(closed.differences(still, 0, 0x300, 16)!!.drop(8).any { it == BitSummary.VARIES_IN_ONE })
+    }
+
+    @Test fun histogramAndSnapshotsAndPayloads() {
+        val store = analysisStore()
+        val counterMessage = store.messages.first { it.id == 0x257 }
+        val counter = Signal("c", 0, 4, true, false, 1.0, 0.0, "", -1, false)
+        val histogram = Analysis.histogram(store.series(counterMessage, DbcMessage(0x257, "", 2, listOf(counter)), counter))
+        assertEquals((0..15).map { it.toString() }, histogram.map { it.first })
+        assertEquals(600, histogram.sumOf { it.second })
+        val noise = Signal("n", 8, 8, true, false, 1.0, 0.0, "", -1, false)
+        assertEquals(20, Analysis.histogram(store.series(counterMessage, DbcMessage(0x257, "", 2, listOf(noise)), noise)).size)
+        val snapshots = store.snapshots(intArrayOf(-5, 0, 401))
+        val m = counterMessage.index
+        assertEquals(listOf(false, true, true), snapshots.valid[m].toList())
+        assertEquals(2, snapshots.data[m][2 * 2].toInt())                        // frame i=2 at 400 ticks
+        val payloads = store.payloads(counterMessage)
+        assertEquals(600, payloads.size); assertEquals(2, payloads.length)
+        assertEquals(15, payloads.data[15 * 2].toInt()); assertEquals(3000, payloads.times[15])
+    }
+
+    @Test fun markersInARecording() {
+        val text = StringBuilder().apply {
+            appendMarker(5_000_001, "first line")
+            appendCandump(5_000_000, 0, 0x118, byteArrayOf(1), 0, 1)
+            appendMarker(6_500_000, "opened, the door\nnow")
+            appendCandump(7_000_000, 0, 0x118, byteArrayOf(2), 0, 1)
+        }.toString()
+        val markers = ArrayList<Pair<Long, String>>()
+        val frames = ArrayList<Long>()
+        val format = LogReader.read(text.byteInputStream(), { t, _, _, _, _, _ -> frames += t; true }, { t, note -> markers += t to note })
+        assertEquals("candump", format)
+        assertEquals(listOf(5_000_000L, 7_000_000L), frames)
+        assertEquals(listOf(5_000_001L to "first line", 6_500_000L to "opened, the door now"), markers)
     }
 }

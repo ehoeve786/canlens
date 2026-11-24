@@ -1,5 +1,6 @@
 package com.ehoeve.canpilot
 
+import android.graphics.Bitmap
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -23,13 +24,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.ehoeve.canpilot.core.FrameStore
+import com.ehoeve.canpilot.core.Signal
 import kotlin.math.abs
 
 /** The time range (seconds) the charts of one message show; they zoom and pan together. */
@@ -65,6 +71,33 @@ private fun lowerBound(times: FloatArray, size: Int, t: Float): Int {
     return low
 }
 
+/** Pinch to zoom, drag sideways to pan, tap to move the cursor. Vertical drags are left to the list around it. */
+fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit): Modifier = this
+    .pointerInput(view) { detectTapGestures { onCursor(view.start + it.x / size.width * (view.end - view.start)) } }
+    .pointerInput(view) {
+        awaitEachGesture {
+            awaitFirstDown(requireUnconsumed = false)
+            var movedX = 0f
+            var movedY = 0f
+            var mine: Boolean? = null   // null until the drag's direction is clear
+            do {
+                val event = awaitPointerEvent()
+                val pan = event.calculatePan()
+                movedX += pan.x; movedY += pan.y
+                if (mine == null) {
+                    if (event.changes.count { it.pressed } >= 2) mine = true
+                    else if (maxOf(abs(movedX), abs(movedY)) > viewConfiguration.touchSlop) mine = abs(movedX) > abs(movedY)
+                }
+                val centroid = event.calculateCentroid(useCurrent = false)
+                if (mine == true && centroid != Offset.Unspecified) {
+                    view.transform(centroid.x / size.width, pan.x / size.width, event.calculateZoom())
+                    onMoved()
+                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                }
+            } while (mine != false && event.changes.any { it.pressed })
+        }
+    }
+
 /**
  * One signal over time, drawn as steps (a CAN signal holds its value until the next frame). Pinch to zoom, drag
  * sideways to pan, tap to move the cursor. Vertical drags are left to the list the chart sits in.
@@ -72,35 +105,12 @@ private fun lowerBound(times: FloatArray, size: Int, t: Float): Int {
 @Composable
 fun Chart(
     series: FrameStore.Series?, title: String, color: Color, view: ChartView, cursor: Float, markA: Float?, markB: Float?,
-    onCursor: (Float) -> Unit, onMoved: () -> Unit,
+    onCursor: (Float) -> Unit, onMoved: () -> Unit, markers: List<Float> = emptyList(),
 ) {
     val text = remember { Paint().apply { this.color = android.graphics.Color.WHITE; isAntiAlias = true } }
     Canvas(
         Modifier.fillMaxWidth().padding(vertical = 4.dp).height(140.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E))
-            .pointerInput(view) { detectTapGestures { onCursor(view.start + it.x / size.width * (view.end - view.start)) } }
-            .pointerInput(view) {
-                awaitEachGesture {
-                    awaitFirstDown(requireUnconsumed = false)
-                    var movedX = 0f
-                    var movedY = 0f
-                    var mine: Boolean? = null   // null until the drag's direction is clear
-                    do {
-                        val event = awaitPointerEvent()
-                        val pan = event.calculatePan()
-                        movedX += pan.x; movedY += pan.y
-                        if (mine == null) {
-                            if (event.changes.count { it.pressed } >= 2) mine = true
-                            else if (maxOf(abs(movedX), abs(movedY)) > viewConfiguration.touchSlop) mine = abs(movedX) > abs(movedY)
-                        }
-                        val centroid = event.calculateCentroid(useCurrent = false)
-                        if (mine == true && centroid != Offset.Unspecified) {
-                            view.transform(centroid.x / size.width, pan.x / size.width, event.calculateZoom())
-                            onMoved()
-                            event.changes.forEach { if (it.positionChanged()) it.consume() }
-                        }
-                    } while (mine != false && event.changes.any { it.pressed })
-                }
-            }
+            .timeGestures(view, onCursor, onMoved)
     ) {
         val width = size.width
         val height = size.height
@@ -164,9 +174,51 @@ fun Chart(
         }
         text.textAlign = Paint.Align.LEFT
         drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data" else title, 12f, text.textSize + 6f, text)
+        for (marker in markers) { val markerX = x(marker); if (markerX in 0f..width) drawLine(MARKER, Offset(markerX, 0f), Offset(markerX, height)) }
         val cursorX = x(cursor)
         if (cursorX in 0f..width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, height))
     }
 }
 
 private fun number(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && abs(v) < 1e7f) v.toInt().toString() else "%.3f".format(v)
+
+private const val STRIP_COLUMNS = 320
+
+/**
+ * The payload of one message over time: a column per moment, a row per bit (byte 0 on top, its bit 7 first). Set bits
+ * are lit, in the colour of the signal that owns them. Shares [view] and its gestures with the plots.
+ */
+@Composable
+fun HistoryStrip(payloads: FrameStore.Payloads?, signals: List<Signal>, view: ChartView, cursor: Float, onCursor: (Float) -> Unit, onMoved: () -> Unit) {
+    if (payloads == null || payloads.size == 0) return
+    val rows = payloads.length * 8
+    val start = view.start
+    val end = view.end
+    val image = remember(payloads, signals, start, end) {
+        val pixels = IntArray(STRIP_COLUMNS * rows)
+        val lit = IntArray(rows) { row ->
+            val bit = row / 8 * 8 + 7 - row % 8
+            val owner = signals.indexOfFirst { bit in it.bits }
+            if (owner >= 0) SIGNAL_COLORS[owner % SIGNAL_COLORS.size].toArgb() else 0xFF90A4AE.toInt()
+        }
+        for (column in 0 until STRIP_COLUMNS) {
+            val time = ticks(start + (column + 0.5f) / STRIP_COLUMNS * (end - start))
+            // the last frame at or before this column's time
+            var low = 0
+            var high = payloads.size
+            while (low < high) { val mid = (low + high) ushr 1; if (payloads.times[mid] <= time) low = mid + 1 else high = mid }
+            val frame = low - 1
+            if (frame < 0) continue
+            for (row in 0 until rows) {
+                val set = payloads.data[frame * payloads.length + row / 8].toInt() shr (7 - row % 8) and 1 == 1
+                pixels[row * STRIP_COLUMNS + column] = if (set) lit[row] else 0xFF1B2126.toInt()
+            }
+        }
+        Bitmap.createBitmap(pixels, STRIP_COLUMNS, rows, Bitmap.Config.ARGB_8888).asImageBitmap()
+    }
+    Canvas(Modifier.fillMaxWidth().height((rows * 2).coerceIn(48, 128).dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF151A1E)).timeGestures(view, onCursor, onMoved)) {
+        drawImage(image, dstSize = IntSize(size.width.toInt(), size.height.toInt()), filterQuality = FilterQuality.None)
+        val cursorX = (cursor - start) / (end - start) * size.width
+        if (cursorX in 0f..size.width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, size.height))
+    }
+}
