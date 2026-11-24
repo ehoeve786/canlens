@@ -2,19 +2,24 @@ package com.ehoeve.canpilot
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.FilterChip
@@ -41,6 +46,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -59,7 +65,7 @@ DAS_lssState=FAULT signal: number or name
 changed            bytes differ from last frame
 stalk              part of an id or a name
 or  not  ( )       combine terms
-Tap a row to move the cursor, an ID to open it."""
+Tap a row: cursor. Hold it: open its message."""
 
 private const val HEX = "0123456789ABCDEF"
 private val CELL = TextStyle(fontFamily = MONO, fontSize = 12.sp, lineHeight = 16.sp)
@@ -78,10 +84,11 @@ private fun payload(data: ByteArray, start: Int, length: Int, changed: Int, high
 
 /**
  * The frames table. Stream lists every frame in order; Fixed keeps one row per message, showing what it last sent
- * at the cursor. Both obey the filter, and both set off the bytes that changed.
+ * at the cursor. Both obey the filter, and both set off the bytes that changed. A tap on a stream row moves the cursor
+ * there and selects its message for the Message tab; a long press, or a tap on the id, opens it.
  */
 @Composable
-fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
+fun TraceScreen(model: AppModel, selected: FrameStore.Message?, onSelect: (FrameStore.Message) -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     val store = model.store
     val trace = model.trace
     val revision = model.revision
@@ -109,6 +116,10 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
 
     val list = rememberLazyListState()
     val shown = rows
+    // an empty table says which term of the filter is to blame
+    val why by produceState<String?>(null, filter, shown, trace.fixed) {
+        value = if (!trace.fixed && filter != null && shown != null && shown.size == 0 && store.frameCount > 0) withContext(Dispatchers.Default) { store.whyEmpty(filter) } else null
+    }
     val cursorRow = remember(shown, cursor) { if (shown == null || shown.size == 0) -1 else shown.rowAt(cursor) }
     // the table follows the cursor: bring its row into view when it is not
     LaunchedEffect(cursorRow, scan, trace.fixed) {
@@ -127,7 +138,6 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
     Scaffold(
         topBar = {
             TopAppBar(
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text("Frames", style = MaterialTheme.typography.titleMedium) },
                 actions = {
                     FilterChip(selected = !trace.fixed, onClick = { trace.fixed = false }, label = { Text("Stream") })
@@ -135,7 +145,6 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
                 },
             )
         },
-        bottomBar = { TimeBar(model) },
     ) { padding ->
         Column(Modifier.padding(padding)) {
             OutlinedTextField(
@@ -144,7 +153,7 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
                 isError = compiled.isFailure,
                 supportingText = {
                     Text(compiled.exceptionOrNull()?.message
-                        ?: if (trace.fixed) "${latest.size} of ${messages.size} messages" else "${shown?.size ?: 0} of ${store.frameCount} frames")
+                        ?: if (trace.fixed) "${latest.size} of ${messages.size} messages" else why ?: "${shown?.size ?: 0} of ${store.frameCount} frames")
                 },
                 trailingIcon = {
                     Row {
@@ -152,8 +161,15 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
                         IconButton(onClick = { help = !help }) { Icon(Icons.Default.Info, "How to write a filter") }
                     }
                 },
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, autoCorrectEnabled = false, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (compiled.isSuccess) trace.keepFilter(); defaultKeyboardAction(ImeAction.Done) }),
             )
+            if (trace.recentFilters.isNotEmpty()) Row(Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (recent in trace.recentFilters) {
+                    FilterChip(selected = recent == trace.filter.trim(), onClick = { trace.filter = recent }, label = { Text(recent, style = CELL, maxLines = 1) },
+                        trailingIcon = { Icon(Icons.Default.Close, "Forget this filter", Modifier.size(16.dp).clickable { trace.forgetFilter(recent) }) })
+                }
+            }
             if (help) Text(FILTER_HELP, Modifier.padding(horizontal = 16.dp).padding(bottom = 8.dp), style = CELL, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Row(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
                 val head = CELL.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -166,7 +182,7 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
             if (trace.fixed) LazyColumn(Modifier.fillMaxSize()) {
                 items(latest, key = { it.message.index }) { row ->
                     FrameRow(row.count.toString(), row.message, model.dbc.decoder(row.message.bus, row.message.id)?.name, payload(row.data, 0, row.data.size, row.changed, highlight),
-                        selected = false, onClick = { onOpen(row.message) }, onOpen = { onOpen(row.message) })
+                        selected = row.message === selected, onClick = { onOpen(row.message) }, onOpen = { onOpen(row.message) })
                 }
             } else if (shown != null) LazyColumn(Modifier.fillMaxSize(), state = list) {
                 items(shown.size) { row ->
@@ -179,7 +195,7 @@ fun TraceScreen(model: AppModel, onBack: () -> Unit, onOpen: (FrameStore.Message
                         val start = chunk.start(index)
                         FrameRow("%.4f".format(time / FrameStore.TICKS_PER_SECOND), message, model.dbc.decoder(message.bus, message.id)?.name,
                             payload(chunk.blob, start, chunk.end[index] - start, chunk.changed[index].toInt(), highlight),
-                            selected = row == cursorRow, onClick = { trace.cursor = time; trace.followLive = false }, onOpen = { onOpen(message) })
+                            selected = row == cursorRow, onClick = { trace.cursor = time; trace.followLive = false; onSelect(message) }, onOpen = { onOpen(message) })
                     }
                 }
             }
@@ -192,11 +208,11 @@ private val BUS_WIDTH = 22.dp
 private val ID_WIDTH = 30.dp
 private val LONG_ID_WIDTH = 66.dp
 
-/** One table row. Tapping the id opens the message; tapping elsewhere is [onClick]. */
+/** One table row. A long press, or a tap on the id, is [onOpen]; a tap elsewhere is [onClick]. */
 @Composable
 private fun FrameRow(first: String, message: FrameStore.Message, name: String?, data: AnnotatedString, selected: Boolean, onClick: () -> Unit, onOpen: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().background(if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent).clickable(onClick = onClick)
+        Modifier.fillMaxWidth().background(if (selected) MaterialTheme.colorScheme.surfaceContainerHighest else Color.Transparent).combinedClickable(onLongClick = onOpen, onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

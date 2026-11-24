@@ -4,10 +4,11 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
 
 ## What it does
 
+- **One workspace**: four tabs share the time cursor and the selected message. *Messages* lists what is on the bus, *Frames* the frames themselves, *Message* the bits and signals of the selected one, *Plots* its and any other signals over time. The time bar with marks, markers and Record stays under all of them. The search button opens one box that goes to a time, a message, a signal to plot or a filter.
 - **Logs**: openpilot `rlog` (plain, `.zst`, `.bz2`), candump logs and `ms,bus,id,data` CSV files (the two formats DashPilot records), Vector ASC, and CSV exports from SavvyCAN and Cabana. Open several route segments at once; they are loaded in order.
 - **Live**: a comma device over Wi-Fi (its `can` service over ZeroMQ) or a DashKit on the phone's USB-C port. A live stream can be recorded to `Download/CanPilot/` as a candump log.
 - **DBC**: any number of DBC files, each for all buses or one bus. Message names, signal values at the cursor, value names.
-- **Frames**: a table of the frames themselves. *Stream* lists every frame in order; *Fixed* keeps one row per message with what it last sent at the cursor. The bytes that changed since the message's previous frame are set off. A filter narrows both:
+- **Frames**: a table of the frames themselves. *Stream* lists every frame in order; *Fixed* keeps one row per message with what it last sent at the cursor. The bytes that changed since the message's previous frame are set off. Tap a row to move the cursor there and select its message; hold it to open the message. A filter narrows both, used filters stay as chips, and when nothing matches the table says which term is to blame:
 
   ```
   bus=1 id=249        terms side by side must all hold; or, not and brackets combine them
@@ -26,7 +27,7 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
   - *Compare with a log*: the bits that are constant in both logs but not the same, or that change in only one.
   - Suggested fields per message, guessed from how the bits flip, with counters and checksum-like bytes named.
 - **Decode everything**: works out the layout of every message without a DBC entry (fields, counters, verified checksums, multiplexing) and names the fields that follow an already decoded signal or changed only at a marker. Each suggestion comes with its evidence and a confidence, to review and add to the DBC.
-- **Defining signals**: tap a bit, a suggestion or a search result to start a signal; adjust size, byte order, sign, factor and offset while a plot and a histogram of the whole log update; add value names and multiplexing; save it. Export the DBC when done.
+- **Defining signals**: tap a bit, a suggestion or a search result to start a signal; the editor opens under the bit grid, which outlines the signal as you change it; adjust size, byte order, sign, factor and offset while a plot and a histogram of the whole log update; add value names and multiplexing; save it. Export the DBC when done.
 - **Plots**: a view of its own for any signals from any messages, on one time axis. Add signals by name; states show as labelled coloured strips, measurements as lines, each with its value at the cursor. Below them, every state change in order, for the whole log or between marks A and B. Pinch to zoom, drag to pan, tap to move the cursor.
 
 ## Live sources

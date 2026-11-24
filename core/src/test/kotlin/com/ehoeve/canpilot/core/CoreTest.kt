@@ -386,6 +386,18 @@ class CoreTest {
             assertTrue(wrong, runCatching { count(store, wrong) }.exceptionOrNull() is IllegalArgumentException)
     }
 
+    @Test fun saysWhichTermLeavesAFilterEmpty() {
+        val store = traceStore()
+        fun why(text: String) = store.whyEmpty(Filter.compile(text, store.messages) { traceDbc.messages[it.id] }!!)
+        assertEquals("No frame matches bus=5", why("id=118, bus=5 d1=3"))
+        assertEquals("No frame matches d1=3 together with bus=1", why("bus=1 and d1=3 changed"))
+        assertEquals("No frame matches ! ( DI_state=2 or len=4 ) together with id=118 not d1=3", why("id=118 not d1=3 !(DI_state=2 or len=4)"))
+        assertNull(why("bus=5"))
+        assertNull(why("bus=5 or bus=7"))
+        assertNull(why("bus=1 id=249"))
+        assertEquals(listOf("bus=1", "( id=249 or id=118 )", "not changed"), Filter.compile("bus = 1 (id=249 or id=118) && not changed", store.messages) { null }!!.terms)
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)

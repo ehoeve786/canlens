@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -55,14 +56,16 @@ import kotlinx.coroutines.withContext
 // ---- one message: bits, signals, plots
 
 @Composable
-fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit, onBack: () -> Unit) {
+fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit) {
     val revision = model.revision
     val store = model.store
     val decoder = model.dbc.decoder(message.bus, message.id)
     val signals = decoder?.signals.orEmpty()
-    var editing by remember { mutableStateOf<SignalDraft?>(null) }
+    val drafts = model.signals.drafts
+    val draftKey = message.bus to message.id
+    val editing = drafts[draftKey]
     // a signal picked in the search opens in the editor, to be checked against its plot and saved
-    LaunchedEffect(model.signals.pendingSignal) { model.signals.pendingSignal?.let { editing = SignalDraft(null, it); model.signals.pendingSignal = null } }
+    LaunchedEffect(model.signals.pendingSignal) { model.signals.pendingSignal?.let { drafts[draftKey] = SignalDraft(null, it); model.signals.pendingSignal = null } }
     val cursor = model.trace.cursorNow
     val following = model.trace.followLive && model.live.source != LiveSource.NONE
     val frame = remember(revision, cursor, following) { if (following) message.data else store.frameAt(message, cursor) }
@@ -97,10 +100,16 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
             }.toMap()
         }
     }
+    // the signal being edited is outlined in the bit grid as it is typed
+    val drafted = editing?.signal()
+    val outlined = when {
+        editing == null || drafted == null -> signals
+        signals.any { it.name == editing.original } -> signals.map { if (it.name == editing.original) drafted else it }
+        else -> signals + drafted
+    }
     Scaffold(
         topBar = {
             TopAppBar(
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = {
                     Column {
                         Text(decoder?.name ?: "Message ${hexId(message.id)}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)
@@ -109,9 +118,8 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                 },
             )
         },
-        bottomBar = { TimeBar(model) },
     ) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        LazyColumn(Modifier.fillMaxSize().padding(padding).imePadding(), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item {
                 Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
@@ -122,10 +130,11 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                                 "Tap a bit to define a signal.",
                             Modifier.padding(horizontal = 14.dp),
                         )
-                        BitGrid(frame, activity, a != null && b != null, different, signals) { bit ->
+                        BitGrid(frame, activity, a != null && b != null, different, outlined) { bit ->
                             val owner = signals.firstOrNull { bit in it.bits }
-                            editing = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
+                            drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
                         }
+                        if (editing != null) SignalEditor(model, message, decoder?.multiplexor, editing, frame, onClose = { drafts.remove(draftKey) })
                         Hint("History: time runs left to right, one row per bit.", Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp))
                         Box(Modifier.padding(horizontal = 14.dp)) {
                             HistoryStrip(payloads, signals, view, seconds(cursor), onCursor = { model.trace.cursor = ticks(it); model.trace.followLive = false }, onMoved = { model.trace.followLive = false })
@@ -151,7 +160,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
             item {
                 Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("Signals", Modifier.weight(1f))
-                    TextButton(onClick = { editing = SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", 0, 1, true, false, 1.0, 0.0, "", -1, false)) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
+                    TextButton(onClick = { drafts[draftKey] = SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", 0, 1, true, false, 1.0, 0.0, "", -1, false)) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
                 }
                 if (signals.isNotEmpty()) Hint("Tick a signal to plot it. Plots stay up when you open another message.", Modifier.padding(horizontal = 4.dp))
                 if (signals.isEmpty()) Hint("No DBC entry for this message. Tap a bit to define a signal.", Modifier.padding(horizontal = 4.dp))
@@ -167,7 +176,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
                         Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         Text(if (active) format(signal, signal.raw(frame!!)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-                        IconButton(onClick = { editing = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        IconButton(onClick = { drafts[draftKey] = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
             }
@@ -177,7 +186,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
             }
             items(guesses.size, key = { "guess:${guesses[it].start}" }) { index ->
                 val guess = guesses[index]
-                Surface(onClick = { editing = SignalDraft(null, guess) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Surface(onClick = { drafts[draftKey] = SignalDraft(null, guess) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(guess.name, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         Hint("bits ${guess.start}–${guess.start + guess.size - 1}", Modifier.padding(end = 10.dp))
@@ -186,9 +195,6 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                 }
             }
         }
-    }
-    editing?.let { draft ->
-        SignalEditor(model, message, decoder?.multiplexor, draft, frame, onClose = { editing = null })
     }
 }
 

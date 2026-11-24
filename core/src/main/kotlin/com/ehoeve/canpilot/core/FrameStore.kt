@@ -373,6 +373,34 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         }
     }
 
+    /**
+     * Why [filter] lets no held frame through, in words for the user: the first term that no frame meets, or the first
+     * that no frame meets together with the terms before it. Null when frames do pass, or it is a single term.
+     */
+    fun whyEmpty(filter: Filter): String? {
+        val terms = filter.terms
+        if (terms.size < 2) return null
+        val alone = BooleanArray(terms.size)
+        val withEarlier = BooleanArray(terms.size)
+        val known = messages
+        for (chunk in chunks) {
+            for (i in 0 until chunk.size) {
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m >= known.size) continue
+                val start = chunk.start(i)
+                var all = true
+                for (term in terms.indices) {
+                    if (filter.test(term, known[m], chunk.time[i], chunk.blob, start, chunk.end[i] - start, chunk.changed[i].toInt() and 0xFF)) alone[term] = true else all = false
+                    if (all) withEarlier[term] = true
+                }
+            }
+        }
+        val never = alone.indexOf(false)
+        if (never >= 0) return "No frame matches ${terms[never]}"
+        val broken = withEarlier.indexOf(false)
+        return if (broken < 0) null else "No frame matches ${terms[broken]} together with ${terms.subList(0, broken).joinToString(" ")}"
+    }
+
     class Series(@JvmField val times: FloatArray, @JvmField val values: FloatArray, @JvmField val size: Int)
 
     companion object {

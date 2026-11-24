@@ -2,6 +2,7 @@ package com.ehoeve.canpilot
 
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ehoeve.canpilot.core.Analysis
@@ -33,6 +34,8 @@ class SignalState(
     var findByCorrelation by mutableStateOf(false); private set
     var searching by mutableStateOf(false); private set
     var pendingSignal by mutableStateOf<Signal?>(null)
+    /** Signals being edited, by their message's bus and id, so a draft survives a look at another tab. */
+    val drafts = mutableStateMapOf<Pair<Int, Int>, SignalDraft>()
 
     /** What the automatic decoder proposed and has not been added to a DBC yet. */
     var autoResults by mutableStateOf<List<Suggestion>>(emptyList()); private set
@@ -42,6 +45,7 @@ class SignalState(
     /** Other data is coming: results found in the old data go. */
     fun reset() {
         findResults = emptyList(); findPoints.clear(); findStatus = ""; autoResults = emptyList(); autoStatus = ""
+        drafts.clear()
     }
 
     fun searchByValue(tolerance: Double) {

@@ -2,11 +2,26 @@ package com.ehoeve.canpilot
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,38 +54,67 @@ fun format(signal: Signal, raw: Long): String {
     return if (signal.unit.isEmpty()) number else "$number ${signal.unit}"
 }
 
+/** The views that share the cursor and the selected message; the tab bar switches between them. */
+enum class Tab(val label: String) { MESSAGES("Messages"), FRAMES("Frames"), MESSAGE("Message"), PLOTS("Plots") }
+
 @Composable
 fun App(model: AppModel = viewModel()) {
     var selected by remember { mutableStateOf<Pair<Int, Int>?>(null) }
     model.revision   // re-resolve the selection when the data changes
     val message = selected?.let { key -> model.store.messages.firstOrNull { it.bus == key.first && it.id == key.second } }
+    var tab by remember { mutableStateOf(Tab.MESSAGES) }
     var finding by remember { mutableStateOf(false) }
     var autoDecoding by remember { mutableStateOf(false) }
-    var plotting by remember { mutableStateOf(false) }
-    var tracing by remember { mutableStateOf(false) }
+    var commanding by remember { mutableStateOf(false) }
+    val open = { opened: FrameStore.Message -> selected = opened.bus to opened.id; tab = Tab.MESSAGE }
     CanPilotTheme {
         when {
-            message != null -> {
-                BackHandler { selected = null }
-                MessageDetail(model, message, onPlots = { selected = null; finding = false; autoDecoding = false; plotting = true }) { selected = null }
-            }
-            finding -> {
+            // a search result is checked in the Message tab; Back from there returns to the results
+            finding && tab != Tab.MESSAGE -> {
                 BackHandler { finding = false }
-                FindScreen(model, onBack = { finding = false }) { match -> model.signals.pendingSignal = match.signal; selected = match.message.bus to match.message.id }
+                FindScreen(model, onBack = { finding = false }) { match -> model.signals.pendingSignal = match.signal; open(match.message) }
             }
-            autoDecoding -> {
+            autoDecoding && tab != Tab.MESSAGE -> {
                 BackHandler { autoDecoding = false }
-                AutoDecodeScreen(model, onBack = { autoDecoding = false }) { suggestion -> model.signals.pendingSignal = suggestion.signal; selected = suggestion.message.bus to suggestion.message.id }
+                AutoDecodeScreen(model, onBack = { autoDecoding = false }) { suggestion -> model.signals.pendingSignal = suggestion.signal; open(suggestion.message) }
             }
-            plotting -> {
-                BackHandler { plotting = false }
-                PlotsScreen(model) { plotting = false }
+            else -> Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),   // each view's own top bar deals with the status bar
+                bottomBar = {
+                    Column {
+                        TimeBar(model)
+                        TabBar(tab, onCommand = { commanding = true }) { tab = it; finding = false; autoDecoding = false }
+                    }
+                },
+            ) { padding ->
+                Box(Modifier.padding(padding).consumeWindowInsets(padding)) {
+                    BackHandler(tab != Tab.MESSAGES) { tab = Tab.MESSAGES }
+                    when (tab) {
+                        Tab.MESSAGES -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }, onOpen = open)
+                        Tab.FRAMES -> TraceScreen(model, message, onSelect = { selected = it.bus to it.id }, onOpen = open)
+                        Tab.MESSAGE -> if (message != null) MessageDetail(model, message) { tab = Tab.PLOTS }
+                            else Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Hint("Pick a message in Messages or Frames to see its bits and signals here.") }
+                        Tab.PLOTS -> PlotsScreen(model)
+                    }
+                }
             }
-            tracing -> {
-                BackHandler { tracing = false }
-                TraceScreen(model, onBack = { tracing = false }) { selected = it.bus to it.id }
+        }
+        if (commanding) CommandSheet(model, onClose = { commanding = false }, onOpen = open, onTab = { tab = it }, onFind = { tab = Tab.MESSAGES; finding = true }, onAuto = { tab = Tab.MESSAGES; autoDecoding = true })
+    }
+}
+
+@Composable
+private fun TabBar(current: Tab, onCommand: () -> Unit, onTab: (Tab) -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+        Row(Modifier.navigationBarsPadding().fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
+            for (tab in Tab.entries) {
+                val on = tab == current
+                Box(Modifier.weight(1f).fillMaxHeight().clickable { onTab(tab) }, contentAlignment = Alignment.Center) {
+                    Text(tab.label, style = MaterialTheme.typography.labelLarge, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal,
+                        color = if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
-            else -> MessageList(model, onFrames = { tracing = true }, onFind = { finding = true }, onAuto = { autoDecoding = true }, onPlots = { plotting = true }) { selected = it.bus to it.id }
+            IconButton(onClick = onCommand) { Icon(Icons.Default.Search, "Go to a message, signal, time or filter") }
         }
     }
 }

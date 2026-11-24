@@ -74,7 +74,7 @@ import kotlinx.coroutines.withContext
 // ---- message list
 
 @Composable
-fun MessageList(model: AppModel, onFrames: () -> Unit, onFind: () -> Unit, onAuto: () -> Unit, onPlots: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
+fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen: (FrameStore.Message) -> Unit) {
     var filter by remember { mutableStateOf("") }
     var changedOnly by remember { mutableStateOf(false) }
     var showDbcs by remember { mutableStateOf(false) }
@@ -127,7 +127,6 @@ fun MessageList(model: AppModel, onFrames: () -> Unit, onFind: () -> Unit, onAut
                 },
             )
         },
-        bottomBar = { TimeBar(model) },
     ) { padding ->
         if (empty) {
             EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size)
@@ -140,8 +139,6 @@ fun MessageList(model: AppModel, onFrames: () -> Unit, onFind: () -> Unit, onAut
                         leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 } else AssistChip(onClick = { showLive = true }, label = { Text("Live") }, leadingIcon = { Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = { showDbcs = true }, label = { Text("DBC · ${dbcs.size}") })
-                AssistChip(onClick = onFrames, label = { Text("Frames") })
-                AssistChip(onClick = onPlots, label = { Text(if (model.plot.keys.isEmpty()) "Plots" else "Plots · ${model.plot.keys.size}") })
                 AssistChip(onClick = onFind, label = { Text("Find signal") }, leadingIcon = { Icon(Icons.Default.Search, null, Modifier.size(18.dp)) })
                 AssistChip(onClick = onAuto, label = { Text("Decode everything") })
                 FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed only in A–B") },
@@ -270,7 +267,7 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
 // ---- time cursor and A/B marks
 
 @Composable
-fun TimeBar(model: AppModel) {
+fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     model.revision
     val first = seconds(model.store.firstTime)
     val last = seconds(model.store.lastTime)
@@ -281,7 +278,7 @@ fun TimeBar(model: AppModel) {
     pending?.let { marker -> MarkerDialog(model, marker) { pending = null } }
     if (showMarkers) MarkerSheet(model) { showMarkers = false }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
-        Column(Modifier.navigationBarsPadding().padding(horizontal = 16.dp).padding(top = 8.dp)) {
+        Column(modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("%.2f s".format(cursor), Modifier.width(92.dp), fontFamily = MONO, style = MaterialTheme.typography.titleMedium)
                 FilterChip(selected = model.trace.markA != null, onClick = { model.trace.markA = model.trace.cursorNow }, label = { Text(model.trace.markA?.let { "A  %.2f".format(seconds(it)) } ?: "Mark A") })
@@ -289,6 +286,8 @@ fun TimeBar(model: AppModel) {
                 if (model.trace.markA != null || model.trace.markB != null) IconButton(onClick = { model.trace.markA = null; model.trace.markB = null }) { Icon(Icons.Default.Close, "Clear marks") }
                 if (model.live.source != LiveSource.NONE && !model.trace.followLive) AssistChip(onClick = { model.trace.followLive = true }, label = { Text("Now") })
                 AssistChip(onClick = { pending = model.beginMarker() }, label = { Text("Marker") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+                if (model.live.source != LiveSource.NONE) FilterChip(selected = model.live.recording != null, onClick = { model.live.setRecording(model.live.recording == null) }, label = { Text("Record") },
+                    leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 if (model.trace.markers.isNotEmpty()) AssistChip(onClick = { showMarkers = true }, label = { Text("Markers · ${model.trace.markers.size}") })
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)

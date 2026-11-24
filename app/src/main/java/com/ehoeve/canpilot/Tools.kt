@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -67,7 +68,7 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
                 title = { Text("Find a signal", style = MaterialTheme.typography.titleMedium) },
             )
         },
-        bottomBar = { TimeBar(model) },
+        bottomBar = { TimeBar(model, Modifier.navigationBarsPadding()) },
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item {

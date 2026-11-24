@@ -33,7 +33,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val plot = PlotState()
     val dbc = DbcState(application, preferences, viewModelScope, plot.keys) { status = it }
     val live = LiveState(application, preferences, viewModelScope, store, { status = it }, { reset(0, true, ChartView(0f, LIVE_WINDOW_SECONDS)) }) { revision++ }
-    val trace = TraceState(store) { live.source != LiveSource.NONE }
+    val trace = TraceState(store, preferences) { live.source != LiveSource.NONE }
     val signals = SignalState(store, viewModelScope, dbc, trace) { status = it }
 
     /** Another log to compare with, summed up bit by bit, and the same summary of the open data. */

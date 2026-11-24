@@ -11,10 +11,16 @@ package com.ehoeve.canpilot.core
  *     changed                 the payload differs from the message's previous frame
  *     stalk                   a bare word: part of the id, the message's name or one of its signals' names
  */
-class Filter private constructor(private val root: Node) {
+class Filter private constructor(private val parts: Array<Node>, /** The text of each of the terms that must all hold. */ val terms: List<String>) {
 
-    fun test(message: FrameStore.Message, time: Int, data: ByteArray, start: Int, length: Int, changed: Int) =
-        root.test(message, time, data, start, length, changed)
+    fun test(message: FrameStore.Message, time: Int, data: ByteArray, start: Int, length: Int, changed: Int): Boolean {
+        for (part in parts) if (!part.test(message, time, data, start, length, changed)) return false
+        return true
+    }
+
+    /** Whether the frame meets term [term] alone. */
+    internal fun test(term: Int, message: FrameStore.Message, time: Int, data: ByteArray, start: Int, length: Int, changed: Int) =
+        parts[term].test(message, time, data, start, length, changed)
 
     private fun interface Node {
         fun test(message: FrameStore.Message, time: Int, data: ByteArray, start: Int, length: Int, changed: Int): Boolean
@@ -168,7 +174,26 @@ class Filter private constructor(private val root: Node) {
          */
         fun compile(text: String, messages: Array<FrameStore.Message>, decoder: (FrameStore.Message) -> DbcMessage?): Filter? {
             val tokens = TOKEN.findAll(text.replace(',', ' ').replace(SPACED, "$1")).map { it.value }.toList()
-            return if (tokens.isEmpty()) null else Filter(Parser(tokens, messages, decoder).all())
+            if (tokens.isEmpty()) return null
+            val whole = Parser(tokens, messages, decoder).all()   // also finds every mistake, before the text is cut up
+            val groups = split(tokens)
+            return if (groups.size < 2) Filter(arrayOf(whole), listOf(tokens.joinToString(" ")))
+            else Filter(Array(groups.size) { Parser(groups[it], messages, decoder).all() }, groups.map { it.joinToString(" ") })
+        }
+
+        /** The terms that stand side by side outside all brackets; the whole text as one when an `or` joins them. */
+        private fun split(tokens: List<String>): List<List<String>> {
+            val groups = ArrayList<List<String>>()
+            var depth = 0
+            var from = 0
+            for ((index, token) in tokens.withIndex()) {
+                if (token == "(") depth++ else if (token == ")") depth--
+                if (depth > 0) continue
+                if (token in OR) return listOf(tokens)
+                if (token in AND) from = index + 1
+                else if (token !in NOT) { groups += tokens.subList(from, index + 1); from = index + 1 }
+            }
+            return groups
         }
     }
 }

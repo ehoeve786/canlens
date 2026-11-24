@@ -11,13 +11,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.MaterialTheme
@@ -101,52 +98,45 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
     }
     val histogram = remember(preview) { preview?.let { Analysis.histogram(it) } ?: emptyList() }
     val view = remember { ChartView(seconds(model.store.firstTime), seconds(model.store.lastTime)) }
-    AlertDialog(
-        onDismissRequest = onClose,
-        confirmButton = { Button(enabled = signal != null, onClick = { model.dbc.saveSignal(message, signal!!, draft.original); onClose() }) { Text("Save") } },
-        dismissButton = {
-            Row {
-                if (draft.original != null) TextButton(onClick = { model.dbc.deleteSignal(message, draft.original); onClose() }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-                TextButton(onClick = onClose) { Text("Cancel") }
-            }
-        },
-        title = { Text(if (draft.original == null) "New signal" else "Edit signal") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
-                Stepper("Start bit", draft.start, 0, FrameStore.MAX_PAYLOAD * 8 - 1) { draft.start = it }
-                Stepper("Size", draft.size, 1, 64) { draft.size = it }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(draft.littleEndian, { draft.littleEndian = it })
-                    Hint(if (draft.littleEndian) "Little-endian (start = lowest bit)" else "Big-endian (start = highest bit)", Modifier.padding(start = 10.dp))
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) { Switch(draft.signed, { draft.signed = it }); Hint("Signed", Modifier.padding(start = 10.dp)) }
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-                    OutlinedTextField(draft.factor, { draft.factor = it }, Modifier.weight(1f), singleLine = true, label = { Text("Factor") }, keyboardOptions = numbers)
-                    OutlinedTextField(draft.offset, { draft.offset = it }, Modifier.weight(1f), singleLine = true, label = { Text("Offset") }, keyboardOptions = numbers)
-                    OutlinedTextField(draft.unit, { draft.unit = it }, Modifier.weight(1f), singleLine = true, label = { Text("Unit") })
-                }
-                Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
-                    Text(
-                        when {
-                            signal == null -> "Not a valid signal yet"
-                            frame == null || !signal.fits(frame.size) -> "Doesn't fit in this frame's ${frame?.size ?: 0} bytes"
-                            else -> "At the cursor: " + format(signal, signal.raw(frame))
-                        }, Modifier.fillMaxWidth().padding(10.dp), fontFamily = MONO, style = MaterialTheme.typography.bodyMedium,
-                    )
-                }
-                Chart(preview, draft.name, SIGNAL_COLORS[0], view, seconds(model.trace.cursorNow), null, null, onCursor = {}, onMoved = {})
-                Histogram(histogram, signal)
-                OutlinedTextField(draft.valueNames, { draft.valueNames = it }, Modifier.fillMaxWidth(), label = { Text("Value names") }, placeholder = { Text("0=PARK, 1=DRIVE") })
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Switch(draft.isMultiplexor, { draft.isMultiplexor = it }); Hint("Is the multiplexor: selects which signals a frame carries", Modifier.padding(start = 10.dp))
-                }
-                if (!draft.isMultiplexor) OutlinedTextField(draft.muxValue, { draft.muxValue = it }, Modifier.fillMaxWidth(), singleLine = true,
-                    label = { Text("Only when the multiplexor is") }, placeholder = { Text("always present") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-            }
-        },
-    )
+    Column(Modifier.padding(horizontal = 14.dp).padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle(if (draft.original == null) "New signal" else "Edit signal", Modifier.weight(1f))
+            if (draft.original != null) TextButton(onClick = { model.dbc.deleteSignal(message, draft.original); onClose() }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            TextButton(onClick = onClose) { Text("Cancel") }
+            Button(enabled = signal != null, onClick = { model.dbc.saveSignal(message, signal!!, draft.original); onClose() }) { Text("Save") }
+        }
+        OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
+        Stepper("Start bit", draft.start, 0, FrameStore.MAX_PAYLOAD * 8 - 1) { draft.start = it }
+        Stepper("Size", draft.size, 1, 64) { draft.size = it }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(draft.littleEndian, { draft.littleEndian = it })
+            Hint(if (draft.littleEndian) "Little-endian (start = lowest bit)" else "Big-endian (start = highest bit)", Modifier.padding(start = 10.dp))
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) { Switch(draft.signed, { draft.signed = it }); Hint("Signed", Modifier.padding(start = 10.dp)) }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+            OutlinedTextField(draft.factor, { draft.factor = it }, Modifier.weight(1f), singleLine = true, label = { Text("Factor") }, keyboardOptions = numbers)
+            OutlinedTextField(draft.offset, { draft.offset = it }, Modifier.weight(1f), singleLine = true, label = { Text("Offset") }, keyboardOptions = numbers)
+            OutlinedTextField(draft.unit, { draft.unit = it }, Modifier.weight(1f), singleLine = true, label = { Text("Unit") })
+        }
+        Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
+            Text(
+                when {
+                    signal == null -> "Not a valid signal yet"
+                    frame == null || !signal.fits(frame.size) -> "Doesn't fit in this frame's ${frame?.size ?: 0} bytes"
+                    else -> "At the cursor: " + format(signal, signal.raw(frame))
+                }, Modifier.fillMaxWidth().padding(10.dp), fontFamily = MONO, style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+        Chart(preview, draft.name, SIGNAL_COLORS[0], view, seconds(model.trace.cursorNow), null, null, onCursor = {}, onMoved = {})
+        Histogram(histogram, signal)
+        OutlinedTextField(draft.valueNames, { draft.valueNames = it }, Modifier.fillMaxWidth(), label = { Text("Value names") }, placeholder = { Text("0=PARK, 1=DRIVE") })
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(draft.isMultiplexor, { draft.isMultiplexor = it }); Hint("Is the multiplexor: selects which signals a frame carries", Modifier.padding(start = 10.dp))
+        }
+        if (!draft.isMultiplexor) OutlinedTextField(draft.muxValue, { draft.muxValue = it }, Modifier.fillMaxWidth(), singleLine = true,
+            label = { Text("Only when the multiplexor is") }, placeholder = { Text("always present") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+    }
 }
 
 /** How often each value occurs: a row per value when there are few, bars over the value range when there are many. */

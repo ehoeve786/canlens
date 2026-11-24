@@ -109,7 +109,7 @@ private class Change(val time: Float, val plot: PlotData, val from: String, val 
 
 /** All plotted signals on one time axis: states as labelled strips, measurements as lines, and the state changes in order. */
 @Composable
-fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
+fun PlotsScreen(model: AppModel) {
     val revision = model.revision
     val store = model.store
     val view = model.plot.view
@@ -154,11 +154,9 @@ fun PlotsScreen(model: AppModel, onBack: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
                 title = { Text("Plots", style = MaterialTheme.typography.titleMedium) },
             )
         },
-        bottomBar = { TimeBar(model) },
     ) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             item {
