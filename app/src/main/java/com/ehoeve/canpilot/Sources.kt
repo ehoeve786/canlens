@@ -66,6 +66,7 @@ class Recorder(context: Context) : Closeable {
     val name = "can-log-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log"
     private val clock = Clock()
     private val line = StringBuilder(160)
+    val uri: Uri
     private val writer: Writer
 
     init {
@@ -74,7 +75,7 @@ class Recorder(context: Context) : Closeable {
             put(MediaStore.Downloads.MIME_TYPE, "text/plain")
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CanPilot")
         }
-        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
+        uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
         writer = (context.contentResolver.openOutputStream(uri) ?: throw IOException("Can't write $name")).bufferedWriter(Charsets.US_ASCII)
     }
 

@@ -2,6 +2,7 @@ package com.ehoeve.canpilot
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -36,6 +37,9 @@ class LiveState(
     var recording by mutableStateOf<String?>(null); private set
     var commaAddress by mutableStateOf(preferences.getString("comma", "") ?: ""); private set
 
+    /** The last recording of the stream that is, or was last, running: what a session can reopen of it. */
+    var recorded: Uri? = null
+
     private var job: Job? = null
     private var connection: Closeable? = null
     @Volatile private var recorder: Recorder? = null
@@ -63,6 +67,7 @@ class LiveState(
         // under the store's lock, so a frame of the previous stream can't land after the clear
         val mine = synchronized(store) { store.clear(); ++generation }
         store.dropOldest = true
+        recorded = null
         onStart()
         source = from
         report("Connecting to $name")
@@ -106,7 +111,7 @@ class LiveState(
     fun setRecording(on: Boolean) {
         if (on == (recorder != null)) return
         if (on) {
-            try { recorder = Recorder(context).also { recording = it.name } } catch (e: Exception) { report("Recording failed: ${e.message}") }
+            try { recorder = Recorder(context).also { recording = it.name; recorded = it.uri } } catch (e: Exception) { report("Recording failed: ${e.message}") }
         } else {
             val old = recorder
             recorder = null; recording = null

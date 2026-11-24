@@ -1,5 +1,11 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material.icons.filled.Share
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -120,6 +126,22 @@ private fun TabBar(current: Tab, onCommand: () -> Unit, onTab: (Tab) -> Unit) {
 }
 
 // ---- small pieces
+
+class SaveEntry(val label: String, val fileName: String, val save: (Uri) -> Unit)
+
+/** A button with a menu of things to save; choosing one asks where the file goes and hands that place to the entry. */
+@Composable
+fun SaveMenu(entries: List<SaveEntry>) {
+    var open by remember { mutableStateOf(false) }
+    var chosen by remember { mutableStateOf<SaveEntry?>(null) }
+    val place = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri -> if (uri != null) chosen?.save?.invoke(uri) }
+    Box {
+        IconButton(onClick = { open = true }) { Icon(Icons.Default.Share, "Save to a file") }
+        DropdownMenu(open, { open = false }) {
+            for (entry in entries) DropdownMenuItem(text = { Text(entry.label) }, onClick = { open = false; chosen = entry; place.launch(entry.fileName) })
+        }
+    }
+}
 
 @Composable
 fun BusBadge(bus: Int) {

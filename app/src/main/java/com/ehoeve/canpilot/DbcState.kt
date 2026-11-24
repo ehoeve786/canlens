@@ -40,9 +40,11 @@ class DbcState(
     }
 
     /** The DBC message for a frame: a DBC assigned to that bus wins over one for all buses. */
-    fun decoder(bus: Int, id: Int): DbcMessage? =
-        files.firstOrNull { it.bus == bus && id in it.dbc.messages }?.dbc?.messages?.get(id)
+    fun decoder(bus: Int, id: Int): DbcMessage? {
+        val source = bus % AppModel.MERGED_BUS   // a merged recording's bus 11 is decoded like bus 1
+        return files.firstOrNull { it.bus == source && id in it.dbc.messages }?.dbc?.messages?.get(id)
             ?: files.firstOrNull { it.bus == ALL_BUSES }?.dbc?.messages?.get(id)
+    }
 
     fun open(uri: Uri) {
         scope.launch {
@@ -83,7 +85,7 @@ class DbcState(
     /** Adds or replaces a signal in the DBC that decodes [message], or in a new DBC for its bus if none does. */
     fun saveSignal(message: FrameStore.Message, signal: Signal, replaces: String?) {
         val index = indexFor(files, message)
-        val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canpilot-bus${message.bus}.dbc", emptyMap()), message.bus)
+        val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canpilot-bus${message.bus % AppModel.MERGED_BUS}.dbc", emptyMap()), message.bus % AppModel.MERGED_BUS)
         var dbc = old.dbc
         if (replaces != null && replaces != signal.name) dbc = dbc.withoutSignal(message.id, replaces)
         dbc = dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, signal)
@@ -107,7 +109,7 @@ class DbcState(
         for (suggestion in suggestions) {
             val message = suggestion.message
             var index = indexFor(working, message)
-            if (index < 0) { working += LoadedDbc(Dbc("canpilot-bus${message.bus}.dbc", emptyMap()), message.bus); index = working.lastIndex }
+            if (index < 0) { working += LoadedDbc(Dbc("canpilot-bus${message.bus % AppModel.MERGED_BUS}.dbc", emptyMap()), message.bus % AppModel.MERGED_BUS); index = working.lastIndex }
             working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, suggestion.signal), working[index].bus)
             changed += index
         }
@@ -117,11 +119,12 @@ class DbcState(
 
     /** The DBC in [dbcs] a signal of [message] belongs in, or -1: one that has the message, else one for its bus, else one for all buses. */
     private fun indexFor(dbcs: List<LoadedDbc>, message: FrameStore.Message): Int {
-        val exact = dbcs.indexOfFirst { it.bus == message.bus && message.id in it.dbc.messages }
+        val bus = message.bus % AppModel.MERGED_BUS
+        val exact = dbcs.indexOfFirst { it.bus == bus && message.id in it.dbc.messages }
         if (exact >= 0) return exact
         val shared = dbcs.indexOfFirst { it.bus == ALL_BUSES && message.id in it.dbc.messages }
         if (shared >= 0) return shared
-        return dbcs.indexOfFirst { it.bus == message.bus }.takeIf { it >= 0 } ?: dbcs.indexOfFirst { it.bus == ALL_BUSES }
+        return dbcs.indexOfFirst { it.bus == bus }.takeIf { it >= 0 } ?: dbcs.indexOfFirst { it.bus == ALL_BUSES }
     }
 
     private fun replace(index: Int, value: LoadedDbc) {

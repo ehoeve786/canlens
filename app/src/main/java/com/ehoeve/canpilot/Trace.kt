@@ -141,7 +141,15 @@ fun TraceScreen(model: AppModel, selected: FrameStore.Message?, onSelect: (Frame
                 title = { Text("Frames", style = MaterialTheme.typography.titleMedium) },
                 actions = {
                     FilterChip(selected = !trace.fixed, onClick = { trace.fixed = false }, label = { Text("Stream") })
-                    FilterChip(selected = trace.fixed, onClick = { trace.fixed = true }, label = { Text("Fixed") }, modifier = Modifier.padding(horizontal = 8.dp))
+                    FilterChip(selected = trace.fixed, onClick = { trace.fixed = true }, label = { Text("Fixed") }, modifier = Modifier.padding(start = 8.dp))
+                    // what is saved is what Stream lists: every frame, or those the filter lets through
+                    SaveMenu(
+                        listOf(SaveEntry("Save as candump log", "canpilot-frames.log") { model.exportFrames(it, csv = false, window = false) },
+                            SaveEntry("Save as CSV", "canpilot-frames.csv") { model.exportFrames(it, csv = true, window = false) }) +
+                            if (trace.markA == null || trace.markB == null) emptyList()
+                            else listOf(SaveEntry("A–B as candump log", "canpilot-a-b.log") { model.exportFrames(it, csv = false, window = true) },
+                                SaveEntry("A–B as CSV", "canpilot-a-b.csv") { model.exportFrames(it, csv = true, window = true) })
+                    )
                 },
             )
         },

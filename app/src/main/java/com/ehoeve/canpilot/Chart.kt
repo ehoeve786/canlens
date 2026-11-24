@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -99,9 +100,83 @@ fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: (
         }
     }
 
+/** The lowest and highest value of [series] inside the view, pulled apart when they are the same; null when nothing of it is in view. */
+private fun bounds(series: FrameStore.Series, view: ChartView): ClosedFloatingPointRange<Float>? {
+    val from = (lowerBound(series.times, series.size, view.start) - 1).coerceAtLeast(0)
+    val to = (lowerBound(series.times, series.size, view.end) + 1).coerceAtMost(series.size)
+    if (from >= to) return null
+    var low = Float.MAX_VALUE
+    var high = -Float.MAX_VALUE
+    for (i in from until to) { val v = series.values[i]; if (v < low) low = v; if (v > high) high = v }
+    return if (high - low < 1e-9f) low - 1f..high + 1f else low..high
+}
+
+/** Draws [series] as steps (a CAN signal holds its value until the next frame), with [low]..[high] filling the height. */
+private fun DrawScope.drawSeries(series: FrameStore.Series, color: Color, view: ChartView, low: Float, high: Float) {
+    val width = size.width
+    val height = size.height
+    val start = view.start
+    val span = view.end - start
+    val times = series.times
+    val values = series.values
+    // one sample beyond each edge so the line runs to the borders
+    val from = (lowerBound(times, series.size, start) - 1).coerceAtLeast(0)
+    val to = (lowerBound(times, series.size, view.end) + 1).coerceAtMost(series.size)
+    if (from >= to) return
+    val pad = 14.dp.toPx()
+    fun x(t: Float) = (t - start) / span * width
+    fun y(v: Float) = height - pad - (v - low) / (high - low) * (height - 2 * pad)
+    if (to - from <= width * 2) {
+        val path = Path()
+        path.moveTo(x(times[from]), y(values[from]))
+        for (i in from + 1 until to) { val px = x(times[i]); path.lineTo(px, y(values[i - 1])); path.lineTo(px, y(values[i])) }
+        path.lineTo(minOf(width, x(view.end)), y(values[to - 1]))
+        drawPath(path, color, style = Stroke(1.5.dp.toPx()))
+    } else {
+        // more samples than pixels: one vertical line per pixel column, from its lowest to its highest value
+        var column = Int.MIN_VALUE
+        var columnLow = 0f
+        var columnHigh = 0f
+        for (i in from until to) {
+            val c = x(times[i]).toInt()
+            val v = values[i]
+            if (c != column) {
+                if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+                column = c
+                // start from the previous value so neighbouring columns join up
+                columnLow = if (i > from) minOf(v, values[i - 1]) else v
+                columnHigh = if (i > from) maxOf(v, values[i - 1]) else v
+            } else {
+                if (v < columnLow) columnLow = v
+                if (v > columnHigh) columnHigh = v
+            }
+        }
+        if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+    }
+}
+
+/** The A–B window, behind the lines. */
+private fun DrawScope.drawWindow(view: ChartView, markA: Float?, markB: Float?) {
+    if (markA == null || markB == null) return
+    fun x(t: Float) = ((t - view.start) / (view.end - view.start) * size.width).coerceIn(0f, size.width)
+    val left = x(minOf(markA, markB))
+    drawRect(Color(0x332E7D32), Offset(left, 0f), Size(x(maxOf(markA, markB)) - left, size.height))
+}
+
+/** Markers and the cursor, over the lines. */
+private fun DrawScope.drawCursor(view: ChartView, cursor: Float, markers: List<Float>) {
+    fun x(t: Float) = (t - view.start) / (view.end - view.start) * size.width
+    for (marker in markers) { val markerX = x(marker); if (markerX in 0f..size.width) drawLine(MARKER, Offset(markerX, 0f), Offset(markerX, size.height)) }
+    val cursorX = x(cursor)
+    if (cursorX in 0f..size.width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, size.height))
+}
+
+private fun Modifier.chart(height: Dp, view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit) =
+    fillMaxWidth().padding(vertical = 4.dp).height(height).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E)).timeGestures(view, onCursor, onMoved)
+
 /**
- * One signal over time, drawn as steps (a CAN signal holds its value until the next frame). Pinch to zoom, drag
- * sideways to pan, tap to move the cursor. Vertical drags are left to the list the chart sits in.
+ * One signal over time. Pinch to zoom, drag sideways to pan, tap to move the cursor. Vertical drags are left to the
+ * list the chart sits in.
  */
 @Composable
 fun Chart(
@@ -109,75 +184,52 @@ fun Chart(
     onCursor: (Float) -> Unit, onMoved: () -> Unit, markers: List<Float> = emptyList(), labels: Boolean = true, height: Dp = 140.dp,
 ) {
     val text = remember { Paint().apply { this.color = android.graphics.Color.WHITE; isAntiAlias = true } }
-    Canvas(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp).height(height).clip(RoundedCornerShape(14.dp)).background(Color(0xFF151A1E))
-            .timeGestures(view, onCursor, onMoved)
-    ) {
-        val width = size.width
-        val height = size.height
-        val start = view.start
-        val span = view.end - start
-        fun x(t: Float) = (t - start) / span * width
+    Canvas(Modifier.chart(height, view, onCursor, onMoved)) {
         text.textSize = 11.dp.toPx()
-        if (markA != null && markB != null) {
-            val left = x(minOf(markA, markB)).coerceIn(0f, width)
-            drawRect(Color(0x332E7D32), Offset(left, 0f), Size(x(maxOf(markA, markB)).coerceIn(0f, width) - left, height))
-        }
+        drawWindow(view, markA, markB)
         val n = series?.size ?: 0
-        if (series != null && n > 0) {
-            val times = series.times
-            val values = series.values
-            // one sample beyond each edge so the line runs to the borders
-            val from = (lowerBound(times, n, start) - 1).coerceAtLeast(0)
-            val to = (lowerBound(times, n, view.end) + 1).coerceAtMost(n)
-            var low = Float.MAX_VALUE
-            var high = -Float.MAX_VALUE
-            for (i in from until to) { val v = values[i]; if (v < low) low = v; if (v > high) high = v }
-            if (from < to) {
-                if (high - low < 1e-9f) { low -= 1f; high += 1f }
-                val pad = 14.dp.toPx()
-                fun y(v: Float) = height - pad - (v - low) / (high - low) * (height - 2 * pad)
-                if (to - from <= width * 2) {
-                    val path = Path()
-                    path.moveTo(x(times[from]), y(values[from]))
-                    for (i in from + 1 until to) { val px = x(times[i]); path.lineTo(px, y(values[i - 1])); path.lineTo(px, y(values[i])) }
-                    path.lineTo(minOf(width, x(view.end)), y(values[to - 1]))
-                    drawPath(path, color, style = Stroke(1.5.dp.toPx()))
-                } else {
-                    // more samples than pixels: one vertical line per pixel column, from its lowest to its highest value
-                    var column = Int.MIN_VALUE
-                    var columnLow = 0f
-                    var columnHigh = 0f
-                    for (i in from until to) {
-                        val c = x(times[i]).toInt()
-                        val v = values[i]
-                        if (c != column) {
-                            if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
-                            column = c
-                            // start from the previous value so neighbouring columns join up
-                            columnLow = if (i > from) minOf(v, values[i - 1]) else v
-                            columnHigh = if (i > from) maxOf(v, values[i - 1]) else v
-                        } else {
-                            if (v < columnLow) columnLow = v
-                            if (v > columnHigh) columnHigh = v
-                        }
-                    }
-                    if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
-                }
-                val canvas = drawContext.canvas.nativeCanvas
-                text.textAlign = Paint.Align.RIGHT
-                canvas.drawText(number(high), width - 12f, text.textSize + 6f, text)
-                canvas.drawText(number(low), width - 12f, height - 8f, text)
-                // the value under the cursor: the last sample at or before it
-                val at = lowerBound(times, n, cursor + 1e-6f) - 1
-                if (labels && at >= 0) canvas.drawText(number(values[at]), width - 12f, height / 2, text)
-            }
+        val range = series?.let { bounds(it, view) }
+        val canvas = drawContext.canvas.nativeCanvas
+        if (series != null && range != null) {
+            drawSeries(series, color, view, range.start, range.endInclusive)
+            text.textAlign = Paint.Align.RIGHT
+            canvas.drawText(number(range.endInclusive), size.width - 12f, text.textSize + 6f, text)
+            canvas.drawText(number(range.start), size.width - 12f, size.height - 8f, text)
+            // the value under the cursor: the last sample at or before it
+            val at = lowerBound(series.times, n, cursor + 1e-6f) - 1
+            if (labels && at >= 0) canvas.drawText(number(series.values[at]), size.width - 12f, size.height / 2, text)
         }
         text.textAlign = Paint.Align.LEFT
-        if (labels || n == 0) drawContext.canvas.nativeCanvas.drawText(if (n == 0) "$title: no data".removePrefix(": ") else title, 12f, text.textSize + 6f, text)
-        for (marker in markers) { val markerX = x(marker); if (markerX in 0f..width) drawLine(MARKER, Offset(markerX, 0f), Offset(markerX, height)) }
-        val cursorX = x(cursor)
-        if (cursorX in 0f..width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, height))
+        if (labels || n == 0) canvas.drawText(if (n == 0) "$title: no data".removePrefix(": ") else title, 12f, text.textSize + 6f, text)
+        drawCursor(view, cursor, markers)
+    }
+}
+
+/**
+ * Several signals on one chart. With [sharedScale] they share one value axis, whose ends are written at the right;
+ * without it each fills the height by itself, which compares shapes of signals with different units.
+ */
+@Composable
+fun OverlayChart(
+    series: List<Pair<FrameStore.Series, Color>>, sharedScale: Boolean, view: ChartView, cursor: Float, markA: Float?, markB: Float?,
+    onCursor: (Float) -> Unit, onMoved: () -> Unit, markers: List<Float>, height: Dp = 240.dp,
+) {
+    val text = remember { Paint().apply { this.color = android.graphics.Color.WHITE; isAntiAlias = true; textAlign = Paint.Align.RIGHT } }
+    Canvas(Modifier.chart(height, view, onCursor, onMoved)) {
+        drawWindow(view, markA, markB)
+        val ranges = series.map { bounds(it.first, view) }
+        val low = ranges.minOfOrNull { it?.start ?: Float.MAX_VALUE } ?: 0f
+        val high = ranges.maxOfOrNull { it?.endInclusive ?: -Float.MAX_VALUE } ?: 0f
+        for ((index, entry) in series.withIndex()) {
+            val own = ranges[index] ?: continue
+            drawSeries(entry.first, entry.second, view, if (sharedScale) low else own.start, if (sharedScale) high else own.endInclusive)
+        }
+        if (sharedScale && low < high) {
+            text.textSize = 11.dp.toPx()
+            drawContext.canvas.nativeCanvas.drawText(number(high), size.width - 12f, text.textSize + 6f, text)
+            drawContext.canvas.nativeCanvas.drawText(number(low), size.width - 12f, size.height - 8f, text)
+        }
+        drawCursor(view, cursor, markers)
     }
 }
 

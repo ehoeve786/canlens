@@ -1,5 +1,6 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.material3.FilterChip
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -151,10 +152,17 @@ fun PlotsScreen(model: AppModel) {
     val markers = model.trace.markers.map { seconds(it.time) }
     val moveCursor: (Float) -> Unit = { model.trace.cursor = ticks(it); model.trace.followLive = false }
     val moved = { model.trace.followLive = false }
+    val lines = remember(data) { data.filter { it.stateLabels == null }.map { it.series to it.color } }
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Plots", style = MaterialTheme.typography.titleMedium) },
+                actions = {
+                    if (plots.isNotEmpty()) SaveMenu(
+                        listOf(SaveEntry("Save the signals as CSV", "canpilot-signals.csv") { model.exportSignals(it, false) }) +
+                            if (marked) listOf(SaveEntry("A–B as CSV", "canpilot-signals-a-b.csv") { model.exportSignals(it, true) }) else emptyList()
+                    )
+                },
             )
         },
     ) { padding ->
@@ -186,8 +194,14 @@ fun PlotsScreen(model: AppModel) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AssistChip(onClick = { view.show(seconds(store.firstTime), seconds(store.lastTime)); moved() }, label = { Text("Show everything") })
                     if (marked) AssistChip(onClick = { view.show(seconds(minOf(a!!, b!!)), seconds(maxOf(a!!, b!!))); moved() }, label = { Text("Zoom to A–B") })
+                    FilterChip(selected = model.plot.overlay, onClick = { model.plot.overlay = !model.plot.overlay }, label = { Text("Overlay") })
+                    if (model.plot.overlay) FilterChip(selected = model.plot.sharedScale, onClick = { model.plot.sharedScale = !model.plot.sharedScale }, label = { Text("One scale") })
                     AssistChip(onClick = { model.plot.keys.clear() }, label = { Text("Remove all") })
                 }
+            }
+            // overlay: the measurements share one chart; each keeps its row below as the legend, with its value at the cursor
+            if (model.plot.overlay && lines.isNotEmpty()) item {
+                OverlayChart(lines, model.plot.sharedScale, view, cursor, a?.let { seconds(it) }, b?.let { seconds(it) }, moveCursor, moved, markers)
             }
             items(data.size, key = { "plot:${data[it].key}" }) { index ->
                 val plot = data[index]
@@ -202,7 +216,7 @@ fun PlotsScreen(model: AppModel) {
                             Text(plot.labelAt(cursor), fontFamily = MONO, fontWeight = FontWeight.Bold, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
                             IconButton(onClick = { model.plot.keys.remove(plot.key) }) { Icon(Icons.Default.Close, "Remove ${plot.key.signal}", Modifier.size(18.dp)) }
                         }
-                        Box(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
+                        if (plot.stateLabels != null || !model.plot.overlay) Box(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 6.dp)) {
                             if (plot.stateLabels != null) StateStrip(plot, view, cursor, a?.let { seconds(it) }, b?.let { seconds(it) }, markers, moveCursor, moved)
                             else Chart(plot.series, "", plot.color, view, cursor, a?.let { seconds(it) }, b?.let { seconds(it) }, moveCursor, moved, markers, labels = false, height = 96.dp)
                         }

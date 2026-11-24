@@ -1,5 +1,6 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.material3.TextButton
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -82,6 +83,9 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
     var changedOnly by remember { mutableStateOf(false) }
     var showDbcs by remember { mutableStateOf(false) }
     var showLive by remember { mutableStateOf(false) }
+    var showSessions by remember { mutableStateOf(false) }
+    var openMenu by remember { mutableStateOf(false) }
+    val mergeLogs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { model.mergeLogs(it) }
     var differentOnly by remember { mutableStateOf(false) }
     val openLogs = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { model.openLogs(it) }
     val openOther = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { model.openCompare(it); differentOnly = it.isNotEmpty() }
@@ -132,11 +136,19 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
         },
     ) { padding ->
         if (empty) {
-            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size)
+            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size, session = model.session.current, onSessions = { showSessions = true })
         } else Column(Modifier.padding(padding)) {
             // short labels, so that all of them fit in two rows without scrolling
             FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                AssistChip(onClick = { openLogs.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Open") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+                Box {
+                    AssistChip(onClick = { openMenu = true }, enabled = !model.busy, label = { Text("Open") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+                    DropdownMenu(openMenu, { openMenu = false }) {
+                        DropdownMenuItem(text = { Text("Open logs") }, onClick = { openMenu = false; openLogs.launch(arrayOf("*/*")) })
+                        if (!live) DropdownMenuItem(text = { Text("Add a log to this timeline") }, onClick = { openMenu = false; mergeLogs.launch(arrayOf("*/*")) })
+                        if (other == null) DropdownMenuItem(text = { Text("Compare with a log") }, onClick = { openMenu = false; openOther.launch(arrayOf("*/*")) })
+                        DropdownMenuItem(text = { Text("Session: ${model.session.current}") }, onClick = { openMenu = false; showSessions = true })
+                    }
+                }
                 if (live) {
                     AssistChip(onClick = { model.live.stop() }, label = { Text("Stop") }, leadingIcon = { Icon(Icons.Default.Close, null, Modifier.size(18.dp)) })
                     FilterChip(selected = model.live.recording != null, onClick = { model.live.setRecording(model.live.recording == null) }, label = { Text("Record") },
@@ -147,8 +159,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
                 AssistChip(onClick = onAuto, label = { Text("Decode") })
                 FilterChip(selected = changedOnly, onClick = { changedOnly = !changedOnly }, label = { Text("Changed A–B") },
                     leadingIcon = if (changedOnly) ({ Icon(Icons.Default.Check, null, Modifier.size(18.dp)) }) else null)
-                if (other == null) AssistChip(onClick = { openOther.launch(arrayOf("*/*")) }, enabled = !model.busy, label = { Text("Compare") })
-                else FilterChip(selected = differentOnly, onClick = { differentOnly = !differentOnly }, label = { Text("Differs from ${model.otherName}", maxLines = 1) },
+                if (other != null) FilterChip(selected = differentOnly, onClick = { differentOnly = !differentOnly }, label = { Text("Differs from ${model.otherName}", maxLines = 1) },
                     trailingIcon = { Icon(Icons.Default.Close, "Stop comparing", Modifier.size(18.dp).clickable { model.clearCompare(); differentOnly = false }) })
             }
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
@@ -197,16 +208,18 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
     }
     if (showDbcs) DbcSheet(model) { showDbcs = false }
     if (showLive) LiveSheet(model) { showLive = false }
+    if (showSessions) SessionSheet(model) { showSessions = false }
 }
 
 @Composable
-private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int) {
+private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit) {
     Column(modifier.fillMaxSize().padding(32.dp), verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("Read a CAN bus", style = MaterialTheme.typography.headlineSmall)
         Hint("Open rlog, candump, ASC or CSV logs, or stream live from a comma device or a DashKit.", Modifier.padding(bottom = 8.dp))
         Button(onClick = onOpen, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Open logs") }
         FilledTonalButton(onClick = onLive, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(8.dp)); Text("Live stream") }
         OutlinedButton(onClick = onDbc, modifier = Modifier.fillMaxWidth()) { Text(if (dbcCount == 0) "Add a DBC" else "DBC files · $dbcCount") }
+        TextButton(onClick = onSessions) { Text("Session: $session") }
         Hint(status, Modifier.padding(top = 8.dp))
     }
 }

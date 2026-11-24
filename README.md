@@ -19,6 +19,9 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
   changed             the payload differs from the message's previous frame
   stalk               part of an id, a message name or a signal name
   ```
+- **Sessions**: the app comes back as it was left: the same logs, plots, marks, markers, cursor and filter. Named sessions (Open › Session) keep separate workspaces. DBC files are shared by all of them.
+- **Two recordings of one drive** (Open › Add a log to this timeline): the second log is put on the first one's timeline. Its clock is matched to the first's by the frames both recorded, so the two line up to a few milliseconds even when the recorders' clocks were seconds apart. Its buses are numbered from 10 up (bus 1 becomes 11) and decoded like the bus they came from.
+- **Saving**: from Frames, the listed frames (all, or those the filter lets through; optionally only between marks A and B) as a candump log or a `time,addr,bus,data` CSV. From Plots, the plotted signals' values as CSV.
 - **Finding signals**:
   - A bit grid per message shaded by how often each bit flips, and a history strip of the payload over time.
   - Marks A and B around the moment you did something in the car: *Changed only in A–B* lists the messages, and highlights the bits, that changed then and at no other time.
@@ -28,7 +31,7 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
   - Suggested fields per message, guessed from how the bits flip, with counters and checksum-like bytes named.
 - **Decode everything**: works out the layout of every message without a DBC entry (fields, counters, verified checksums, multiplexing) and names the fields that follow an already decoded signal or changed only at a marker. Each suggestion comes with its evidence and a confidence, to review and add to the DBC.
 - **Defining signals**: tap a bit, a suggestion or a search result to start a signal; the editor opens under the bit grid, which outlines the signal as you change it; adjust size, byte order, sign, factor and offset while a plot and a histogram of the whole log update; add value names and multiplexing; save it. Export the DBC when done.
-- **Plots**: a view of its own for any signals from any messages, on one time axis. Add signals by name; states show as labelled coloured strips, measurements as lines, each with its value at the cursor. Below them, every state change in order, for the whole log or between marks A and B. Pinch to zoom, drag to pan, tap to move the cursor.
+- **Plots**: a view of its own for any signals from any messages, on one time axis. Add signals by name; states show as labelled coloured strips, measurements as lines, each with its value at the cursor. Below them, every state change in order, for the whole log or between marks A and B. Pinch to zoom, drag to pan, tap to move the cursor. *Overlay* draws all measurements on one chart, each filling the height or, with *One scale*, on one value axis: the way to lay the same signal from two merged recordings over each other.
 
 ## Live sources
 

@@ -12,4 +12,7 @@ class PlotState {
     val keys = mutableStateListOf<PlotKey>()
     /** The time range all plots show; replaced when other data is loaded. */
     var view by mutableStateOf(ChartView(0f, 1f))
+    /** All measurements on one chart instead of one each; with [sharedScale] on one value axis, else each filling the height. */
+    var overlay by mutableStateOf(false)
+    var sharedScale by mutableStateOf(false)
 }
