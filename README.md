@@ -9,7 +9,7 @@ An Android app for reverse engineering CAN buses: reads logs and live streams, d
 - **DBC**: any number of DBC files, each for all buses or one bus. Message names, signal values at the cursor, value names.
 - **Finding signals**: a bit grid per message shaded by how often each bit flips. Set marks A and B around the moment you did something in the car and *Changed only in A–B* lists the messages, and highlights the bits, that changed then and at no other time.
 - **Defining signals**: tap a bit to start a signal, adjust size, byte order, sign, factor and offset while a plot of the whole log updates, then save it. Export the DBC when done.
-- **Plots**: any signals of a message over time; pinch to zoom, drag to pan, tap to move the cursor.
+- **Plots**: any signals over time, from one message or several; plots stay up while you move between messages. Pinch to zoom, drag to pan, tap to move the cursor.
 
 ## Live sources
 

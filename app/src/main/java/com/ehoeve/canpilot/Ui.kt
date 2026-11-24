@@ -64,7 +64,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -340,7 +339,6 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
     val store = model.store
     val decoder = model.decoder(message.bus, message.id)
     val signals = decoder?.signals.orEmpty()
-    val plotted = remember(message.bus, message.id) { mutableStateListOf<String>() }
     var editing by remember { mutableStateOf<SignalDraft?>(null) }
     val cursor = model.cursorNow
     val following = model.followLive && model.live != LiveSource.NONE
@@ -353,13 +351,19 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
             store.bitActivity(if (window) minOf(a!!, b!!) else Int.MIN_VALUE, if (window) maxOf(a!!, b!!) else Int.MAX_VALUE, message).getOrNull(message.index)
         }
     }
-    val view = remember(message.bus, message.id) { ChartView(seconds(store.firstTime), seconds(store.lastTime)) }
+    val view = model.chartView
     if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
-    val plottedNames = plotted.toList()
+    val plots = model.plots.toList()
+    val dbcs = model.dbcs.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE
-    val series by produceState<Map<String, FrameStore.Series>>(emptyMap(), revision, plottedNames, decoder, liveFrom) {
+    val series by produceState<Map<PlotKey, FrameStore.Series>>(emptyMap(), revision, plots, dbcs, liveFrom) {
         value = withContext(Dispatchers.Default) {
-            plottedNames.mapNotNull { name -> signals.firstOrNull { it.name == name }?.let { name to store.series(message, decoder!!, it, liveFrom) } }.toMap()
+            plots.mapNotNull { key ->
+                val plotMessage = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapNotNull null
+                val plotDecoder = model.decoder(key.bus, key.id) ?: return@mapNotNull null
+                val signal = plotDecoder.signals.firstOrNull { it.name == key.signal } ?: return@mapNotNull null
+                key to store.series(plotMessage, plotDecoder, signal, liveFrom)
+            }.toMap()
         }
     }
     Scaffold(
@@ -390,9 +394,18 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
                     }
                 }
             }
-            items(plottedNames, key = { "plot:$it" }) { name ->
-                val index = signals.indexOfFirst { it.name == name }
-                Chart(series[name], name, SIGNAL_COLORS[index.coerceAtLeast(0) % SIGNAL_COLORS.size], view, seconds(cursor), a?.let { seconds(it) }, b?.let { seconds(it) },
+            if (plots.isNotEmpty()) item {
+                Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    SectionTitle("Plots", Modifier.weight(1f))
+                    TextButton(onClick = { model.plots.clear() }) { Text("Clear all") }
+                }
+            }
+            items(plots.size, key = { "plot:${plots[it]}" }) { position ->
+                val key = plots[position]
+                val own = key.bus == message.bus && key.id == message.id
+                // this message's signals keep the colour of their outline in the bit grid
+                val color = SIGNAL_COLORS[(if (own) signals.indexOfFirst { it.name == key.signal }.coerceAtLeast(0) else position) % SIGNAL_COLORS.size]
+                Chart(series[key], if (own) key.signal else "${key.bus} · ${hexId(key.id)} · ${key.signal}", color, view, seconds(cursor), a?.let { seconds(it) }, b?.let { seconds(it) },
                     onCursor = { model.cursor = ticks(it); model.followLive = false }, onMoved = { model.followLive = false })
             }
             item {
@@ -400,15 +413,17 @@ private fun MessageDetail(model: AppModel, message: FrameStore.Message, onBack: 
                     SectionTitle("Signals", Modifier.weight(1f))
                     TextButton(onClick = { editing = SignalDraft(0, signals.size) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
                 }
+                if (signals.isNotEmpty()) Hint("Tick a signal to plot it. Plots stay up when you open another message.", Modifier.padding(horizontal = 4.dp))
                 if (signals.isEmpty()) Hint("No DBC entry for this message. Tap a bit to define a signal.", Modifier.padding(horizontal = 4.dp))
             }
             items(signals.size, key = { "signal:$it" }) { index ->
                 val signal = signals[index]
                 val active = frame != null && signal.fits(frame.size) &&
                     (signal.muxValue < 0 || decoder?.multiplexor?.let { it.fits(frame.size) && it.raw(frame) == signal.muxValue.toLong() } == true)
-                Surface(onClick = { if (!plotted.remove(signal.name)) plotted += signal.name }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                val plotKey = PlotKey(message.bus, message.id, signal.name)
+                Surface(onClick = { if (!model.plots.remove(plotKey)) model.plots += plotKey }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(signal.name in plotted, onCheckedChange = null)
+                        Checkbox(plotKey in plots, onCheckedChange = null)
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
                         Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         Text(if (active) format(signal, signal.raw(frame!!)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)

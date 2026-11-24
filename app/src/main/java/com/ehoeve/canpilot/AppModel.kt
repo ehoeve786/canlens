@@ -30,6 +30,9 @@ import java.io.IOException
 /** A DBC in use and the bus it decodes ([ALL_BUSES] for every bus). Kept as a private copy in the app's files. */
 class LoadedDbc(val dbc: Dbc, val bus: Int)
 
+/** A plotted signal. Plots stay up while moving between messages, so signals of different messages can be compared. */
+data class PlotKey(val bus: Int, val id: Int, val signal: String)
+
 const val ALL_BUSES = -1
 
 enum class LiveSource { NONE, COMMA, DASHKIT }
@@ -41,6 +44,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     val store = FrameStore()
     val dbcs = mutableStateListOf<LoadedDbc>()
+    val plots = mutableStateListOf<PlotKey>()
+    /** The time range all plots show; replaced when other data is loaded. */
+    var chartView by mutableStateOf(ChartView(0f, 1f)); private set
 
     /** Goes up whenever the store's content changed; composables read it to refresh. */
     var revision by mutableIntStateOf(0); private set
@@ -103,6 +109,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             cursor = store.firstTime; markA = null; markB = null; followLive = false
+            chartView = ChartView(seconds(store.firstTime), seconds(store.lastTime))
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +
                 if (problems.isEmpty()) "" else "\n" + problems.joinToString("\n")
             busy = false
@@ -155,11 +162,16 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         var dbc = old.dbc
         if (replaces != null && replaces != signal.name) dbc = dbc.withoutSignal(message.id, replaces)
         dbc = dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, signal)
+        if (replaces != null && replaces != signal.name) {
+            val at = plots.indexOf(PlotKey(message.bus, message.id, replaces))
+            if (at >= 0) plots[at] = PlotKey(message.bus, message.id, signal.name)
+        }
         replaceDbc(index, LoadedDbc(dbc, old.bus))
     }
 
     fun deleteSignal(message: FrameStore.Message, name: String) {
         val index = dbcIndex(message)
+        plots.remove(PlotKey(message.bus, message.id, name))
         if (index >= 0) replaceDbc(index, LoadedDbc(dbcs[index].dbc.withoutSignal(message.id, name), dbcs[index].bus))
     }
 
@@ -202,6 +214,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         val generation = synchronized(store) { store.clear(); ++liveGeneration }
         store.dropOldest = true
         cursor = 0; markA = null; markB = null; followLive = true
+        chartView = ChartView(0f, LIVE_WINDOW_SECONDS)
         live = source
         status = "Connecting to $name"
         val sink = FrameSink { time, bus, id, data, offset, length ->
