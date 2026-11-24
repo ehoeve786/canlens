@@ -112,7 +112,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     Scaffold(
         topBar = {
             TopAppBar(
-                actions = { if (model.live.source == LiveSource.DASHKIT) TextButton(onClick = { transmitting = true }) { Text("Send") } },
+                actions = { TextButton(onClick = { transmitting = true }) { Text("Send") } },
                 title = {
                     Column {
                         Text(decoder?.name ?: "Message ${hexId(message.id)}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleMedium)

@@ -1,5 +1,11 @@
 package com.ehoeve.canpilot
 
+import com.ehoeve.canpilot.core.DashKitStatus
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
+import android.os.Build
+import android.Manifest
+import android.content.Context
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -44,20 +50,37 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Sending frames through a DashKit on USB. The firmware decides when a frame may go on the bus (right after the car's
+ * Sending frames through a DashKit, on USB or over Bluetooth. The firmware decides when a frame may go on the bus (right after the car's
  * own frame of that id, or not at all); this decides whether to ask: only while armed, never once a CAN controller
  * reports trouble, and changing bits at random only in Park and never in a message that steers, brakes or drives.
  */
-class TxState(private val store: FrameStore, private val scope: CoroutineScope, private val live: LiveState, private val dbc: DbcState) {
+class TxState(context: Context, private val store: FrameStore, private val scope: CoroutineScope, private val live: LiveState, private val dbc: DbcState) {
+    /** Bluetooth to the DashKit, for when its USB port is the comma 3X's; what it last said about connecting. */
+    var bleState by mutableStateOf(""); private set
+    private val ble = DashKitBle(context) { bleState = it }
+    private var bleClock: Job? = null
+
+    /** The DashKit on USB if that is the live source, else Bluetooth once connected. */
+    private val link: TxLink? get() = live.dashKit ?: ble.takeIf { it.connected }
+    val linked: Boolean get() = link != null
+    val status: DashKitStatus? get() = link?.status
+
+    fun connectBle() {
+        ble.open()
+        if (bleClock == null) bleClock = scope.launch { while (isActive) { delay(1000); ble.everySecond() } }
+    }
+
+    fun close() { stop(); bleClock?.cancel(); bleClock = null; ble.close() }
+
     /** What is being sent over time, for the button that stops it; null when nothing is. */
     var running by mutableStateOf<String?>(null); private set
     var note by mutableStateOf(""); private set
     private var job: Job? = null
 
-    val armed: Boolean get() = live.dashKit?.armed == true
+    val armed: Boolean get() = link?.armed == true
 
     fun arm(on: Boolean) {
-        val kit = live.dashKit ?: return
+        val kit = link ?: return
         if (!on) { stop(); kit.send(DashKitLine.DISARM) } else kit.send(DashKitLine.ARM)
         kit.armed = on
         note = if (on) "Armed. The DashKit watches the bus for two seconds before it sends anything." else ""
@@ -65,7 +88,7 @@ class TxState(private val store: FrameStore, private val scope: CoroutineScope, 
 
     /** Asks for one frame; false when it can't be asked for (not armed, bus trouble, or not a frame the DashKit sends). */
     fun send(bus: Int, id: Int, data: ByteArray): Boolean {
-        val kit = live.dashKit
+        val kit = link
         val line = DashKitLine.transmit(bus, id, data)
         val problem = when {
             kit == null -> "The DashKit is not connected"
@@ -112,6 +135,7 @@ class TxState(private val store: FrameStore, private val scope: CoroutineScope, 
     fun fuzzRefusal(message: FrameStore.Message): String? {
         val name = dbc.decoder(message.bus, message.id)?.name
         return when {
+            live.source == LiveSource.NONE -> "Only with a live stream open, so that the gear is the car's gear now."
             name != null && TxGuard.critical(name) -> "Not offered for messages that steer, brake, drive, restrain or carry the stalks."
             TxGuard.inPark(store) { dbc.decoder(it.bus, it.id) } != true -> "Only while the car reports Park, from a decoded gear signal."
             else -> null
@@ -138,7 +162,6 @@ class TxState(private val store: FrameStore, private val scope: CoroutineScope, 
 @Composable
 fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onClose: () -> Unit) {
     val tx = model.tx
-    val kit = model.live.dashKit
     var bus by remember { mutableIntStateOf(if (message.bus in 0..1) message.bus else 0) }
     var hex by remember { mutableStateOf(hexBytes(frame ?: message.data)) }
     var period by remember { mutableStateOf("100") }
@@ -146,6 +169,7 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
     val data = remember(hex) { hex.filterNot { it.isWhitespace() }.takeIf { it.length % 2 == 0 && it.isNotEmpty() }?.chunked(2)?.map { it.toIntOrNull(16)?.toByte() } }
         ?.takeIf { bytes -> bytes.none { it == null } }?.map { it!! }?.toByteArray()
     // the DashKit reports once a second: look again as often
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) tx.connectBle() }
     val tick by produceState(0) { while (true) { delay(500); value++ } }
     val a = model.trace.markA
     val b = model.trace.markB
@@ -157,8 +181,12 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
                 Switch(tx.armed && tick >= 0, { if (it) confirming = "arm" else tx.arm(false) })
                 Hint("Armed to transmit on the car's bus", Modifier.padding(start = 10.dp))
             }
-            if (kit != null) {
-                val status = kit.status
+            if (!tx.linked) {
+                Button(onClick = { if (Build.VERSION.SDK_INT >= 31) permission.launch(Manifest.permission.BLUETOOTH_CONNECT) else tx.connectBle() }, modifier = Modifier.fillMaxWidth()) { Text("Connect to the DashKit over Bluetooth") }
+                Hint(tx.bleState.ifEmpty { "The DashKit must run the canpilot-link firmware and be paired with this phone through DashPilot. Its USB port can stay on the comma 3X." })
+            }
+            val status = tx.status
+            if (status != null && tick >= 0) {
                 Hint("Sent ${status.sent} · refused ${status.refused} · no safe moment ${status.expired}" + (0..1).joinToString("") { index ->
                     if (status.transmitErrors[index] < 0) "" else "\nBus $index errors: transmit ${status.transmitErrors[index]}, receive ${status.receiveErrors[index]}" + if (status.flags[index] and 0x38 != 0) " · IN TROUBLE" else ""
                 })

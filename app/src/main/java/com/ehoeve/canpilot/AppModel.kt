@@ -40,7 +40,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val live = LiveState(application, preferences, viewModelScope, store, { status = it }, { liveStarted() }) { revision++ }
     val trace = TraceState(store, preferences) { live.source != LiveSource.NONE }
     val signals = SignalState(store, viewModelScope, dbc, trace) { status = it }
-    val tx = TxState(store, viewModelScope, live, dbc)
+    val tx = TxState(application, store, viewModelScope, live, dbc)
     val session = SessionState(this, application, preferences)
 
     /** The log files the open data came from, and those merged onto its timeline after them; a session reopens both. */
@@ -256,7 +256,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCompare() { other = null; mine = null; otherName = "" }
 
-    override fun onCleared() = live.stop()
+    override fun onCleared() { tx.close(); live.stop() }
 
     init { session.restore() }
 

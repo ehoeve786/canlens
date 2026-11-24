@@ -112,18 +112,17 @@ class Recorder(context: Context) : Closeable {
  * The DashKit's USB-C port: the ESP32-S3's built-in USB serial (CDC), read with Android's USB host API.
  * No control-line requests are sent: on this chip DTR/RTS are the reset and boot-mode lines.
  */
-class DashKitUsb(private val context: Context) : Closeable {
+class DashKitUsb(private val context: Context) : TxLink, Closeable {
     private val manager = context.getSystemService(Context.USB_SERVICE) as UsbManager
     @Volatile private var closed = false
 
     /** What the DashKit last reported about transmitting and its CAN controllers. */
-    val status = DashKitStatus()
-    /** While true the firmware is kept armed to transmit; it disarms itself two seconds after this stops. */
-    @Volatile var armed = false
+    override val status = DashKitStatus()
+    @Volatile override var armed = false
     private val outbox = ConcurrentLinkedQueue<ByteArray>()
 
     /** Queues a line for the DashKit ([DashKitLine.transmit]); it goes out within a few milliseconds. */
-    fun send(line: String) { outbox += line.toByteArray(Charsets.US_ASCII) }
+    override fun send(line: String) { outbox += line.toByteArray(Charsets.US_ASCII) }
 
     fun find(): UsbDevice? = manager.deviceList.values.firstOrNull { it.vendorId == ESPRESSIF && it.productId == USB_SERIAL_JTAG }
 
