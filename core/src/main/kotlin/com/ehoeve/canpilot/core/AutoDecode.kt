@@ -132,12 +132,14 @@ object AutoDecode {
             if (candidate.size > 8) continue
             val last = HashMap<Long, Int>()
             var changes = 0
+            var steps = 0
             var consecutive = 0L
             var sameValue = 0L
             var previous = 0L
             for (k in 0 until p.size) {
                 val value = candidate.raw(p.data, k * p.length)
                 if (k > 0 && value != previous) changes++
+                if (k > 0 && (value - previous) and ((1L shl candidate.size) - 1) == 1L) steps++
                 previous = value
                 val earlier = last.put(value, k)
                 if (last.size > 16) break
@@ -148,6 +150,8 @@ object AutoDecode {
                     if (earlier != null) sameValue += Integer.bitCount((now xor p.data[earlier * p.length + byte].toInt()) and mask)
                 }
             }
+            // a counter also changes in every frame and repeats its values, but it counts up by one; a selector doesn't
+            if (steps >= (p.size - 1) * 0.9) continue
             if (last.size in 2..16 && changes >= p.size * 0.3 && consecutive >= p.size / 2 && sameValue * 2 < consecutive) return candidate
         }
         return null

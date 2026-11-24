@@ -537,6 +537,15 @@ class CoreTest {
         assertArrayEquals(bytes("AABBCCDD"), frames[1].data)
     }
 
+    @Test fun aCounterIsNotTakenForAMultiplexor() {
+        val store = FrameStore()
+        // byte 0: a 2-bit counter at bits 3-4; byte 1 changes with it, as data that differs per frame would
+        for (i in 0 until 400) store.frame(i * 10_000L, 1, 0x344, byteArrayOf(((i and 3) shl 3).toByte(), (i * 37).toByte()), 0, 2)
+        val found = AutoDecode.run(store, { null }, emptyList())
+        assertTrue(found.none { it.signal.isMultiplexor })
+        assertTrue(found.any { it.signal.name == "COUNTER_3" })
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)

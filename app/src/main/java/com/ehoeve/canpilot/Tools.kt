@@ -180,11 +180,12 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
 @Composable
 fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
-    val unticked = remember { mutableStateListOf<Suggestion>() }
     val all = model.signals.autoResults
+    // named or verified ones start ticked; plain layout guesses only when ticked by hand
+    val chosen = remember(all) { mutableStateListOf<Suggestion>().apply { addAll(all.filter { it.confidence >= SignalState.NAMED }) } }
     val plain = all.count { it.confidence < SignalState.NAMED }
     val shown = if (showPlain) all else all.filter { it.confidence >= SignalState.NAMED }
-    val ticked = shown.filter { it !in unticked }
+    val ticked = shown.filter { it in chosen }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -198,7 +199,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                 Hint("Works out the layout of every message that has no DBC entry: fields, counters, checksums, multiplexing. Fields that follow a signal you have already decoded, " +
                     "or that changed only at one of your markers, get a name. These are suggestions: check them before you rely on them.")
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Button(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { unticked.clear(); model.signals.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
+                    Button(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
                     if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.signals.decoding, onClick = { model.signals.accept(ticked) }) { Text("Add ${ticked.size} to the DBC") }
                 }
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
@@ -210,7 +211,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                 val signal = suggestion.signal
                 Surface(onClick = { onPick(suggestion) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(suggestion !in unticked, onCheckedChange = { if (it) unticked.remove(suggestion) else unticked += suggestion })
+                        Checkbox(suggestion in chosen, onCheckedChange = { if (it) chosen += suggestion else chosen.remove(suggestion) })
                         BusBadge(suggestion.message.bus)
                         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
