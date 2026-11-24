@@ -240,7 +240,8 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         if (uri != null && exporting in model.dbc.files.indices) model.dbc.export(exporting, uri)
     }
-    val buses = (listOf(0, 1, 2, 3) + model.store.messages.map { it.bus }).distinct().sorted()
+    // the buses a DBC can be meant for: a comma's echoes (128 and up) and merged recordings are decoded like their source bus
+    val buses = (listOf(0, 1, 2, 3) + model.store.messages.map { sourceBus(it.bus) }).distinct().sorted()
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("DBC files", style = MaterialTheme.typography.titleLarge)
