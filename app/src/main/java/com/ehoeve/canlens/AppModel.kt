@@ -1,5 +1,6 @@
 package com.ehoeve.canlens
 
+import com.ehoeve.canlens.core.AutoDecode
 import android.app.Application
 import android.content.Context
 import android.content.Intent
@@ -45,7 +46,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val dbc = DbcState(application, preferences, viewModelScope, plot.keys) { status = it }
     val live = LiveState(application, preferences, viewModelScope, store, { status = it }, { liveStarted() }) { revision++ }
     val trace = TraceState(store, preferences) { live.source != LiveSource.NONE }
-    val signals = SignalState(store, viewModelScope, dbc, trace) { status = it }
+    val signals = SignalState(store, viewModelScope, dbc, trace, preferences, { live.source != LiveSource.NONE }) { status = it }
     /** A spoken test in the car; it records, so its markers land in the log as well. */
     val guided = GuidedTest(application, viewModelScope) { note -> addMarker(beginMarker(), note, remember = false) }
     val tx = TxState(application, store, viewModelScope, live, dbc)
@@ -237,6 +238,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         return found
     }
 
+    /** The steps of the user's own guided test, a line each. */
+    var customTest: String = preferences.getString("customTest", "")!!
+        set(value) { field = value; preferences.edit().putString("customTest", value).apply() }
+
     // ---- markers: in the trace, and in the recording when there is one
 
     fun beginMarker() = PendingMarker(trace.cursorNow, live.now())
@@ -249,7 +254,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun addMarker(pending: PendingMarker, note: String, remember: Boolean = true) {
         // the numbered default says nothing worth repeating
         if (remember && !note.matches(Regex("Marker \\d+"))) {
-            recentNotes = (listOf(note) + (recentNotes - note)).take(8)
+            // of a reading ("range=312") the name is offered again, to be completed with the next value
+            val again = AutoDecode.READING.find(note)?.let { it.groupValues[1] + "=" } ?: note
+            recentNotes = (listOf(again) + (recentNotes - again)).take(8)
             preferences.edit().putString("recentNotes", recentNotes.joinToString("\n")).apply()
         }
         trace.markers += Marker(pending.time, note)

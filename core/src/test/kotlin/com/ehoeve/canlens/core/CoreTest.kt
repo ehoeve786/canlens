@@ -414,6 +414,22 @@ class CoreTest {
         assertEquals(mapOf(0xFFFFL to "SNA"), at(0x400, 0).signal.valueNames)
     }
 
+    @Test fun findsTheFieldBehindNumbersReadOffTheScreen() {
+        val store = FrameStore()
+        var noise = 7
+        // byte 1: the state of charge in half percents, falling; byte 0 is noise
+        for (i in 0 until 1000) { noise = noise * 1103515245 + 12345; store.frame(i * 20_000L, 1, 0x292, byteArrayOf((noise ushr 16).toByte(), (180 - i / 10).toByte(), 0), 0, 3) }
+        fun reading(frame: Int) = frame * 200 + 3 to (180 - frame / 10) * 0.5
+        assertEquals("soc" to "78.5", AutoDecode.READING.find("soc = 78.5")!!.let { it.groupValues[1] to it.groupValues[2] })
+        assertTrue(AutoDecode.fromReadings(store, { null }, mapOf("soc" to listOf(100, 500, 900).map(::reading))).isEmpty())   // three fit anything
+        val found = AutoDecode.fromReadings(store, { null }, mapOf("soc" to listOf(50, 250, 480, 700, 950).map(::reading)))
+        val best = found.first()
+        assertEquals("READ_SOC_8", best.signal.name)
+        assertEquals(8, best.signal.start)
+        assertEquals(0.5, best.signal.factor, 1e-9)
+        assertEquals(0.0, best.signal.offset, 1e-9)
+    }
+
     @Test fun communitySignalsTheFramesContradictAreMarked() {
         val store = FrameStore()
         for (i in 0 until 200) store.frame(i * 20_000L, 1, 0x25D, byteArrayOf((i and 1).toByte(), 0), 0, 2)

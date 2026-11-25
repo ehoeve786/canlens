@@ -49,6 +49,9 @@ val RECORDING = Color(0xFFFF5252)
 val MARKER = Color(0xFFFFB74D)
 val DIFFERENT = Color(0xFFEF6C00)
 val VARIES_IN_ONE = Color(0xFF7E5A1E)
+/** A bit that is on, or off, and was not at the reference moment (Mark A). */
+val TURNED_ON = Color(0xFF00897B)
+val TURNED_OFF = Color(0xFFC62828)
 
 @Composable
 fun CanLensTheme(content: @Composable () -> Unit) = MaterialTheme(colorScheme = Colors, shapes = AppShapes, content = content)

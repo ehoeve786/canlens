@@ -1,5 +1,8 @@
 package com.ehoeve.canlens
 
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.mutableIntStateOf
+import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -28,6 +31,8 @@ class SignalState(
     private val scope: CoroutineScope,
     private val dbc: DbcState,
     private val trace: TraceState,
+    private val preferences: SharedPreferences,
+    private val live: () -> Boolean,
     private val report: (String) -> Unit,
 ) {
     /** The signal search: its inputs, its results, and a found signal on its way into the editor. */
@@ -44,6 +49,29 @@ class SignalState(
     var autoResults by mutableStateOf<List<Suggestion>>(emptyList()); private set
     var autoStatus by mutableStateOf(""); private set
     var decoding by mutableStateOf(false); private set
+
+    /**
+     * Named and community suggestions the user turned down (left unticked when others were added), by bus, id and
+     * bits. They stay off the list on later decodes, in later runs of the app too, until brought back.
+     */
+    private val rejected = preferences.getStringSet("rejected", emptySet())!!.toHashSet()
+    var rejectedCount by mutableIntStateOf(rejected.size); private set
+    private fun key(s: Suggestion) = "${s.message.bus}:${s.message.id}:${s.signal.start}:${s.signal.size}:${s.signal.muxValue}"
+    private fun saveRejected() { rejectedCount = rejected.size; preferences.edit().putStringSet("rejected", rejected.toHashSet()).apply() }
+
+    fun restoreRejected() { rejected.clear(); saveRejected(); decodeEverything() }
+
+    /** While a stream runs: decode again every 15 s, also away from the Decode screen, and say what got a name. */
+    var keepDecoding by mutableStateOf(false); private set
+
+    fun keepDecoding(on: Boolean) {
+        if (on == keepDecoding) return
+        keepDecoding = on
+        if (on) scope.launch {
+            while (keepDecoding && live()) { if (!decoding) decodeEverything(); delay(15_000) }
+            keepDecoding = false
+        }
+    }
 
     /** Other data is coming: results found in the old data go. */
     fun reset() {
@@ -82,12 +110,21 @@ class SignalState(
         if (decoding || store.frameCount == 0L) return
         decoding = true
         autoStatus = "Starting"
-        val notes = trace.markers.map { it.time to it.note }
+        // a marker is something done, or a number read off the car ("range=312")
+        val (read, done) = trace.markers.map { it.time to it.note }.partition { AutoDecode.READING.matches(it.second) }
+        val readings = read.groupBy({ AutoDecode.READING.find(it.second)!!.groupValues[1].lowercase() }, { it.first to AutoDecode.READING.find(it.second)!!.groupValues[2].toDouble() })
+        val named = autoResults.filter { it.confidence >= NAMED }.mapTo(HashSet(), ::key)
         scope.launch {
             val result = withContext(Dispatchers.Default) {
-                runCatching { AutoDecode.run(store, { dbc.decoder(it.bus, it.id) }, notes) { step -> launch(Dispatchers.Main) { autoStatus = step } } }
+                runCatching {
+                    val known = { message: FrameStore.Message -> dbc.decoder(message.bus, message.id) }
+                    (AutoDecode.fromReadings(store, known, readings) + AutoDecode.run(store, known, done) { step -> launch(Dispatchers.Main) { autoStatus = step } }).filter { key(it) !in rejected }
+                }
             }
             autoResults = result.getOrDefault(emptyList())
+            // decoding by itself during a stream: what is new is said, since nobody may be looking at the list
+            val fresh = autoResults.filter { it.confidence >= NAMED && key(it) !in named }
+            if (keepDecoding && fresh.isNotEmpty()) report("Decode found " + fresh.take(3).joinToString { "${hexId(it.message.id)} ${it.signal.name}" } + if (fresh.size > 3) " and ${fresh.size - 3} more" else "")
             autoStatus = result.fold(
                 { found -> if (found.isEmpty()) "Nothing left to decode" else "${found.size} suggestions, ${found.count { it.confidence >= NAMED }} of them with a name or a check behind them" },
                 { "Decoding failed: ${it.message ?: it.javaClass.simpleName}" },
@@ -109,12 +146,19 @@ class SignalState(
                 runCatching {
                     val community = COMMUNITY.map { (name, url) -> name to Dbc.parse(URL(url).openConnection().apply { connectTimeout = 15_000; readTimeout = 30_000 }.getInputStream().use { it.readBytes().toString(Charsets.ISO_8859_1) }, name) }
                     // the same id seen on several buses but saved in one file (the party DBC is for all buses): once
-                    AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community).distinctBy { Triple(dbc.target(it.message), it.message.id, it.signal.name) }
+                    AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community).distinctBy { Triple(dbc.target(it.message), it.message.id, it.signal.name) }.filter { key(it) !in rejected }
                 }
             }
             result.onSuccess { found -> autoResults = autoResults.filter { !it.evidence.startsWith("From ") } + found }
             autoStatus = result.fold(
-                { found -> if (found.isEmpty()) "The community DBCs know nothing your DBCs don't" else "${found.size} signals from the community DBCs, ticked: check them on a plot before you rely on them" },
+                { found ->
+                    val fit = found.count { it.confidence >= NAMED }
+                    when {
+                        found.isEmpty() -> "The community DBCs know nothing your DBCs don't"
+                        fit == found.size -> "$fit signals from the community DBCs, ticked: check them on a plot before you rely on them"
+                        else -> "$fit signals from the community DBCs fit and are ticked; ${found.size - fit} don't fit your frames (among the unnamed fields, each with the reason)"
+                    }
+                },
                 { "Couldn't get the community DBCs: ${it.message ?: it.javaClass.simpleName}" },
             )
             decoding = false
@@ -131,7 +175,9 @@ class SignalState(
             append("bus id signal bits: values seen (min..max, distinct, changes) | what Decode found\n")
             for (s in autoResults) {
                 val signal = s.signal
-                val series = store.series(s.message, DbcMessage(s.message.id, "", s.message.data.size, listOf(signal)), signal)
+                // a paged field is measured on its own page's frames: with the selector the DBC or Decode has for the message
+                val selector = dbc.decoder(s.message.bus, s.message.id)?.multiplexor ?: autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
+                val series = store.series(s.message, DbcMessage(s.message.id, "", s.message.data.size, listOfNotNull(selector, signal)), signal)
                 val stats = Analysis.stats(series, Float.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY)
                 val distinct = (0 until series.size).mapTo(HashSet()) { series.values[it] }.size
                 append("${s.message.bus} %X ${signal.name} ${signal.start}+${signal.size}".format(s.message.id))
@@ -142,10 +188,24 @@ class SignalState(
         }
     }
 
-    /** Adds [accepted] to the DBCs and takes them off the list, with [rejected]: shown and left unticked, so turned down. */
-    fun accept(accepted: List<Suggestion>, rejected: List<Suggestion> = emptyList()) {
+    /**
+     * Names every field of event [number] after what happened then (PLUG_IN_14), and lists them with the named ones.
+     */
+    fun nameEvent(number: Int, name: String) {
+        val clean = name.trim().uppercase().replace(Regex("\\W+"), "_").trim('_')
+        if (clean.isEmpty()) return
+        autoResults = autoResults.map { s ->
+            if (!s.signal.name.startsWith("E${number}_")) s
+            else Suggestion(s.message, Signal("${clean}_${s.signal.start}", s.signal.start, s.signal.size, true, false, 1.0, 0.0, "", -1, false), s.evidence, NAMED, at = s.at)
+        }
+    }
+
+    /** Adds [accepted] to the DBCs and takes them off the list, with [declined]: shown and left unticked, so turned down. */
+    fun accept(accepted: List<Suggestion>, declined: List<Suggestion> = emptyList()) {
         dbc.add(accepted)
-        autoResults = autoResults - accepted.toSet() - rejected.toSet()
+        autoResults = autoResults - accepted.toSet() - declined.toSet()
+        // plain layout guesses are only passed over; a name or a community signal turned down is remembered
+        if (rejected.addAll(declined.filter { it.confidence >= NAMED || it.evidence.startsWith("From ") }.map(::key))) saveRejected()
         report("${accepted.size} signals added. Export the DBC to keep a copy outside the app.")
     }
 

@@ -160,8 +160,13 @@ fun TraceScreen(model: AppModel, selected: FrameStore.Message?, onSelect: (Frame
                 placeholder = { Text("bus=1 id=249 d0&0F=3 changed", style = CELL.copy(fontSize = 14.sp)) },
                 isError = compiled.isFailure,
                 supportingText = {
-                    Text(compiled.exceptionOrNull()?.message
-                        ?: if (trace.fixed) "${latest.size} of ${messages.size} messages" else why ?: "${shown?.size ?: 0} of ${store.frameCount} frames")
+                    val error = compiled.exceptionOrNull()?.message
+                    if (error != null || !trace.fixed) Text(error ?: why ?: "${shown?.size ?: 0} of ${store.frameCount} frames")
+                    // Fixed has each message as it stood at the cursor: early in a log that is only the few that had sent by then
+                    else Row {
+                        Text("${latest.size} of ${messages.size} messages" + if (following) "" else ", as they stood at %.2f s".format(seconds(cursor)))
+                        if (!following && cursor < store.lastTime) Text("Go to the end", Modifier.padding(start = 12.dp).clickable { trace.cursor = store.lastTime }, color = MaterialTheme.colorScheme.primary)
+                    }
                 },
                 trailingIcon = {
                     Row {

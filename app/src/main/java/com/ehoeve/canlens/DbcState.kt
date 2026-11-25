@@ -1,5 +1,9 @@
 package com.ehoeve.canlens
 
+import java.util.Locale
+import java.util.Date
+import java.text.SimpleDateFormat
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
@@ -48,6 +52,8 @@ class DbcState(
 ) {
     private val folder = File(context.filesDir, "dbc").apply { mkdirs() }
     private val io = Dispatchers.IO.limitedParallelism(1)    // one write at a time, in order
+    /** The DBCs whose state before this run's first change has been put in the history. */
+    private val backedUp = HashSet<String>()
 
     val files = mutableStateListOf<LoadedDbc>()
 
@@ -203,10 +209,36 @@ class DbcState(
         val text = value.dbc.write()
         val name = value.dbc.name
         scope.launch(io) {
+            if (backedUp.add(name)) runCatching { backUp(name) }
             runCatching { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
             runCatching { (context.contentResolver.openOutputStream(outside(name), "wt") ?: throw IOException()).use { it.write(text.toByteArray(Charsets.ISO_8859_1)) } }
                 .onFailure { preferences.edit().remove("uri:$name").apply(); withContext(Dispatchers.Main) { report("$name: only saved inside the app this time (${it.message ?: "can't write the file"})") } }
         }
+    }
+
+    /**
+     * Copies [name] as it is before this run's first change to `Download/CANLens/dbc/history/`, under its name and
+     * the time, and keeps the newest [HISTORY] of them: a wrong turn can be taken back days later.
+     */
+    private fun backUp(name: String) {
+        val before = File(folder, name).takeIf { it.exists() }?.readBytes() ?: return
+        val resolver = context.contentResolver
+        val path = Environment.DIRECTORY_DOWNLOADS + "/CANLens/dbc/history/"
+        val stem = name.removeSuffix(".dbc")
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, "$stem.${SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date())}.dbc")
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+            put(MediaStore.Downloads.RELATIVE_PATH, path)
+        }) ?: return
+        resolver.openOutputStream(uri)?.use { it.write(before) }
+        // the names sort by time: all but the newest go
+        val old = ArrayList<Pair<String, Long>>()
+        val mine = Regex(Regex.escape(stem) + """\.\d{4}-\d\d-\d\d-\d{6}\.dbc""")   // LIKE alone would take another DBC's copies along
+        resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID, MediaStore.Downloads.DISPLAY_NAME),
+            "${MediaStore.Downloads.RELATIVE_PATH} = ? AND ${MediaStore.Downloads.DISPLAY_NAME} LIKE ?", arrayOf(path, "$stem.%.dbc"), null)?.use { rows ->
+            while (rows.moveToNext()) if (mine.matches(rows.getString(1))) old += rows.getString(1) to rows.getLong(0)
+        }
+        for ((_, id) in old.sortedByDescending { it.first }.drop(HISTORY)) resolver.delete(ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, id), null, null)
     }
 
     /** The file outside the app that [name] is kept in: the one it was opened from, else a new one in `Download/CANLens/dbc/`. */
@@ -215,4 +247,6 @@ class DbcState(
         put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
         put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens/dbc")
     }) ?: throw IOException("can't create it in Downloads")).also { preferences.edit().putString("uri:$name", it.toString()).apply() }
+
+    private companion object { const val HISTORY = 10 }
 }

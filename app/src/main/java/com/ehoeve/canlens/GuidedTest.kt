@@ -25,7 +25,8 @@ class GuidedTest(context: Context, private val scope: CoroutineScope, private va
     private var ready = false
     private val speech = TextToSpeech(context) { ready = it == TextToSpeech.SUCCESS }
 
-    fun start(name: String, steps: List<Pair<String, String>>) {
+    /** [pause]: seconds between steps; a cable takes longer to plug in than a switch to flip. */
+    fun start(name: String, steps: List<Pair<String, String>>, pause: Int = 4) {
         stop()
         val all = steps + steps
         job = scope.launch {
@@ -38,7 +39,7 @@ class GuidedTest(context: Context, private val scope: CoroutineScope, private va
                     // the marker a moment after the prompt: Decode looks from 1 s before to 2 s after it
                     delay(1000)
                     mark(step.second)
-                    delay(4000)
+                    delay(pause * 1000L)
                 }
                 say("Done. Stop the recording, then run Decode again.")
             } finally { running = null }
@@ -78,6 +79,10 @@ class GuidedTest(context: Context, private val scope: CoroutineScope, private va
                 .flatMap { pair(it, "Lower the", "Raise the", "down", "up") },
             "Wipers" to pair("wipers", "Turn on the", "Turn off the", "on", "off") + pair("washer", "Press the", "Release the", "pressed", "released"),
             "Passenger" to listOf("Passenger, sit in the front seat" to "passenger in", "Passenger, get out of the front seat" to "passenger out"),
+            "Charging" to listOf("Open the charge port" to "charge port open", "Plug in the cable" to "cable in", "Unplug the cable" to "cable out", "Close the charge port" to "charge port closed"),
         )
+
+        /** The user's own test from [text]: a step per line, said as written and noted as written ("sunroof open"). */
+        fun custom(text: String) = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.map { it to it }
     }
 }

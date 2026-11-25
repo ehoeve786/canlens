@@ -363,16 +363,19 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Guided test", style = MaterialTheme.typography.titleLarge)
             Hint("The phone says each step out loud and drops a marker for it, then runs the test once more. It records while it runs. Park first, and have someone else do the steps if you are driving.")
-            for ((name, steps) in GuidedTest.SCRIPTS) Surface(onClick = {
-                showGuided = false
-                model.live.setRecording(true)
-                model.guided.start(name, steps)
-            }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            // charging steps take their time: 15 s each
+            fun run(name: String, steps: List<Pair<String, String>>) { showGuided = false; model.live.setRecording(true); model.guided.start(name, steps, if (name == "Charging") 15 else 4) }
+            for ((name, steps) in GuidedTest.SCRIPTS) Surface(onClick = { run(name, steps) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                 Column(Modifier.fillMaxWidth().padding(14.dp)) {
                     Text(name, style = MaterialTheme.typography.titleMedium)
-                    Hint(steps.joinToString(", ") { it.second } + " · about ${steps.size * 2 * 6 / 60 + 1} min")
+                    Hint(steps.joinToString(", ") { it.second } + " · about ${steps.size * 2 * (if (name == "Charging") 17 else 6) / 60 + 1} min")
                 }
             }
+            // the user's own test, kept between runs of the app
+            var own by remember { mutableStateOf(model.customTest) }
+            OutlinedTextField(own, { own = it; model.customTest = it }, Modifier.fillMaxWidth(), minLines = 3, label = { Text("Your own test: a step per line") },
+                placeholder = { Text("sunroof open\nsunroof closed") }, supportingText = { Text("End a step in on/off, open/closed, in/out or up/down and Decode pairs the two.") })
+            Button(enabled = GuidedTest.custom(own).isNotEmpty(), onClick = { run("Your", GuidedTest.custom(own)) }, modifier = Modifier.fillMaxWidth()) { Text("Run your test") }
         }
     }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {

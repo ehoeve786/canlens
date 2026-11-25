@@ -1,8 +1,9 @@
 package com.ehoeve.canlens
 
+import com.ehoeve.canlens.core.AutoDecode
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.FocusRequester
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.rememberCoroutineScope
 import android.content.Intent
@@ -147,6 +148,7 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
 fun MarkerDialog(model: AppModel, pending: PendingMarker, onClose: () -> Unit) {
     val default = "Marker ${model.trace.markers.size + 1}"
     var note by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
     fun save() { model.addMarker(pending, note.trim().ifEmpty { default }); onClose() }
     AlertDialog(
         onDismissRequest = { save() },
@@ -155,11 +157,14 @@ fun MarkerDialog(model: AppModel, pending: PendingMarker, onClose: () -> Unit) {
         title = { Text("Marker at %.2f s".format(seconds(pending.time))) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("What happened") }, placeholder = { Text(default) })
-                // one tap saves the marker with a note used before
+                OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth().focusRequester(focus), singleLine = true, label = { Text("What happened, or name=number") }, placeholder = { Text(default) })
+                // one tap saves the marker with a note used before; a reading's name ("range=") waits for its number
                 if (model.recentNotes.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    model.recentNotes.forEach { recent -> AssistChip(onClick = { model.addMarker(pending, recent); onClose() }, label = { Text(recent, maxLines = 1, overflow = TextOverflow.Ellipsis) }) }
+                    model.recentNotes.forEach { recent ->
+                        AssistChip(onClick = { if (recent.endsWith("=")) { note = recent; focus.requestFocus() } else { model.addMarker(pending, recent); onClose() } }, label = { Text(recent, maxLines = 1, overflow = TextOverflow.Ellipsis) })
+                    }
                 }
+                Hint("A number you read off the car's screen goes in as name=number, like range=312. From five readings of one name on, Decode looks for the field that carries it.")
                 if (pending.fileMicros != null) Hint("Written into the recording too.")
             }
         },
@@ -172,7 +177,14 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Markers", style = MaterialTheme.typography.titleLarge)
             Hint("Tap one to move the cursor there. A–B puts the marks from 1 s before to 2 s after it.")
-            model.trace.markers.toList().forEach { marker ->
+            val (readings, done) = model.trace.markers.toList().partition { AutoDecode.READING.matches(it.note) }
+            readings.groupBy { AutoDecode.READING.find(it.note)!!.groupValues[1] }.forEach { (name, of) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Hint("${of.size} readings of $name", Modifier.weight(1f))
+                    TextButton(onClick = { model.trace.markers.removeAll(of) }) { Text("Remove") }
+                }
+            }
+            done.forEach { marker ->
                 Surface(onClick = { model.trace.cursor = marker.time; model.trace.followLive = false; onClose() }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("%.2f s".format(seconds(marker.time)), Modifier.width(88.dp), fontFamily = MONO)
@@ -189,17 +201,35 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
     }
 }
 
+private val EVENT = Regex("^E(\\d+)_")
+
 /** Runs the automatic decoder and lists what it proposes, to be reviewed and added to the DBC. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
-    var keepDecoding by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    LaunchedEffect(keepDecoding, model.live.source) {
-        while (keepDecoding && model.live.source != LiveSource.NONE) { if (!model.signals.decoding) model.signals.decodeEverything(); delay(15_000) }
-    }
     val all = model.signals.autoResults
+    // events: fields that changed together at one moment, by their number, to look at and name as one
+    val events = all.filter { it.at != null }.groupBy { EVENT.find(it.signal.name)?.groupValues?.get(1)?.toInt() ?: 0 }.filterKeys { it > 0 }.toSortedMap()
+    var naming by remember { mutableStateOf<Int?>(null) }
+    naming?.let { number ->
+        val at = events[number]?.first()?.at
+        var name by remember(number) { mutableStateOf("") }
+        if (at == null) naming = null else AlertDialog(
+            onDismissRequest = { naming = null },
+            title = { Text("Event $number at %.1f s".format(seconds(at))) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Hint("${events[number]!!.size} fields changed here and hardly ever else. Go there to see what happened; name it and they are all listed under that name, ticked.")
+                    OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("What happened") }, placeholder = { Text("plug in") })
+                }
+            },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { model.signals.nameEvent(number, name); naming = null }) { Text("Name them") } },
+            dismissButton = { TextButton(onClick = { model.trace.cursor = at; model.trace.followLive = false; naming = null; onBack() }) { Text("Go there") } },
+        )
+    }
     // named or verified ones start ticked; plain layout guesses only when ticked by hand
     val chosen = remember(all) { mutableStateListOf<Suggestion>().apply { addAll(all.filter { it.confidence >= SignalState.NAMED }) } }
     val plain = all.count { it.confidence < SignalState.NAMED }
@@ -232,7 +262,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                     }) { Text("Share a report") }
                 }
                 // a live stream: decode again every 15 s as frames come in
-                if (model.live.source != LiveSource.NONE) FilterChip(selected = keepDecoding, onClick = { keepDecoding = !keepDecoding }, label = { Text("Keep decoding while streaming") })
+                if (model.live.source != LiveSource.NONE) FilterChip(selected = model.signals.keepDecoding, onClick = { model.signals.keepDecoding(!model.signals.keepDecoding) }, label = { Text("Keep decoding while streaming") })
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
                 if (model.signals.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -241,11 +271,16 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                     if (shown.isNotEmpty()) AssistChip(onClick = { if (ticked.size == shown.size) chosen.removeAll(shown.toSet()) else chosen.addAll(shown - ticked.toSet()) },
                         label = { Text(if (ticked.size == shown.size) "Untick all" else "Tick all") })
                 }
+                if (events.isNotEmpty() || model.signals.rejectedCount > 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for ((number, fields) in events) AssistChip(onClick = { naming = number }, label = { Text("E$number · ${fields.size} fields · %.0f s".format(seconds(fields[0].at!!))) })
+                    // turned down before: they stay away until asked back
+                    if (model.signals.rejectedCount > 0) AssistChip(enabled = !model.signals.decoding, onClick = { model.signals.restoreRejected() }, label = { Text("Bring back ${model.signals.rejectedCount} rejected") })
+                }
             }
             items(shown.size) { index ->
                 val suggestion = shown[index]
                 val signal = suggestion.signal
-                Surface(onClick = { onPick(suggestion) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                Surface(onClick = { suggestion.at?.let { model.trace.cursor = it; model.trace.followLive = false }; onPick(suggestion) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(suggestion in chosen, onCheckedChange = { if (it) chosen += suggestion else chosen.remove(suggestion) })
                         BusBadge(suggestion.message.bus)

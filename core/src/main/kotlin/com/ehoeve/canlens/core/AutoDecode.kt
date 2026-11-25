@@ -52,6 +52,27 @@ object AutoDecode {
         return result
     }
 
+    /** A marker note that is a number read off the car: "range=312", "soc = 78.5". */
+    val READING = Regex("""^(.+?)\s*=\s*(-?\d+(?:\.\d+)?)$""")
+
+    /**
+     * Fields that carry the numbers the user read off the car's screen: [readings] has, by name, the moments and the
+     * values. Five readings of at least four different values are asked for, since any field fits two or three; a
+     * field counts when a factor and offset bring it within 2 % of the readings' span at every one of them.
+     */
+    fun fromReadings(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, readings: Map<String, List<Pair<Int, Double>>>): List<Suggestion> =
+        readings.filter { (_, points) -> points.size >= 5 && points.map { it.second }.distinct().size >= 4 }.flatMap { (name, points) ->
+            val span = points.maxOf { it.second } - points.minOf { it.second }
+            Analysis.findByValue(store, points, span * 0.02, 3)
+                .filter { match -> known(match.message)?.signals.orEmpty().none { signal -> signal.bits.any { it in match.signal.bits } } }
+                .map { match ->
+                    val found = match.signal
+                    val (factor, offset) = Analysis.tidy(found.factor, found.offset)
+                    Suggestion(match.message, Signal("READ_${name.uppercase().replace(Regex("\\W+"), "_")}_${found.start}", found.start, found.size, found.littleEndian, found.signed, factor, offset, "", -1, false),
+                        "Reads your ${points.size} readings of \"$name\" (${points.minOf { it.second }} to ${points.maxOf { it.second }})", 0.8)
+                }
+        }
+
     /**
      * Why [signal] can't be what frames [p] carry, or null: a flag or small state that changes in a quarter of the
      * frames is part of a counter or checksum, and a value that always reads its highest is one the car doesn't send.
