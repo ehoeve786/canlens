@@ -1,5 +1,7 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.ui.res.stringResource
+
 import androidx.compose.ui.platform.LocalContext
 import android.provider.Settings
 import android.os.PowerManager
@@ -138,7 +140,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("CanPilot", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.app_name), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold) },
                 actions = {
                     if (model.live.recording != null) Pill("REC", RECORDING, Color.White)
                     Spacer(Modifier.width(6.dp))
