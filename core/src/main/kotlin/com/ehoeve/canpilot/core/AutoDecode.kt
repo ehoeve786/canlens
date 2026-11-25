@@ -285,17 +285,20 @@ object AutoDecode {
         return r
     }
 
-    private fun vector(snapshots: FrameStore.Snapshots, m: Int, signal: Signal): Vector? {
+    private fun vector(snapshots: FrameStore.Snapshots, m: Int, signal: Signal): Vector? = values(snapshots, m, signal)?.let(::vector)
+
+    /** [signal]'s values at the grid moments; before the message's first frame, its first value. */
+    private fun values(snapshots: FrameStore.Snapshots, m: Int, signal: Signal): DoubleArray? {
         val length = snapshots.length[m]
         val valid = snapshots.valid[m]
         val first = valid.indexOf(true)
         if (first < 0 || !signal.fits(length)) return null
         val data = snapshots.data[m]
-        val raw = DoubleArray(GRID)
-        var mean = 0.0
-        // before the message's first frame: its first value
-        for (k in 0 until GRID) { raw[k] = signal.physical(signal.raw(data, (if (valid[k]) k else first) * length)); mean += raw[k] }
-        mean /= GRID
+        return DoubleArray(GRID) { k -> signal.physical(signal.raw(data, (if (valid[k]) k else first) * length)) }
+    }
+
+    private fun vector(raw: DoubleArray): Vector? {
+        val mean = raw.average()
         var spread = 0.0
         for (k in 0 until GRID) spread += (raw[k] - mean) * (raw[k] - mean)
         // a clock changes by the same step every time: its changes have no spread and it matches nothing
@@ -310,14 +313,22 @@ object AutoDecode {
     private fun nameAfterKnownSignals(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, suggestions: MutableList<Suggestion>) {
         if (store.lastTime <= store.firstTime) return
         val snapshots = store.snapshots(IntArray(GRID) { (store.firstTime + (store.lastTime - store.firstTime).toLong() * it / (GRID - 1)).toInt() })
-        class Reference(val message: FrameStore.Message, val signal: Signal, val vector: Vector)
+        // [how] it is derived from the signal: as it is, its rate of change (acceleration from speed) or its running total (distance from speed)
+        class Reference(val message: FrameStore.Message, val signal: Signal, val vector: Vector, val how: String, val unit: String)
         val references = ArrayList<Reference>()
+        val step = (store.lastTime - store.firstTime) / (GRID - 1) / FrameStore.TICKS_PER_SECOND
         for (m in snapshots.messages.indices) {
             for (signal in known(snapshots.messages[m])?.signals.orEmpty()) {
                 val name = signal.name.lowercase()
                 // a multiplexor only says which page a frame carries: anything else that pages through in step matches it
                 if (signal.muxValue >= 0 || signal.isMultiplexor || "checksum" in name || "counter" in name || "crc" in name) continue
-                vector(snapshots, m, signal)?.let { references += Reference(snapshots.messages[m], signal, it) }
+                val raw = values(snapshots, m, signal) ?: continue
+                val message = snapshots.messages[m]
+                vector(raw)?.let { references += Reference(message, signal, it, "", signal.unit) }
+                val rate = DoubleArray(GRID) { k -> (raw[minOf(k + 1, GRID - 1)] - raw[minOf(k + 1, GRID - 1) - 1]) / step }
+                vector(rate)?.let { references += Reference(message, signal, it, "RATE_", signal.unit + "/s") }
+                var sum = 0.0
+                vector(DoubleArray(GRID) { k -> sum += raw[k] * step; sum })?.let { references += Reference(message, signal, it, "TOTAL_", signal.unit + "·s") }
             }
         }
         if (references.isEmpty()) return
@@ -333,18 +344,19 @@ object AutoDecode {
                 // a single bit can't stand for a signal of several bits
                 if (reference.message.id == suggestion.message.id || (field.size == 1 && reference.signal.size > 1)) continue
                 val r = dot(mine.values, reference.vector.values)
-                if (abs(r) <= abs(bestR) || dot(mine.changes, reference.vector.changes) * Math.signum(r) < MATCH_CHANGES) continue
+                // a rate is already a change, and its own changes are mostly rounding noise: it is held to the value test alone
+                if (abs(r) <= abs(bestR) || (reference.how != "RATE_" && dot(mine.changes, reference.vector.changes) * Math.signum(r) < MATCH_CHANGES)) continue
                 bestR = r; best = reference
             }
             if (best == null || abs(bestR) < MATCH) continue
             val factor = bestR * best.vector.spread / mine.spread
-            val signal = Signal("LIKE_${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, best.vector.mean - factor * mine.mean, best.signal.unit, -1, false)
+            val signal = Signal("LIKE_${best.how}${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, best.vector.mean - factor * mine.mean, best.unit, -1, false)
+            val what = when (best.how) { "RATE_" -> "the rate of change of "; "TOTAL_" -> "the running total of "; else -> "" }
             suggestions[i] = Suggestion(suggestion.message, signal,
-                "Moves with ${best.signal.name} (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}; scaled to its units", abs(bestR).toDouble())
+                "Moves with $what${best.signal.name} (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}; scaled to its units", abs(bestR).toDouble())
         }
     }
 
-    /** Bits that flipped from 1 s before to 2 s after [time] and at no other moment get a signal named after the marker's [note]. */
     /** The last word of a marker note that says which half of an action it was. */
     private val HALF = Regex("\\s+(on|off|in|out|open|opened|close|closed|up|down|start|stop|pressed|released|lock|locked|unlock|unlocked)$", RegexOption.IGNORE_CASE)
 

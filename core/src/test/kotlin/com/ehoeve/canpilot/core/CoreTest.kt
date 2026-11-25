@@ -321,6 +321,21 @@ class CoreTest {
         assertEquals(listOf(5_000_001L to "first line", 6_500_000L to "opened, the door now"), markers)
     }
 
+    @Test fun namesAFieldAfterTheRateOfChangeOfASignal() {
+        val store = FrameStore()
+        for (i in 0 until 2000) {
+            val t = i * 20_000L
+            val speed = (300 + 250 * Math.sin(i / 150.0)).toInt()
+            store.frame(t, 0, 0x118, byteArrayOf((speed shl 4 and 0xF0).toByte(), (speed shr 4).toByte()), 0, 2)
+            store.frame(t + 1, 0, 0x402, byteArrayOf((128 + 100 * Math.cos(i / 150.0)).toInt().toByte()), 0, 1)      // the acceleration
+        }
+        val speed = Signal("DI_vehicleSpeed", 4, 12, true, false, 0.1, 0.0, "kph", -1, false)
+        val found = AutoDecode.run(store, { if (it.id == 0x118) DbcMessage(0x118, "DI_speed", 2, listOf(speed)) else null }, emptyList())
+        val accel = found.single { it.message.id == 0x402 }
+        assertEquals("LIKE_RATE_DI_vehicleSpeed_0", accel.signal.name)
+        assertEquals("kph/s", accel.signal.unit)
+    }
+
     @Test fun keepsSignalStatusesInTheFile() {
         val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
         val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")
