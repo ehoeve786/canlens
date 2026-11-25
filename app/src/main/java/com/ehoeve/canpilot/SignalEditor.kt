@@ -23,6 +23,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
 import androidx.compose.runtime.Composable
@@ -121,6 +122,14 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
             Button(enabled = signal != null, onClick = { model.dbc.saveSignal(message, signal!!, draft.original); onClose() }) { Text("Save") }
         }
         OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
+        // how sure it is, saved at once with the DBC; tapping the chosen one again clears it
+        if (draft.original != null) {
+            val status = model.dbc.status(message.bus, message.id, draft.original)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for ((value, label) in listOf("guess" to "Guess ?", "plotted" to "Plotted ~", "confirmed" to "Confirmed ✓"))
+                    FilterChip(status == value, { model.dbc.setStatus(message, draft.original, value.takeIf { it != status }) }, { Text(label) })
+            }
+        }
         Stepper("Start bit", draft.start, 0, FrameStore.MAX_PAYLOAD * 8 - 1) { draft.start = it }
         Stepper("Size", draft.size, 1, 64) { draft.size = it }
         SwitchRow(draft.littleEndian, if (draft.littleEndian) "Little-endian (start = lowest bit)" else "Big-endian (start = highest bit)") { draft.littleEndian = it }

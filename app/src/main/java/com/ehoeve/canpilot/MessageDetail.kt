@@ -228,7 +228,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(plotKey in plots, onCheckedChange = null)
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
-                        Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Text(signal.name + STATUS_MARKS[model.dbc.status(message.bus, message.id, signal.name)].orEmpty(), Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         // another page's signal: its last value, dimmed
                         val held = payloads
                         Text(
@@ -299,3 +299,6 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
         }
     }
 }
+
+/** How a signal's status shows after its name. */
+val STATUS_MARKS = mapOf("guess" to "  ?", "plotted" to "  ~", "confirmed" to "  ✓")

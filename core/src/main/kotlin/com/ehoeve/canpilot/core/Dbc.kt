@@ -92,8 +92,22 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
 
     fun withoutSignal(id: Int, signalName: String): Dbc {
         val old = messages[id] ?: return this
-        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })), head, tail)
+        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })), head, tail.filter { !isStatus(it, id, signalName) })
     }
+
+    /**
+     * How sure the decoding of each signal is (guess, plotted, confirmed), kept as a comment in the file so it goes
+     * where the DBC goes: `CM_ SG_ <id> <signal> "CanPilot: confirmed";`. Keyed by id and signal name.
+     */
+    val statuses: Map<Pair<Int, String>, String> by lazy {
+        tail.mapNotNull { STATUS.find(it) }.associate { (id(it.groupValues[1]) to it.groupValues[2]) to it.groupValues[3] }
+    }
+
+    /** A copy with the status of signal [signalName] of message [id] set, or cleared when [status] is null. */
+    fun withStatus(id: Int, signalName: String, status: String?): Dbc =
+        Dbc(name, messages, head, tail.filter { !isStatus(it, id, signalName) } + listOfNotNull(status?.let { "CM_ SG_ ${dbcId(id)} $signalName \"CanPilot: $it\";" }))
+
+    private fun isStatus(line: String, id: Int, signalName: String) = STATUS.find(line)?.let { id(it.groupValues[1]) == id && it.groupValues[2] == signalName } == true
 
     /**
      * DBC text: the file it was read from with only the changed messages written anew (their value names too; their
@@ -103,7 +117,7 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
         append(head.ifEmpty { "VERSION \"\"\n\nNS_ :\n\nBS_:\n\nBU_: XXX\n\n" })
         for (m in messages.values) {
             if (m.source != null) { append(m.source); continue }
-            append("BO_ ").append(if (m.id > 0x7FF) m.id.toLong() or 0x80000000L else m.id.toLong()).append(' ').append(m.name).append(": ").append(m.length).append(" XXX\n")
+            append("BO_ ").append(dbcId(m.id)).append(' ').append(m.name).append(": ").append(m.length).append(" XXX\n")
             for (s in m.signals) {
                 append(" SG_ ").append(s.name).append(' ')
                 if (s.muxValue >= 0) append('m').append(s.muxValue)
@@ -120,7 +134,7 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
             if (values == null || id(values.groupValues[1]) !in changed) append(line).append('\n')
         }
         for (m in messages.values) if (m.id in changed) for (s in m.signals) if (s.valueNames.isNotEmpty()) {
-            append("VAL_ ").append(if (m.id > 0x7FF) m.id.toLong() or 0x80000000L else m.id.toLong()).append(' ').append(s.name)
+            append("VAL_ ").append(dbcId(m.id)).append(' ').append(s.name)
             for ((value, label) in s.valueNames) append(' ').append(value).append(" \"").append(label).append('"')
             append(" ;\n")
         }
@@ -132,6 +146,10 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
         private val SIGNAL = Regex("""^\s*SG_ (\w+) *(M|m\d+M?)? *: *(\d+)\|(\d+)@([01])([+-]) *\(([^,]+),([^)]+)\) *\[[^]]*] *"([^"]*)"""")
         private val VALUES = Regex("""^VAL_ (\d+) (\w+) (.*)""")
         private val VALUE = Regex("""(-?\d+) "([^"]*)"""")
+        private val STATUS = Regex("""^CM_ SG_ (\d+) (\w+) "CanPilot: (\w+)";""")
+
+        /** An id as a DBC writes it: bit 31 set for an extended id. */
+        private fun dbcId(id: Int) = if (id > 0x7FF) id.toLong() or 0x80000000L else id.toLong()
 
         /** Bits 29-31 of a DBC id are flags (bit 31: extended id). */
         private fun id(text: String) = (text.toLong() and 0x1FFFFFFF).toInt()

@@ -321,6 +321,14 @@ class CoreTest {
         assertEquals(listOf(5_000_001L to "first line", 6_500_000L to "opened, the door now"), markers)
     }
 
+    @Test fun keepsSignalStatusesInTheFile() {
+        val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
+        val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")
+        assertEquals(mapOf((100 to "S") to "confirmed"), marked.statuses)
+        assertTrue(marked.write().contains("from the maker"))                                                    // the file's own comment stays
+        assertTrue(Dbc.parse(marked.withoutSignal(100, "S").write(), "t.dbc").statuses.isEmpty())
+    }
+
     @Test fun takesTheHalvesAndRepeatsOfAnActionAsOneTest() {
         val store = FrameStore()
         for (i in 0 until 1000) {

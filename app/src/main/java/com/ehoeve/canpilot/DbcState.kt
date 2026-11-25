@@ -94,7 +94,9 @@ class DbcState(
         val index = indexFor(files, message)
         val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canpilot-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus))
         var dbc = old.dbc
-        if (replaces != null && replaces != signal.name) dbc = dbc.withoutSignal(message.id, replaces)
+        // a renamed signal keeps its status
+        val status = replaces?.let { dbc.statuses[message.id to it] }
+        if (replaces != null && replaces != signal.name) dbc = dbc.withoutSignal(message.id, replaces).withStatus(message.id, signal.name, status)
         dbc = dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, signal)
         if (replaces != null && replaces != signal.name) {
             val at = plots.indexOf(PlotKey(message.bus, message.id, replaces))
@@ -118,6 +120,17 @@ class DbcState(
         if (index >= 0) replace(index, LoadedDbc(files[index].dbc.withoutSignal(message.id, name), files[index].bus))
     }
 
+    /** How sure the decoding of a signal is: guess, plotted or confirmed; null when not said. */
+    fun status(bus: Int, id: Int, name: String): String? {
+        val source = sourceBus(bus)
+        return (files.firstOrNull { it.bus == source && id in it.dbc.messages } ?: files.firstOrNull { it.bus == ALL_BUSES && id in it.dbc.messages })?.dbc?.statuses?.get(id to name)
+    }
+
+    fun setStatus(message: FrameStore.Message, name: String, status: String?) {
+        val index = indexFor(files, message)
+        if (index >= 0) replace(index, LoadedDbc(files[index].dbc.withStatus(message.id, name, status), files[index].bus))
+    }
+
     /** Adds every suggested signal to the DBC its message belongs in; each DBC file is written once. */
     fun add(suggestions: List<Suggestion>) {
         val working = files.toMutableList()
@@ -126,7 +139,9 @@ class DbcState(
             val message = suggestion.message
             var index = indexFor(working, message)
             if (index < 0) { working += LoadedDbc(Dbc("canpilot-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus)); index = working.lastIndex }
-            working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, suggestion.signal), working[index].bus)
+            // a field every repeat of a marker test agreed on is confirmed; anything else Decode found is a guess
+            working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, suggestion.signal)
+                .withStatus(message.id, suggestion.signal.name, if (suggestion.confidence >= 0.95 && suggestion.signal.name.startsWith("EVT_")) "confirmed" else "guess"), working[index].bus)
             changed += index
         }
         val existing = files.size
