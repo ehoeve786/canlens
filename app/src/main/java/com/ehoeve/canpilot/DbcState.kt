@@ -152,6 +152,9 @@ class DbcState(
         for (index in changed) replace(if (index < existing) index else -1, working[index])
     }
 
+    /** The file a signal of [message] would be saved in: one for all buses covers the same id on each of them. */
+    fun target(message: FrameStore.Message): String = indexFor(files, message).let { if (it >= 0) files[it].dbc.name else "canpilot-bus${sourceBus(message.bus)}.dbc" }
+
     /** The DBC in [dbcs] a signal of [message] belongs in, or -1: one that has the message, else one for its bus, else one for all buses. */
     private fun indexFor(dbcs: List<LoadedDbc>, message: FrameStore.Message): Int {
         val bus = sourceBus(message.bus)

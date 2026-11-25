@@ -107,7 +107,8 @@ class SignalState(
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val community = COMMUNITY.map { (name, url) -> name to Dbc.parse(URL(url).openConnection().apply { connectTimeout = 15_000; readTimeout = 30_000 }.getInputStream().use { it.readBytes().toString(Charsets.ISO_8859_1) }, name) }
-                    AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community)
+                    // the same id seen on several buses but saved in one file (the party DBC is for all buses): once
+                    AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community).distinctBy { Triple(dbc.target(it.message), it.message.id, it.signal.name) }
                 }
             }
             result.onSuccess { found -> autoResults = autoResults.filter { !it.evidence.startsWith("From ") } + found }
