@@ -212,7 +212,12 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                 TextButton(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.checkCommunity() }) { Text("Check the community DBCs") }
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
                 if (model.signals.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
-                if (plain > 0) FilterChip(selected = showPlain, onClick = { showPlain = !showPlain }, label = { Text("Show the $plain unnamed fields") })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (plain > 0) FilterChip(selected = showPlain, onClick = { showPlain = !showPlain }, label = { Text("Show the $plain unnamed fields") })
+                    // every listed one ticked: untick them all; otherwise tick them all
+                    if (shown.isNotEmpty()) AssistChip(onClick = { if (ticked.size == shown.size) chosen.removeAll(shown.toSet()) else chosen.addAll(shown - ticked.toSet()) },
+                        label = { Text(if (ticked.size == shown.size) "Untick all" else "Tick all") })
+                }
             }
             items(shown.size) { index ->
                 val suggestion = shown[index]
