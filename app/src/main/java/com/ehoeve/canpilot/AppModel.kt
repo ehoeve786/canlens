@@ -44,6 +44,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val live = LiveState(application, preferences, viewModelScope, store, { status = it }, { liveStarted() }) { revision++ }
     val trace = TraceState(store, preferences) { live.source != LiveSource.NONE }
     val signals = SignalState(store, viewModelScope, dbc, trace) { status = it }
+    /** A spoken test in the car; it records, so its markers land in the log as well. */
+    val guided = GuidedTest(application, viewModelScope) { note -> addMarker(beginMarker(), note, remember = false) }
     val tx = TxState(application, store, viewModelScope, live, dbc)
     val session = SessionState(this, application, preferences)
 
@@ -240,9 +242,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     var recentNotes by mutableStateOf(preferences.getString("recentNotes", "")!!.split('\n').filter { it.isNotEmpty() })
         private set
 
-    fun addMarker(pending: PendingMarker, note: String) {
+    /** [remember]: offer the note again as a chip; a guided test's notes would push the user's own out. */
+    fun addMarker(pending: PendingMarker, note: String, remember: Boolean = true) {
         // the numbered default says nothing worth repeating
-        if (!note.matches(Regex("Marker \\d+"))) {
+        if (remember && !note.matches(Regex("Marker \\d+"))) {
             recentNotes = (listOf(note) + (recentNotes - note)).take(8)
             preferences.edit().putString("recentNotes", recentNotes.joinToString("\n")).apply()
         }
@@ -274,7 +277,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCompare() { other = null; mine = null; otherName = "" }
 
-    override fun onCleared() { tx.close(); live.stop() }
+    override fun onCleared() { tx.close(); guided.stop(); live.stop() }
 
     init { session.restore() }
 

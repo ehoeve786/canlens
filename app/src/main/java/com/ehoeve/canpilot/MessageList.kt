@@ -351,6 +351,23 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     var showMarkers by remember { mutableStateOf(false) }
     pending?.let { marker -> MarkerDialog(model, marker) { pending = null } }
     if (showMarkers) MarkerSheet(model) { showMarkers = false }
+    var showGuided by remember { mutableStateOf(false) }
+    if (showGuided) ModalBottomSheet(onDismissRequest = { showGuided = false }) {
+        Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Guided test", style = MaterialTheme.typography.titleLarge)
+            Hint("The phone says each step out loud and drops a marker for it, then runs the test once more. It records while it runs. Park first, and have someone else do the steps if you are driving.")
+            for ((name, steps) in GuidedTest.SCRIPTS) Surface(onClick = {
+                showGuided = false
+                model.live.setRecording(true)
+                model.guided.start(name, steps)
+            }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Column(Modifier.fillMaxWidth().padding(14.dp)) {
+                    Text(name, style = MaterialTheme.typography.titleMedium)
+                    Hint(steps.joinToString(", ") { it.second } + " · about ${steps.size * 2 * 6 / 60 + 1} min")
+                }
+            }
+        }
+    }
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
         Column(modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -363,6 +380,11 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                 if (model.live.source != LiveSource.NONE) FilterChip(selected = model.live.recording != null, onClick = { model.live.setRecording(model.live.recording == null) }, label = { Text("Record") },
                     leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 if (model.trace.markers.isNotEmpty()) AssistChip(onClick = { showMarkers = true }, label = { Text("Markers · ${model.trace.markers.size}") })
+                if (model.live.source != LiveSource.NONE) {
+                    val running = model.guided.running
+                    if (running != null) AssistChip(onClick = { model.guided.stop() }, label = { Text("Stop · $running") }, leadingIcon = { Icon(Icons.Default.Close, null, Modifier.size(18.dp)) })
+                    else AssistChip(onClick = { showGuided = true }, label = { Text("Guided test") })
+                }
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)
         }
