@@ -358,6 +358,25 @@ class CoreTest {
         assertEquals(0.188 to 0.05, Analysis.tidy(0.188, 0.05))                    // not near a round factor: left as fitted
     }
 
+    @Test fun findsACrcWithADataIdPerCounterValue() {
+        // AUTOSAR CRC-8 (polynomial 2F, start FF, final XOR FF) over a data id byte the counter picks, then the payload
+        fun crc(bytes: List<Int>): Int {
+            var c = 0xFF
+            for (byte in bytes) { c = c xor byte; repeat(8) { c = if (c and 0x80 != 0) (c shl 1 xor 0x2F) and 0xFF else c shl 1 and 0xFF } }
+            return c xor 0xFF
+        }
+        val store = FrameStore()
+        var noise = 7
+        for (i in 0 until 600) {
+            noise = noise * 1103515245 + 12345
+            val body = listOf(i and 15, noise ushr 8 and 0xFF, noise ushr 16 and 0xFF, 0x40)
+            store.frame(i * 20_000L, 0, 0x3A, (listOf(crc(listOf(0x10 + (i and 15) * 7) + body)) + body).map { it.toByte() }.toByteArray(), 0, 5)
+        }
+        val found = AutoDecode.run(store, { null }, emptyList())
+        assertTrue(found.single { it.signal.start == 0 }.evidence.contains("polynomial 2F"))
+        assertEquals("COUNTER_8", found.single { it.signal.start == 8 }.signal.name)
+    }
+
     @Test fun keepsSignalStatusesInTheFile() {
         val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
         val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")

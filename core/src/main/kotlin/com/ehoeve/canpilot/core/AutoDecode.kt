@@ -135,11 +135,58 @@ object AutoDecode {
                 teslaSum >= needed -> "the sum of the other bytes and the ID (Tesla's)"
                 plainSum >= needed -> "the sum of the other bytes"
                 xor >= needed -> "the XOR of the other bytes"
-                else -> continue
+                else -> crc(message, p, at, free, out) ?: continue
             }
             for (bit in at * 8 until at * 8 + 8) free[bit] = false
             out += Suggestion(message, field("CHECKSUM_${at * 8}", at * 8, 8), "Checksum: equals $how in every frame", 0.99)
         }
+    }
+
+    /** CRC-8 tables, most significant bit first: AUTOSAR's polynomial 2F (Tesla's E2E messages) and SAE J1850's 1D. */
+    private val CRC_TABLES = listOf(0x2F, 0x1D).map { poly ->
+        poly to IntArray(256) { v -> var c = v; repeat(8) { c = if (c and 0x80 != 0) (c shl 1 xor poly) and 0xFF else c shl 1 and 0xFF }; c }
+    }
+
+    /**
+     * Byte [at] as a CRC-8 of the other bytes. A CRC is linear, so whatever its start value, final XOR or the hidden
+     * "data id" byte mixed in, the byte XOR the zero-start CRC of the rest is a constant: one value for a fixed data id,
+     * or one per counter value when the data id comes from a table the counter indexes (Tesla's E2E). The counter is
+     * looked for as a free nibble the leftover value is a function of; found, it is added too. Returns the description.
+     */
+    private fun crc(message: FrameStore.Message, p: FrameStore.Payloads, at: Int, free: BooleanArray, out: MutableList<Suggestion>): String? {
+        if (p.size < 16) return null
+        val n = minOf(p.size, 4000)
+        val rest = IntArray(n)
+        for ((poly, table) in CRC_TABLES) {
+            val leftovers = HashSet<Int>()
+            // the CRCs of the rest: a byte that only follows a counter while the rest stays put would pass the test too
+            val inputs = HashSet<Int>()
+            for (k in 0 until n) {
+                var c = 0
+                for (b in 0 until p.length) if (b != at) c = table[c xor (p.data[k * p.length + b].toInt() and 0xFF)]
+                inputs += c
+                rest[k] = c xor (p.data[k * p.length + at].toInt() and 0xFF)
+                leftovers += rest[k]
+                if (leftovers.size > 16) break
+            }
+            if (leftovers.size > 16 || inputs.size < 32) continue
+            val name = "CRC-8 (polynomial %X) of the other bytes".format(poly)
+            if (leftovers.size == 1) return name
+            // the nibble that picks the leftover: the alive counter indexing the data-id table
+            for (nibble in 0 until p.length * 2) {
+                if (nibble / 2 == at || !(nibble * 4 until nibble * 4 + 4).all { free[it] }) continue
+                val byValue = HashMap<Int, Int>()
+                val consistent = (0 until n).all { k ->
+                    val value = p.data[k * p.length + nibble / 2].toInt() shr (nibble % 2 * 4) and 15
+                    byValue.getOrPut(value) { rest[k] } == rest[k]
+                }
+                if (!consistent || byValue.size < 2) continue
+                for (bit in nibble * 4 until nibble * 4 + 4) free[bit] = false
+                out += Suggestion(message, field("COUNTER_${nibble * 4}", nibble * 4, 4), "Counter: picks the CRC's data id in byte $at (${byValue.size} values)", 0.95)
+                return "$name, with a data id per counter value (Tesla's and AUTOSAR's end-to-end protection)"
+            }
+        }
+        return null
     }
 
     /** Flips of each bit between consecutive frames of [rows] (all frames when null). */
@@ -244,22 +291,28 @@ object AutoDecode {
             var wraps = 0
             var signedWraps = 0
             var previous = 0L
+            var highest = 0L
+            // back to 0, by the value it came from: a counter that stops short of its field's top (0..14) wraps from its highest
+            val wrapsFrom = HashMap<Long, Int>()
             val half = 1L shl (size - 1)
             for (i in 0 until n) {
                 val value = segment.raw(p.data, (rows?.get(i) ?: i) * p.length)
                 if (distinct.size <= 16) distinct += value
+                if (value > highest) highest = value
                 if (i > 0) {
                     if ((value - previous) and (half * 2 - 1) == 1L) steps++
+                    else if (value == 0L) wrapsFrom[previous] = (wrapsFrom[previous] ?: 0) + 1
                     if (abs(value - previous) > half) wraps++
                     // the same two values read as signed
                     if (abs((if (value >= half) value - 2 * half else value) - (if (previous >= half) previous - 2 * half else previous)) > half) signedWraps++
                 }
                 previous = value
             }
+            steps += wrapsFrom[highest] ?: 0
             out += when {
                 // a counter only shows as one when every frame is there, which a multiplexed group's frames are not
                 mux < 0 && size in 2..8 && n >= 8 && steps >= (n - 1) * 0.9 ->
-                    Suggestion(message, field("COUNTER_$start", start, size), "Counter: goes up by one in every frame", 0.9)
+                    Suggestion(message, field("COUNTER_$start", start, size), (if (highest < half * 2 - 1) "Counter: goes up by one in every frame, 0 to $highest" else "Counter: goes up by one in every frame"), 0.9)
                 size == 1 -> Suggestion(message, field("${prefix}FLAG_$start", start, 1, mux = mux), "Flag: a single bit that changes", 0.4)
                 size <= 8 && distinct.size <= 8 -> Suggestion(message, field("${prefix}STATE_$start", start, size, mux = mux), "State: takes ${distinct.size} different values", 0.4)
                 else -> {

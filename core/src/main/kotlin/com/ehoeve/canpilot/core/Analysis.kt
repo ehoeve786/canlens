@@ -193,7 +193,9 @@ object Analysis {
             val plain = Signal("FIELD_$start", start, size, true, false, 1.0, 0.0, "", -1, false)
             val series = store.series(message, DbcMessage(message.id, "", 0, listOf(plain)), plain)
             var steps = 0
-            if (size in 2..8) for (i in 1 until series.size) if ((series.values[i] - series.values[i - 1]).toInt() and ((1 shl size) - 1) == 1) steps++
+            // a counter may wrap from below its field's top (0..14): from the highest value seen back to 0 counts as a step
+            val highest = (0 until series.size).maxOfOrNull { series.values[it] } ?: 0f
+            if (size in 2..8) for (i in 1 until series.size) if ((series.values[i] - series.values[i - 1]).toInt() and ((1 shl size) - 1) == 1 || (series.values[i] == 0f && series.values[i - 1] == highest)) steps++
             val counter = size in 2..8 && series.size >= 8 && steps >= (series.size - 1) * 0.9
             val checksum = !counter && size == 8 && start % 8 == 0 && activity.frames >= 8 &&
                 (start until start + 8).all { flips[it] in (activity.frames * 0.3).toInt()..(activity.frames * 0.7).toInt() }
