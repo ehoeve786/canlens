@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
 import com.ehoeve.canpilot.core.Dbc
 import com.ehoeve.canpilot.core.DbcMessage
 import com.ehoeve.canpilot.core.FrameStore
@@ -158,7 +161,27 @@ class DbcState(
         return dbcs.indexOfFirst { it.bus == bus }.takeIf { it >= 0 } ?: dbcs.indexOfFirst { it.bus == ALL_BUSES }
     }
 
+    /** Earlier versions of the DBCs the app changed, newest last: a file's name and what it was (null: it didn't exist). */
+    private val history = ArrayDeque<Pair<String, LoadedDbc?>>()
+    var canUndo by mutableStateOf(false); private set
+
+    /** Puts back the DBC as it was before the last change the app made to it. */
+    fun undo() {
+        val (name, before) = history.removeLastOrNull() ?: return
+        canUndo = history.isNotEmpty()
+        val index = files.indexOfFirst { it.dbc.name == name }
+        if (before == null) { if (index >= 0) remove(index) } else write(index, before)
+        report("Undone")
+    }
+
     private fun replace(index: Int, value: LoadedDbc) {
+        history.addLast(value.dbc.name to files.firstOrNull { it.dbc.name == value.dbc.name })
+        if (history.size > 30) history.removeFirst()
+        canUndo = true
+        write(index, value)
+    }
+
+    private fun write(index: Int, value: LoadedDbc) {
         if (index >= 0) files[index] = value else files += value
         preferences.edit().putInt("bus:" + value.dbc.name, value.bus).apply()
         val text = value.dbc.write()

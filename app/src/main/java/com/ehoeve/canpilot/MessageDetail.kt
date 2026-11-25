@@ -161,7 +161,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     Scaffold(
         topBar = {
             TopAppBar(
-                actions = { TextButton(onClick = { transmitting = true }) { Text("Send") } },
+                actions = { if (model.dbc.canUndo) TextButton(onClick = { model.dbc.undo() }) { Text("Undo") }; TextButton(onClick = { transmitting = true }) { Text("Send") } },
                 title = {
                     Column {
                         // tap the name to rename the message

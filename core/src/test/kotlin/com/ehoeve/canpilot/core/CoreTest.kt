@@ -293,8 +293,9 @@ class CoreTest {
         val counterMessage = store.messages.first { it.id == 0x257 }
         val counter = Signal("c", 0, 4, true, false, 1.0, 0.0, "", -1, false)
         val histogram = Analysis.histogram(store.series(counterMessage, DbcMessage(0x257, "", 2, listOf(counter)), counter))
-        assertEquals((0..15).map { it.toString() }, histogram.map { it.first })
-        assertEquals(600, histogram.sumOf { it.second })
+        assertEquals((0..15).map { it.toString() }, histogram.map { it.label })
+        assertEquals(600, histogram.sumOf { it.count })
+        assertTrue(histogram.all { it.first >= 0f })
         val noise = Signal("n", 8, 8, true, false, 1.0, 0.0, "", -1, false)
         assertEquals(20, Analysis.histogram(store.series(counterMessage, DbcMessage(0x257, "", 2, listOf(noise)), noise)).size)
         val snapshots = store.snapshots(intArrayOf(-5, 0, 401))

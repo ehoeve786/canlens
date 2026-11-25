@@ -23,6 +23,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.clickable
 import androidx.compose.material3.FilterChip
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.ui.semantics.Role
@@ -150,7 +151,7 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
             )
         }
         Chart(preview, draft.name, SIGNAL_COLORS[0], view, seconds(model.trace.cursorNow), null, null, onCursor = {}, onMoved = {})
-        Histogram(histogram, signal)
+        Histogram(histogram, signal) { model.trace.cursor = ticks(it); model.trace.followLive = false }
         OutlinedTextField(draft.valueNames, { draft.valueNames = it }, Modifier.fillMaxWidth(), label = { Text("Value names") }, placeholder = { Text("0=PARK, 1=DRIVE") })
         SwitchRow(draft.isMultiplexor, "Is the multiplexor: selects which signals a frame carries") { draft.isMultiplexor = it }
         if (!draft.isMultiplexor) OutlinedTextField(draft.muxValue, { draft.muxValue = it }, Modifier.fillMaxWidth(), singleLine = true,
@@ -160,24 +161,27 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
 
 /** How often each value occurs: a row per value when there are few, bars over the value range when there are many. */
 @Composable
-private fun Histogram(histogram: List<Pair<String, Int>>, signal: Signal?) {
+private fun Histogram(histogram: List<Analysis.Bar>, signal: Signal?, onJump: (Float) -> Unit) {
     if (histogram.isEmpty()) return
-    val most = histogram.maxOf { it.second }.coerceAtLeast(1)
+    val most = histogram.maxOf { it.count }.coerceAtLeast(1)
     val bar = MaterialTheme.colorScheme.primary
     if (histogram.size <= 16) {
-        Hint("${histogram.size} different values")
-        for ((label, count) in histogram) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        Hint("${histogram.size} different values, each with when it first appeared: tap one to go there")
+        for (value in histogram) {
+            val label = value.label
+            val count = value.count
+            Row(Modifier.clickable { onJump(value.first) }, verticalAlignment = Alignment.CenterVertically) {
                 val named = signal?.let { s -> label.toDoubleOrNull()?.let { v -> s.valueNames[Math.round((v - s.offset) / s.factor)] } }
                 Text(if (named != null) "$label $named" else label, Modifier.width(96.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Box(Modifier.weight(1f)) { Box(Modifier.fillMaxWidth(count.toFloat() / most).height(10.dp).clip(CircleShape).background(bar)) }
                 Text(count.toString(), Modifier.width(56.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.End)
+                Text("%.1f s".format(value.first), Modifier.width(72.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.End, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     } else {
-        Hint("Spread of values, ${histogram.first().first} to ${histogram.last().first} and up")
+        Hint("Spread of values, ${histogram.first().label} to ${histogram.last().label} and up")
         Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            for ((_, count) in histogram) Box(Modifier.weight(1f).fillMaxHeight(maxOf(count.toFloat() / most, 0.02f)).background(bar))
+            for (value in histogram) Box(Modifier.weight(1f).fillMaxHeight(maxOf(value.count.toFloat() / most, 0.02f)).background(bar))
         }
     }
 }

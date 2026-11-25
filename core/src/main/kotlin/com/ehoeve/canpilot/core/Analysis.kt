@@ -246,23 +246,27 @@ object Analysis {
     }
 
     /** How often each value occurs: every value when there are at most 16 different ones, else [bins] equal ranges. Label, count. */
-    fun histogram(series: FrameStore.Series, bins: Int = 20): List<Pair<String, Int>> {
+    /** A value (or a range's start), how often it occurs, and when it was first seen (seconds; NaN for a range). */
+    class Bar(val label: String, val count: Int, val first: Float)
+
+    fun histogram(series: FrameStore.Series, bins: Int = 20): List<Bar> {
         if (series.size == 0) return emptyList()
         val counts = HashMap<Float, Int>()
+        val first = HashMap<Float, Float>()
         var low = Float.MAX_VALUE
         var high = -Float.MAX_VALUE
         for (i in 0 until series.size) {
             val v = series.values[i]
-            if (counts.size <= 16) counts[v] = (counts[v] ?: 0) + 1
+            if (counts.size <= 16) { counts[v] = (counts[v] ?: 0) + 1; first.putIfAbsent(v, series.times[i]) }
             if (v < low) low = v
             if (v > high) high = v
         }
         fun label(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && abs(v) < 1e7f) v.toInt().toString() else "%.3g".format(v)
-        if (counts.size <= 16) return counts.entries.sortedBy { it.key }.map { label(it.key) to it.value }
+        if (counts.size <= 16) return counts.entries.sortedBy { it.key }.map { Bar(label(it.key), it.value, first[it.key]!!) }
         val binned = IntArray(bins)
         val width = (high - low) / bins
         for (i in 0 until series.size) binned[((series.values[i] - low) / width).toInt().coerceIn(0, bins - 1)]++
-        return List(bins) { label(low + it * width) to binned[it] }
+        return List(bins) { Bar(label(low + it * width), binned[it], Float.NaN) }
     }
 }
 
