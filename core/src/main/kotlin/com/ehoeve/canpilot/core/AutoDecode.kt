@@ -13,6 +13,7 @@ class Suggestion(val message: FrameStore.Message, val signal: Signal, val eviden
 object AutoDecode {
     private const val GRID = 400
     private const val MATCH = 0.95
+    private val PIPE = Regex("isotp|pipe", RegexOption.IGNORE_CASE)
     /** How closely the moments of change must agree too, and how many changes a signal needs to be compared at all. */
     private const val MATCH_CHANGES = 0.8f
     private const val MIN_CHANGES = 5
@@ -34,9 +35,12 @@ object AutoDecode {
             if (messages.any { it.id == message.id && it.bus < message.bus && copies(payloads, payloads(it)) }) continue
             if (diagnostic(message, payloads)) continue
             val free = BooleanArray(payloads.length * 8) { true }
-            known(message)?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
+            val dbcMessage = known(message)
+            // a pipe carries conversations (ISO-TP over a private id): its bytes are content, not a layout
+            if (dbcMessage != null && PIPE.containsMatchIn(dbcMessage.name)) continue
+            dbcMessage?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
             checksums(message, payloads, free, result)
-            layout(message, payloads, free, result)
+            layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result)
         }
         // markers first: they cut their bits out of the guessed fields, and what is left is then compared
         if (markers.isNotEmpty()) progress("Looking at what changed at ${markers.size} markers")
@@ -119,9 +123,10 @@ object AutoDecode {
         return result
     }
 
-    private fun layout(message: FrameStore.Message, p: FrameStore.Payloads, free: BooleanArray, out: MutableList<Suggestion>) {
+    /** [known]: the DBC's multiplexor for this message; its pages are then decoded each by itself, and no other selector is looked for. */
+    private fun layout(message: FrameStore.Message, p: FrameStore.Payloads, free: BooleanArray, known: Signal?, out: MutableList<Suggestion>) {
         val all = flips(p, null)
-        val selector = multiplexor(p, free, all)
+        val selector = known ?: multiplexor(p, free, all)
         if (selector == null) { fields(message, p, null, free, all, -1, out); return }
         // frames grouped by the selector's value, and the flips between consecutive frames of the same group
         val groups = HashMap<Long, ArrayList<Int>>()
@@ -129,7 +134,7 @@ object AutoDecode {
         val within = IntArray(all.size)
         val perGroup = groups.mapValues { (_, rows) -> flips(p, rows.toIntArray()).also { f -> for (i in f.indices) within[i] += f[i] } }
         for (bit in selector.bits) free[bit] = false
-        out += Suggestion(message, field("MUX_${selector.start}", selector.start, selector.size, multiplexor = true),
+        if (known == null) out += Suggestion(message, field("MUX_${selector.start}", selector.start, selector.size, multiplexor = true),
             "Multiplexor: the rest of the frame only makes sense per value of this field (${groups.size} values)", 0.7)
         // bits that behave the same whatever the selector says are ordinary signals; the rest belong to one value each
         val shared = BooleanArray(all.size) { free[it] && within[it] * 2 >= all[it] }

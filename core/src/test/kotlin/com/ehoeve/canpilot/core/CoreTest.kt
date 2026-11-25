@@ -586,6 +586,22 @@ class CoreTest {
         assertTrue(AutoDecode.run(store, { null }, emptyList()).isEmpty())
     }
 
+    @Test fun aKnownMultiplexorsPagesAreDecodedEachByItself() {
+        // byte 0: page 0, 1, 0, 3 in turn; byte 1 is a level on page 0, a fast counter-like value on page 1, constant on page 3
+        val store = FrameStore()
+        for (i in 0 until 800) {
+            val page = intArrayOf(0, 1, 0, 3)[i % 4]
+            val data = when (page) { 0 -> (i / 40).toByte(); 1 -> (i * 7).toByte(); else -> 0x55 }
+            store.frame(i * 10_000L, 1, 0x26D, byteArrayOf(page.toByte(), data), 0, 2)
+        }
+        val dbc = Dbc.parse("BO_ 621 UNK_26D: 2 XXX\n SG_ UNK_26D_index M : 0|2@1+ (1,0) [0|0] \"\" XXX\n", "d")
+        val found = AutoDecode.run(store, { dbc.messages[it.id] }, emptyList())
+        assertTrue(found.none { it.signal.isMultiplexor })
+        assertTrue(found.any { it.signal.muxValue == 0 } && found.any { it.signal.muxValue == 1 } && found.none { it.signal.muxValue == 3 })
+        val pipe = Dbc.parse("BO_ 473 VCSEC_IsoTpUDPPipeUI: 2 XXX\n SG_ a : 0|1@1+ (1,0) [0|0] \"\" XXX\n", "p")
+        assertTrue(AutoDecode.run(store, { m -> pipe.messages[0x1D9].takeIf { m.id == 0x26D } }, emptyList()).isEmpty())
+    }
+
     @Test fun rowsFollowTheStoreAndFindTimes() {
         val store = traceStore(1)
         val all = store.RowScan(null)
