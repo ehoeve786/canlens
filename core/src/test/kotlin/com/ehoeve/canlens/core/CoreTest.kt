@@ -377,6 +377,55 @@ class CoreTest {
         assertEquals("COUNTER_8", found.single { it.signal.start == 8 }.signal.name)
     }
 
+    @Test fun tellsCopiesStatesEventsAndNotAvailableApart() {
+        val store = FrameStore()
+        var noise = 7
+        for (i in 0 until 600) {
+            noise = noise * 1103515245 + 12345
+            val awake = i / 60 % 2 == 1
+            val level = (if (awake) 150 else 100) + (noise ushr 16 and 7)
+            store.frame(i * 20_000L, 0, 0x100, byteArrayOf(level.toByte(), 0), 0, 2)
+            // the level again and a counter 0..2 (byte 3 is in the DBC); in another message, a state that is 3 while the level is up
+            store.frame(i * 20_000L + 5, 0, 0x200, byteArrayOf(level.toByte(), 0, (i % 3).toByte(), 0), 0, 4)
+            store.frame(i * 20_000L + 7, 0, 0x201, byteArrayOf(if (awake) 3 else 0), 0, 1)
+            // two flags in different messages that flip once, together
+            store.frame(i * 20_000L + 10, 0, 0x300, byteArrayOf(if (i >= 333) 1 else 0), 0, 1)
+            store.frame(i * 20_000L + 15, 0, 0x301, byteArrayOf(if (i >= 333) 4 else 0), 0, 1)
+            // 16 bits that read all ones until the sensor wakes
+            val reading = if (i < 50) 0xFFFF else 1000 + i % 200 * 3
+            store.frame(i * 20_000L + 20, 0, 0x400, byteArrayOf(reading.toByte(), (reading shr 8).toByte()), 0, 2)
+        }
+        val dbc = Dbc.parse("BO_ 256 SRC: 2 X\n SG_ SRC_level : 0|8@1+ (0.5,-40) [0|0] \"C\" X\n\nBO_ 512 DST: 4 X\n SG_ DST_known : 24|8@1+ (1,0) [0|0] \"\" X\n", "d")
+        val found = AutoDecode.run(store, { dbc.messages[it.id] }, emptyList())
+        fun at(id: Int, start: Int) = found.single { it.message.id == id && it.signal.start == start }
+        val copy = at(0x200, 0)
+        assertEquals("COPY_SRC_level_0", copy.signal.name)
+        assertEquals(0.5, copy.signal.factor, 0.0)
+        assertEquals("C", copy.signal.unit)
+        val state = at(0x201, 0)
+        assertEquals("STATE_0", state.signal.name)                                                              // not LIKE_SRC_level: 2 values against many
+        assertTrue("SRC_level" in state.evidence && state.confidence >= 0.7)
+        assertEquals("DSTCounter", at(0x200, 16).signal.name)                                                   // called after its message
+        val first = at(0x300, 0)
+        val second = at(0x301, 2)
+        assertEquals("E1_FLAG_0", first.signal.name)
+        assertEquals("E1_FLAG_2", second.signal.name)
+        assertEquals(66_600, first.at)                                                                          // frame 333, to jump to
+        assertEquals(mapOf(0xFFFFL to "SNA"), at(0x400, 0).signal.valueNames)
+    }
+
+    @Test fun communitySignalsTheFramesContradictAreMarked() {
+        val store = FrameStore()
+        for (i in 0 until 200) store.frame(i * 20_000L, 1, 0x25D, byteArrayOf((i and 1).toByte(), 0), 0, 2)
+        val community = Dbc.parse("BO_ 605 ID25DCP_status: 2 X\n SG_ CP_doorOpen : 0|1@1+ (1,0) [0|0] \"\" X\n SG_ CP_latch : 8|1@1+ (1,0) [0|0] \"\" X\n", "c")
+        val found = AutoDecode.fromCommunity(store, { null }, listOf("model3dbc" to community))
+        assertEquals(2, found.size)
+        assertTrue(found.all { it.confidence < 0.7 && "doesn't fit" in it.evidence })                           // the flag is a counter's bit, so its neighbour is doubted too
+        val still = FrameStore()
+        for (i in 0 until 200) still.frame(i * 20_000L, 1, 0x25D, byteArrayOf(if (i > 100) 1 else 0, 0), 0, 2)
+        assertTrue(AutoDecode.fromCommunity(still, { null }, listOf("model3dbc" to community)).all { it.confidence >= 0.7 })
+    }
+
     @Test fun keepsSignalStatusesInTheFile() {
         val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
         val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")

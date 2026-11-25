@@ -182,7 +182,8 @@ object Analysis {
         while (bit < bits) {
             if (flips[bit] == 0) { bit++; continue }
             val start = bit
-            while (bit + 1 < bits && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * 2.5 + 2 && bit + 1 - start < 32) bit++
+            // across a byte's edge it takes less of a jump in activity to start a new field (as in AutoDecode)
+            while (bit + 1 < bits && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * (if (bit % 8 == 7) 1.5 else 2.5) + 2 && bit + 1 - start < 32) bit++
             segments += Signal("", start, bit - start + 1, true, false, 1.0, 0.0, "", -1, false)
             bit++
         }

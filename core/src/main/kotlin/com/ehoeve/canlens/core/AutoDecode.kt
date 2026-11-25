@@ -4,8 +4,8 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /** A signal the automatic decoder proposes, why, and how sure it is (0..1). Meant to be reviewed, not trusted. */
-/** [messageName]: what to call the message when the DBC doesn't have it yet (NEW_<id> when null). */
-class Suggestion(val message: FrameStore.Message, val signal: Signal, val evidence: String, val confidence: Double, val messageName: String? = null)
+/** [messageName]: what to call the message when the DBC doesn't have it yet (NEW_<id> when null). [at]: the store time it is about, for an event. */
+class Suggestion(val message: FrameStore.Message, val signal: Signal, val evidence: String, val confidence: Double, val messageName: String? = null, val at: Int? = null)
 
 /**
  * Decodes what can be decoded without a person: the layout of every message (fields, counters, verified checksums,
@@ -19,8 +19,10 @@ object AutoDecode {
      */
     fun fromCommunity(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, community: List<Pair<String, Dbc>>): List<Suggestion> {
         val result = ArrayList<Suggestion>()
+        // kept only for ids seen on several buses, where they are compared (as in [run])
+        val shared = store.messages.groupingBy { it.id }.eachCount()
         val samples = HashMap<Int, FrameStore.Payloads>()
-        fun payloads(message: FrameStore.Message) = samples.getOrPut(message.index) { store.payloads(message) }
+        fun payloads(message: FrameStore.Message) = if ((shared[message.id] ?: 0) > 1) samples.getOrPut(message.index) { store.payloads(message) } else store.payloads(message)
         for (message in store.messages) {
             if (message.bus >= 128 || message.data.isEmpty() || community.none { message.id in it.second.messages }) continue
             // the same frames on a lower bus too (the party bus is seen on 0 and 2): suggested there only
@@ -34,9 +36,15 @@ object AutoDecode {
                 val theirs = dbc.messages[message.id]?.takeIf { it.length == message.data.size } ?: continue
                 // Model3CAN names its messages ID<hex><name>
                 val name = theirs.name.removePrefix("ID%X".format(message.id)).ifEmpty { theirs.name }
+                // the frames have the last word: a signal they contradict is listed unticked with the reason, and a flag
+                // that is really part of a counter puts the whole layout in doubt (another model's message under this id)
+                val frames = payloads(message)
+                val misfits = theirs.signals.filter { it.fits(message.data.size) }.mapNotNull { signal -> misfit(signal, frames)?.let { signal to it } }
+                val layout = misfits.firstOrNull { it.second.startsWith("flips") }
                 for (signal in theirs.signals) {
                     if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.message === message && it.signal.name == signal.name }) continue
-                    result += Suggestion(message, signal, "From $source ($name)", 0.75, name)
+                    val why = misfits.firstOrNull { it.first === signal }?.second ?: layout?.let { "${it.first.name} ${it.second}, so this layout is not this car's" }
+                    result += Suggestion(message, signal, "From $source ($name)" + (why?.let { " · doesn't fit: $it" } ?: ""), if (why == null) 0.75 else 0.3, name)
                     answered = true
                 }
             }
@@ -44,14 +52,42 @@ object AutoDecode {
         return result
     }
 
+    /**
+     * Why [signal] can't be what frames [p] carry, or null: a flag or small state that changes in a quarter of the
+     * frames is part of a counter or checksum, and a value that always reads its highest is one the car doesn't send.
+     */
+    private fun misfit(signal: Signal, p: FrameStore.Payloads): String? {
+        val name = signal.name.lowercase()
+        if (p.size < 20 || signal.muxValue >= 0 || signal.isMultiplexor || "count" in name || "checksum" in name || "crc" in name) return null
+        val ones = if (signal.size >= 64) -1L else (1L shl signal.size) - 1
+        var changes = 0
+        var top = 0
+        var previous = 0L
+        for (k in 0 until p.size) {
+            val value = signal.raw(p.data, k * p.length) and ones
+            if (k > 0 && value != previous) changes++
+            if (value == ones) top++
+            previous = value
+        }
+        return when {
+            signal.size <= 3 && changes * 4 >= p.size -> "flips in ${changes * 100L / p.size}% of the frames"
+            signal.size >= 4 && top == p.size -> "always reads its highest value (not available)"
+            else -> null
+        }
+    }
+
     private const val GRID = 400
     /** A pause longer than this (ticks, 30 s) separates stretches of data: two logs, or a drive and a charge. */
     private const val GAP = 300_000
     private const val MATCH = 0.95
+    /** The confidence of a state that follows a measurement: enough to be listed with the named ones. */
+    private const val NAMED_STATE = 0.7
     private val PIPE = Regex("isotp|pipe", RegexOption.IGNORE_CASE)
     /** How closely the moments of change must agree too, and how many changes a signal needs to be compared at all. */
     private const val MATCH_CHANGES = 0.8f
     private const val MIN_CHANGES = 5
+    /** Frames a message needs before a page selector is looked for in it. */
+    private const val MIN_PAGED = 64
 
     /**
      * [known] gives the DBC entry of a message, if any; its signals are left alone and used as references.
@@ -60,6 +96,8 @@ object AutoDecode {
     fun run(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, markers: List<Pair<Int, String>>, progress: (String) -> Unit = {}): List<Suggestion> {
         val messages = store.messages
         val result = ArrayList<Suggestion>()
+        // flags and states that changed up to three times, with the times: what [events] groups
+        val rare = HashMap<Suggestion, IntArray>()
         progress("Working out the layout of ${messages.size} messages")
         // kept only for ids seen on several buses, where they are compared: a whole long log's payloads at once would not fit
         val shared = messages.groupingBy { it.id }.eachCount()
@@ -76,8 +114,16 @@ object AutoDecode {
             // a pipe carries conversations (ISO-TP over a private id): its bytes are content, not a layout
             if (dbcMessage != null && PIPE.containsMatchIn(dbcMessage.name)) continue
             dbcMessage?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
+            val first = result.size
             checksums(message, payloads, free, result)
-            layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result)
+            layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result, rare)
+            // a known message's counter and checksum are called after it, as its maker does (DI_torqueCounter)
+            if (dbcMessage != null) for (i in first until result.size) {
+                val found = result[i]
+                val kind = when { found.signal.name.startsWith("COUNTER_") -> "Counter"; found.signal.name.startsWith("CHECKSUM_") -> "Checksum"; else -> continue }
+                val name = (dbcMessage.name + kind).let { name -> if (dbcMessage.signals.none { it.name == name } && (first until i).none { result[it].signal.name == name }) name else "${name}_${found.signal.start}" }
+                result[i] = Suggestion(message, field(name, found.signal.start, found.signal.size), found.evidence, found.confidence)
+            }
         }
         // markers first: they cut their bits out of the guessed fields, and what is left is then compared
         if (markers.isNotEmpty()) progress("Looking at what changed at ${markers.size} markers")
@@ -92,6 +138,7 @@ object AutoDecode {
         }
         progress("Comparing ${result.size} fields with the decoded signals")
         nameAfterKnownSignals(store, known, result)
+        events(store, result, rare)
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
     }
 
@@ -216,10 +263,10 @@ object AutoDecode {
     }
 
     /** [known]: the DBC's multiplexor for this message; its pages are then decoded each by itself, and no other selector is looked for. */
-    private fun layout(message: FrameStore.Message, p: FrameStore.Payloads, free: BooleanArray, known: Signal?, out: MutableList<Suggestion>) {
+    private fun layout(message: FrameStore.Message, p: FrameStore.Payloads, free: BooleanArray, known: Signal?, out: MutableList<Suggestion>, rare: MutableMap<Suggestion, IntArray>) {
         val all = flips(p, null)
         val selector = known ?: multiplexor(p, free, all)
-        if (selector == null) { fields(message, p, null, free, all, -1, out); return }
+        if (selector == null) { fields(message, p, null, free, all, -1, out, rare); return }
         // frames grouped by the selector's value, and the flips between consecutive frames of the same group
         val groups = HashMap<Long, ArrayList<Int>>()
         for (k in 0 until p.size) groups.getOrPut(selector.raw(p.data, k * p.length)) { ArrayList() } += k
@@ -230,9 +277,9 @@ object AutoDecode {
             "Multiplexor: the rest of the frame only makes sense per value of this field (${groups.size} values)", 0.7)
         // bits that behave the same whatever the selector says are ordinary signals; the rest belong to one value each
         val shared = BooleanArray(all.size) { free[it] && within[it] * 2 >= all[it] }
-        fields(message, p, null, shared, all, -1, out)
+        fields(message, p, null, shared, all, -1, out, rare)
         val own = BooleanArray(all.size) { free[it] && !shared[it] }
-        for ((value, rows) in groups.entries.sortedBy { it.key }) fields(message, p, rows.toIntArray(), own, perGroup[value]!!, value.toInt(), out)
+        for ((value, rows) in groups.entries.sortedBy { it.key }) fields(message, p, rows.toIntArray(), own, perGroup[value]!!, value.toInt(), out, rare)
     }
 
     /**
@@ -241,6 +288,8 @@ object AutoDecode {
      * differ at least as much as neighbours.
      */
     private fun multiplexor(p: FrameStore.Payloads, free: BooleanArray, all: IntArray): Signal? {
+        // a handful of frames that differ is not pages taking turns
+        if (p.size < MIN_PAGED) return null
         for (candidate in segments(all, free)) {
             if (candidate.size > 8) continue
             val last = HashMap<Long, Int>()
@@ -284,14 +333,15 @@ object AutoDecode {
         while (bit < flips.size) {
             if (flips[bit] == 0 || !allowed[bit]) { bit++; continue }
             val start = bit
-            while (bit + 1 < flips.size && allowed[bit + 1] && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * 2.5 + 2 && bit + 1 - start < 32) bit++
+            // most signals end where a byte does: across a byte's edge it takes less of a jump in activity to start a new field
+            while (bit + 1 < flips.size && allowed[bit + 1] && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * (if (bit % 8 == 7) 1.5 else 2.5) + 2 && bit + 1 - start < 32) bit++
             result += field("", start, bit - start + 1)
             bit++
         }
         return result
     }
 
-    private fun fields(message: FrameStore.Message, p: FrameStore.Payloads, rows: IntArray?, allowed: BooleanArray, flips: IntArray, mux: Int, out: MutableList<Suggestion>) {
+    private fun fields(message: FrameStore.Message, p: FrameStore.Payloads, rows: IntArray?, allowed: BooleanArray, flips: IntArray, mux: Int, out: MutableList<Suggestion>, rare: MutableMap<Suggestion, IntArray>) {
         val n = rows?.size ?: p.size
         val prefix = if (mux >= 0) "M${mux}_" else ""
         for (segment in Analysis.joinCarries(segments(flips, allowed), p, rows)) {
@@ -306,16 +356,36 @@ object AutoDecode {
             // back to 0, by the value it came from: a counter that stops short of its field's top (0..14) wraps from its highest
             val wrapsFrom = HashMap<Long, Int>()
             val half = 1L shl (size - 1)
+            // how it moves: its changes (the first few with their times), falls, summed step, and its time at the bottom and at all ones
+            var changes = 0
+            val changedAt = IntArray(3)
+            var falls = 0
+            var stepSum = 0.0
+            var lowest = Long.MAX_VALUE
+            var atLowest = 0
+            var atOnes = 0
+            var belowOnes = 0L
             for (i in 0 until n) {
-                val value = segment.raw(p.data, (rows?.get(i) ?: i) * p.length)
+                val row = rows?.get(i) ?: i
+                val value = segment.raw(p.data, row * p.length)
                 if (distinct.size <= 16) distinct += value
                 if (value > highest) highest = value
+                if (value < lowest) { lowest = value; atLowest = 0 }
+                if (value == lowest) atLowest++
+                if (value == half * 2 - 1) atOnes++ else if (value > belowOnes) belowOnes = value
                 if (i > 0) {
                     if ((value - previous) and (half * 2 - 1) == 1L) steps++
                     else if (value == 0L) wrapsFrom[previous] = (wrapsFrom[previous] ?: 0) + 1
                     if (abs(value - previous) > half) wraps++
                     // the same two values read as signed
-                    if (abs((if (value >= half) value - 2 * half else value) - (if (previous >= half) previous - 2 * half else previous)) > half) signedWraps++
+                    val signedStep = abs((if (value >= half) value - 2 * half else value) - (if (previous >= half) previous - 2 * half else previous))
+                    if (signedStep > half) signedWraps++
+                    if (value != previous) {
+                        if (changes < changedAt.size) changedAt[changes] = p.times[row]
+                        changes++
+                        if (value < previous) falls++
+                        stepSum += minOf(abs(value - previous), signedStep)
+                    }
                 }
                 previous = value
             }
@@ -327,11 +397,25 @@ object AutoDecode {
                 size == 1 -> Suggestion(message, field("${prefix}FLAG_$start", start, 1, mux = mux), "Flag: a single bit that changes", 0.4)
                 size <= 8 && distinct.size <= 8 -> Suggestion(message, field("${prefix}STATE_$start", start, size, mux = mux), "State: takes ${distinct.size} different values", 0.4)
                 else -> {
+                    // all ones now and then, far above every other reading: the maker's "not available" (read as signed it would be a lone -1)
+                    val sna = size >= 8 && atOnes in 1 until n && belowOnes < (half * 2 - 1) / 10 * 9
                     // jumps across the middle of the range that disappear when read as signed: a value crossing zero
-                    val signed = size >= 4 && wraps > 0 && signedWraps == 0
-                    Suggestion(message, field("${prefix}FIELD_$start", start, size, signed, mux), if (signed) "Measurement, signed: it crosses zero" else "Measurement: a value that varies", 0.4)
+                    val signed = !sna && size >= 4 && wraps > 0 && signedWraps == 0
+                    val step = if (changes == 0) 0.0 else stepSum / changes / ((if (sna) belowOnes else highest) - lowest).coerceAtLeast(1)
+                    // what its movement looks like, as a hint for what to compare it with
+                    val shape = when {
+                        changes >= MIN_CHANGES && falls * 50 <= changes -> "only ever rises: a clock, a distance or an energy total"
+                        atLowest * 10 >= n * 6 -> "rests at its lowest value and rises in bursts: pedal-, torque- or current-like"
+                        changes * 50 <= n && step <= 0.05 -> "drifts slowly: temperature- or level-like"
+                        changes * 10 >= n * 8 && step >= 0.1 -> "jumps in every frame: noise, or not one field"
+                        step <= 0.03 -> "moves smoothly: speed- or angle-like"
+                        else -> null
+                    }
+                    Suggestion(message, field("${prefix}FIELD_$start", start, size, signed, mux).also { if (sna) it.valueNames = mapOf(half * 2 - 1 to "SNA") },
+                        (if (signed) "Measurement, signed: it crosses zero" else "Measurement: a value that varies") + (shape?.let { " · $it" } ?: "") + (if (sna) " · all ones is \"not available\"" else ""), 0.4)
                 }
             }
+            if (mux < 0 && size <= 8 && changes in 1..changedAt.size && out.last().confidence < 0.5) rare[out.last()] = changedAt.copyOf(changes)
         }
     }
 
@@ -340,7 +424,7 @@ object AutoDecode {
      * and the same for its changes from one moment to the next. Two signals that only both drift, or both step once,
      * agree in value but not in when they change.
      */
-    private class Vector(val values: FloatArray, val changes: FloatArray, val mean: Double, val spread: Double)
+    private class Vector(val values: FloatArray, val changes: FloatArray, val mean: Double, val spread: Double, /** How many different values it took. */ val distinct: Int)
 
     private fun normalized(raw: DoubleArray): FloatArray? {
         val mean = raw.average()
@@ -378,7 +462,7 @@ object AutoDecode {
         if (spread < 1e-12 || steps.count { it != 0.0 } < MIN_CHANGES) return null
         val changes = normalized(steps) ?: return null
         val norm = sqrt(spread)
-        return Vector(FloatArray(GRID) { ((raw[it] - mean) / norm).toFloat() }, changes, mean, norm)
+        return Vector(FloatArray(GRID) { ((raw[it] - mean) / norm).toFloat() }, changes, mean, norm, raw.toHashSet().size)
     }
 
     /** Renames and scales the unnamed fields that follow a decoded signal: the same quantity sent again, often on another bus. */
@@ -406,7 +490,7 @@ object AutoDecode {
         val snapshots = store.snapshots(times)
         val step = active.toDouble() / (GRID - 1) / FrameStore.TICKS_PER_SECOND
         // [how] it is derived from the signal: as it is, its rate of change (acceleration from speed) or its running total (distance from speed)
-        class Reference(val message: FrameStore.Message, val signal: Signal, val vector: Vector, val how: String, val unit: String)
+        class Reference(val message: FrameStore.Message, val signal: Signal, val vector: Vector, val how: String, val unit: String, val raw: DoubleArray)
         val references = ArrayList<Reference>()
         for (m in snapshots.messages.indices) {
             for (signal in known(snapshots.messages[m])?.signals.orEmpty()) {
@@ -415,11 +499,12 @@ object AutoDecode {
                 if (signal.muxValue >= 0 || signal.isMultiplexor || "checksum" in name || "counter" in name || "crc" in name) continue
                 val raw = values(snapshots, m, signal) ?: continue
                 val message = snapshots.messages[m]
-                vector(raw)?.let { references += Reference(message, signal, it, "", signal.unit) }
+                vector(raw)?.let { references += Reference(message, signal, it, "", signal.unit, raw) }
                 val rate = DoubleArray(GRID) { k -> (raw[minOf(k + 1, GRID - 1)] - raw[minOf(k + 1, GRID - 1) - 1]) / step }
-                vector(rate)?.let { references += Reference(message, signal, it, "RATE_", signal.unit + "/s") }
+                vector(rate)?.let { references += Reference(message, signal, it, "RATE_", signal.unit + "/s", rate) }
                 var sum = 0.0
-                vector(DoubleArray(GRID) { k -> sum += raw[k] * step; sum })?.let { references += Reference(message, signal, it, "TOTAL_", signal.unit + "·s") }
+                val total = DoubleArray(GRID) { k -> sum += raw[k] * step; sum }
+                vector(total)?.let { references += Reference(message, signal, it, "TOTAL_", signal.unit + "·s", total) }
             }
         }
         // slow modules answer late: a match may lag by up to 2 s, tried only where the plain match is already promising
@@ -445,6 +530,21 @@ object AutoDecode {
                 bestR = r; best = reference; bestLag = lag
             }
             if (best == null || abs(bestR) < MATCH) continue
+            val where = "(bus ${best.message.bus}, ${"%X".format(best.message.id)})"
+            // the very same number at nearly every sampled moment: the signal itself, sent again
+            val same = if (best.how != "") 0 else values(snapshots, suggestion.message.index, field)!!.let { mine -> (0 until GRID).count { best.signal.physical(mine[it].toLong()) == best.raw[it] } }
+            if (same * 100 >= GRID * 99) {
+                val copy = Signal("COPY_${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, best.signal.factor, best.signal.offset, best.signal.unit, -1, false)
+                copy.valueNames = best.signal.valueNames
+                suggestions[i] = Suggestion(suggestion.message, copy, "Copy of ${best.signal.name} $where: the same value at $same of $GRID sampled moments", 0.97)
+                continue
+            }
+            // a few values that change when a measurement of many does: a state that follows it (awake when the voltage is up), not that measurement
+            if (best.how == "" && mine.distinct <= 8 && best.vector.distinct > mine.distinct * 3) {
+                suggestions[i] = Suggestion(suggestion.message, field("STATE_${field.start}", field.start, field.size),
+                    "State: takes ${mine.distinct} values, changing when ${best.signal.name} $where does, r = ${"%.3f".format(abs(bestR))}", NAMED_STATE)
+                continue
+            }
             // the same match in each stretch of data (each log, when several are open): less sure where one disagrees
             val tested = segments.indices.mapNotNull { s -> segmentR(mine.values, best.vector.values, segmentOf, s, bestLag) }
             val agree = tested.count { it * Math.signum(bestR) >= MATCH - 0.05 }
@@ -458,7 +558,7 @@ object AutoDecode {
             val late = if (bestLag == 0) "" else " about %.1f s %s".format(abs(bestLag) * step, if (bestLag > 0) "earlier" else "later")
             val logs = if (tested.size >= 2) ", in $agree of ${tested.size} stretches of data" else ""
             suggestions[i] = Suggestion(suggestion.message, signal,
-                "Moves with $what${best.signal.name}$late (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}$logs; scaled to its units",
+                "Moves with $what${best.signal.name}$late $where, r = ${"%.3f".format(abs(bestR))}$logs" + if (state) "" else "; scaled to its units",
                 abs(bestR).toDouble() * if (agree < tested.size) 0.9 else 1.0)
         }
         // unknown fields that move together are likely one quantity several times (four wheels) or one system: grouped, so a name or a test covers all
@@ -479,6 +579,30 @@ object AutoDecode {
             val others = members.filter { it != i }.joinToString { "%X bit %d".format(suggestions[it].message.id, suggestions[it].signal.start) }
             suggestions[i] = Suggestion(old.message, Signal("G${n + 1}_${old.signal.name}", old.signal.start, old.signal.size, true, old.signal.signed, 1.0, 0.0, "", -1, false),
                 "${old.evidence} · group ${n + 1}: moves with $others", 0.45)
+        }
+    }
+
+    /**
+     * Fields that changed only a few times and first did so within a second of each other: one thing that happened
+     * (a plug going in, the car waking). They are numbered E1, E2 ... and carry the moment, to look at and name together.
+     */
+    private fun events(store: FrameStore, suggestions: MutableList<Suggestion>, rare: Map<Suggestion, IntArray>) {
+        val moments = suggestions.indices.mapNotNull { i -> rare[suggestions[i]]?.let { i to it[0] } }.sortedBy { it.second }
+        var number = 0
+        var from = 0
+        while (from < moments.size) {
+            var to = from
+            while (to + 1 < moments.size && moments[to + 1].second - moments[to].second <= FrameStore.TICKS_PER_SECOND) to++
+            if (to > from) {
+                number++
+                val at = moments[from].second
+                val note = " · event $number at %.1f s: changed together with ".format((at - store.firstTime) / FrameStore.TICKS_PER_SECOND.toDouble()) + if (to - from == 1) "one other field" else "${to - from} other fields"
+                for (k in from..to) {
+                    val old = suggestions[moments[k].first]
+                    suggestions[moments[k].first] = Suggestion(old.message, field("E${number}_${old.signal.name}", old.signal.start, old.signal.size), old.evidence + note, 0.45, at = at)
+                }
+            }
+            from = to + 1
         }
     }
 
