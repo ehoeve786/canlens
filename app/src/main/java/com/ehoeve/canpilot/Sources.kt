@@ -23,6 +23,7 @@ import com.ehoeve.canpilot.core.FrameSink
 import com.ehoeve.canpilot.core.appendCandump
 import com.ehoeve.canpilot.core.appendMarker
 import com.github.luben.zstd.ZstdInputStream
+import com.github.luben.zstd.ZstdOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.BufferedInputStream
 import java.io.Closeable
@@ -65,7 +66,7 @@ class Clock {
 
 /** Writes a live stream to `Download/CanPilot/can-log-<time>.log` in candump format, stamped with the phone's clock. */
 class Recorder(context: Context) : Closeable {
-    val name = "can-log-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log"
+    val name = "can-log-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log.zst"
     private val clock = Clock()
     private val line = StringBuilder(160)
     val uri: Uri
@@ -74,11 +75,13 @@ class Recorder(context: Context) : Closeable {
     init {
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+            // octet-stream: Android keeps the .zst name instead of adding .txt
+            put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
             put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CanPilot")
         }
         uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
-        writer = (context.contentResolver.openOutputStream(uri) ?: throw IOException("Can't write $name")).bufferedWriter(Charsets.US_ASCII)
+        // zstd as it is written: about a tenth of the size, and the reader takes it as it is, a cut-off end included
+        writer = ZstdOutputStream(context.contentResolver.openOutputStream(uri) ?: throw IOException("Can't write $name")).bufferedWriter(Charsets.US_ASCII)
     }
 
     private var closed = false
