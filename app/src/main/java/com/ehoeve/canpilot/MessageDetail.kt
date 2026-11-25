@@ -2,6 +2,10 @@ package com.ehoeve.canpilot
 
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.AlertDialog
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -131,6 +135,15 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
         signals.any { it.name == editing.original } -> signals.map { if (it.name == editing.original) drafted else it }
         else -> signals + drafted
     }
+    // the editor gets the whole screen, with the bit grid on top to show which bits the signal takes; tapping a bit moves its start there
+    if (editing != null) Dialog(onDismissRequest = { drafts.remove(draftKey) }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(Modifier.systemBarsPadding().imePadding().verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
+                BitGrid(frame, activity, a != null && b != null, different, outlined) { editing.start = it }
+                SignalEditor(model, message, decoder?.multiplexor, editing, frame, onClose = { drafts.remove(draftKey) })
+            }
+        }
+    }
     if (transmitting) TxSheet(model, message, frame) { transmitting = false }
     renaming?.let { name ->
         AlertDialog(
@@ -171,7 +184,6 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                             val owner = signals.firstOrNull { bit in it.bits }
                             drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
                         }
-                        if (editing != null) SignalEditor(model, message, decoder?.multiplexor, editing, frame, onClose = { drafts.remove(draftKey) })
                         Hint("History: time runs left to right, one row per bit.", Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp))
                         Box(Modifier.padding(horizontal = 14.dp)) {
                             HistoryStrip(payloads, signals, view, seconds(cursor), onCursor = { model.trace.cursor = ticks(it); model.trace.followLive = false }, onMoved = { model.trace.followLive = false })
