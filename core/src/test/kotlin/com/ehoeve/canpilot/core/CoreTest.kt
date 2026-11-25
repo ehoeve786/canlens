@@ -321,6 +321,18 @@ class CoreTest {
         assertEquals(listOf(5_000_001L to "first line", 6_500_000L to "opened, the door now"), markers)
     }
 
+    @Test fun takesTheHalvesAndRepeatsOfAnActionAsOneTest() {
+        val store = FrameStore()
+        for (i in 0 until 1000) {
+            val open = i in 200 until 400 || i in 600 until 800
+            store.frame(i * 20_000L, 0, 0x401, byteArrayOf(if (open) 1 else 0, if (i in 600 until 800) 1 else 0), 0, 2)    // the door, and a bit for the second time only
+        }
+        val markers = listOf(200 * 200 to "door open", 400 * 200 to "door closed", 600 * 200 to "door open", 800 * 200 to "Door Closed")
+        val found = AutoDecode.run(store, { null }, markers).filter { it.signal.name.startsWith("EVT_") }
+        assertEquals(listOf("EVT_DOOR_0"), found.map { it.signal.name })                                   // byte 1 changed at only two of the four
+        assertTrue(found.single().evidence.contains("all 4"))
+    }
+
     @Test fun decodesAWholeBusAutomatically() {
         val store = FrameStore()
         var noise = 99

@@ -9,6 +9,7 @@ class FieldMatch(val message: FrameStore.Message, val signal: Signal, val score:
 /** Searches for where a signal lives, and guesses at the layout of an unknown message. */
 object Analysis {
     private val NICE_FACTORS = doubleArrayOf(1.0, 0.1, 0.01, 0.001, 0.5, 0.25, 0.125, 0.0625, 0.05, 0.02, 2.0, 10.0)
+    private val NICE_OFFSETS = doubleArrayOf(0.0, -40.0)
     private const val MAX_FIELD = 16
 
     /**
@@ -76,7 +77,8 @@ object Analysis {
                     if (worst < error && f != 0.0) { error = worst; factor = f; offset = o }
                 }
                 if (sameValue) {
-                    for (f in NICE_FACTORS) { attempt(f, 0.0); if (error <= tolerance) break }
+                    // offset −40 too: how temperatures are usually sent
+                    for (o in NICE_OFFSETS) for (f in NICE_FACTORS) { attempt(f, o); if (error <= tolerance) break }
                 } else {
                     var rr = 0.0; var rv = 0.0; var sumR = 0.0; var sumV = 0.0
                     for (k in wanted.indices) { rr += raw[k] * raw[k]; rv += raw[k] * wanted[k]; sumR += raw[k]; sumV += wanted[k] }
@@ -161,14 +163,19 @@ object Analysis {
         val activity = store.bitActivity(only = message).getOrNull(message.index) ?: return emptyList()
         val flips = activity.inside
         val bits = message.data.size * 8
-        val result = ArrayList<Signal>()
+        val segments = ArrayList<Signal>()
         var bit = 0
         while (bit < bits) {
             if (flips[bit] == 0) { bit++; continue }
             val start = bit
             while (bit + 1 < bits && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * 2.5 + 2 && bit + 1 - start < 32) bit++
-            val size = bit - start + 1
+            segments += Signal("", start, bit - start + 1, true, false, 1.0, 0.0, "", -1, false)
             bit++
+        }
+        val result = ArrayList<Signal>()
+        for (segment in joinCarries(segments, store.payloads(message), null)) {
+            val start = segment.start
+            val size = segment.size
             val plain = Signal("FIELD_$start", start, size, true, false, 1.0, 0.0, "", -1, false)
             val series = store.series(message, DbcMessage(message.id, "", 0, listOf(plain)), plain)
             var steps = 0
@@ -177,6 +184,34 @@ object Analysis {
             val checksum = !counter && size == 8 && start % 8 == 0 && activity.frames >= 8 &&
                 (start until start + 8).all { flips[it] in (activity.frames * 0.3).toInt()..(activity.frames * 0.7).toInt() }
             result += if (counter || checksum) Signal((if (counter) "COUNTER_" else "CHECKSUM_") + start, start, size, true, false, 1.0, 0.0, "", -1, false) else plain
+        }
+        return result
+    }
+
+    /**
+     * Joins neighbouring little-endian fields that are one value: whenever the upper one changes, the lower one
+     * wraps around (a carry), so read together they move by a small step. Flip rates alone split a value where a
+     * byte's top bits change rarely (cabin humidity in 464 starts two bits into a byte).
+     */
+    internal fun joinCarries(fields: List<Signal>, p: FrameStore.Payloads, rows: IntArray?): List<Signal> {
+        val n = rows?.size ?: p.size
+        val result = ArrayList<Signal>()
+        for (next in fields) {
+            val low = result.lastOrNull()
+            if (low != null && low.start + low.size == next.start && low.size + next.size <= 32) {
+                val joined = Signal("", low.start, low.size + next.size, true, false, 1.0, 0.0, "", next.muxValue, false)
+                var changes = 0
+                var carries = 0
+                for (i in 1 until n) {
+                    val a = (rows?.get(i - 1) ?: (i - 1)) * p.length
+                    val b = (rows?.get(i) ?: i) * p.length
+                    if (next.raw(p.data, a) == next.raw(p.data, b)) continue
+                    changes++
+                    if (abs(joined.raw(p.data, b) - joined.raw(p.data, a)) < (1L shl low.size) / 2) carries++
+                }
+                if (changes >= 3 && carries >= changes * 0.9) { result[result.size - 1] = joined; continue }
+            }
+            result += next
         }
         return result
     }

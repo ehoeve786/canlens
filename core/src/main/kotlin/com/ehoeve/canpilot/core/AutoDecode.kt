@@ -44,7 +44,8 @@ object AutoDecode {
         }
         // markers first: they cut their bits out of the guessed fields, and what is left is then compared
         if (markers.isNotEmpty()) progress("Looking at what changed at ${markers.size} markers")
-        for ((time, note) in markers) changedOnlyAt(store, known, time, note, result)
+        // repeats of an action, and its two halves ("door open", "door closed"), are one test: the bit must change at every one
+        for ((action, times) in markers.groupBy({ it.second.replace(HALF, "").trim().ifEmpty { it.second }.lowercase() }, { it.first })) changedOnlyAt(store, known, times, action, result)
         progress("Comparing ${result.size} fields with the decoded signals")
         nameAfterKnownSignals(store, known, result)
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
@@ -202,7 +203,7 @@ object AutoDecode {
     private fun fields(message: FrameStore.Message, p: FrameStore.Payloads, rows: IntArray?, allowed: BooleanArray, flips: IntArray, mux: Int, out: MutableList<Suggestion>) {
         val n = rows?.size ?: p.size
         val prefix = if (mux >= 0) "M${mux}_" else ""
-        for (segment in segments(flips, allowed)) {
+        for (segment in Analysis.joinCarries(segments(flips, allowed), p, rows)) {
             val size = segment.size
             val start = segment.start
             val distinct = HashSet<Long>()
@@ -319,19 +320,27 @@ object AutoDecode {
     }
 
     /** Bits that flipped from 1 s before to 2 s after [time] and at no other moment get a signal named after the marker's [note]. */
-    private fun changedOnlyAt(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, time: Int, note: String, out: MutableList<Suggestion>) {
+    /** The last word of a marker note that says which half of an action it was. */
+    private val HALF = Regex("\\s+(on|off|in|out|open|opened|close|closed|up|down|start|stop|pressed|released|lock|locked|unlock|unlocked)$", RegexOption.IGNORE_CASE)
+
+    /** Bits that changed around every one of [times] (1 s before to 2 s after) and at no other time. */
+    private fun changedOnlyAt(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, times: List<Int>, note: String, out: MutableList<Suggestion>) {
         val second = FrameStore.TICKS_PER_SECOND.toInt()
         val name = "EVT_" + note.uppercase().replace(Regex("[^A-Z0-9]+"), "_").trim('_').take(24).ifEmpty { "MARKER" }
-        for (activity in store.bitActivity(time - second, time + 2 * second)) {
-            if (activity == null) continue
+        val windows = times.map { store.bitActivity(it - second, it + 2 * second) }
+        for (m in windows[0].indices) {
+            val activity = windows[0][m] ?: continue
             val message = activity.message
             val taken = BooleanArray(activity.inside.size)
             known(message)?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in taken.indices) taken[bit] = true }
+            // a window's flips inside and outside add up to all of them: what is left after every window is "elsewhere"
+            fun only(bit: Int) = !taken[bit] && windows.all { (it[m]?.inside?.get(bit) ?: 0) > 0 } &&
+                activity.inside[bit] + activity.outside[bit] - windows.sumOf { it[m]?.inside?.get(bit) ?: 0 } <= 0
             var bit = 0
             while (bit < message.data.size * 8) {
-                if (taken[bit] || activity.inside[bit] == 0 || activity.outside[bit] != 0) { bit++; continue }
+                if (!only(bit)) { bit++; continue }
                 val start = bit
-                while (bit + 1 < message.data.size * 8 && !taken[bit + 1] && activity.inside[bit + 1] > 0 && activity.outside[bit + 1] == 0) bit++
+                while (bit + 1 < message.data.size * 8 && only(bit + 1)) bit++
                 bit++
                 // takes its bits out of the plain guesses; what a guess has below or above them stays a field
                 val overlapped = out.filter { it.message === message && it.confidence < 0.5 && it.signal.bits.any { b -> b in start until bit } }
@@ -342,7 +351,9 @@ object AutoDecode {
                     if (guess.start < start) out += Suggestion(message, field(guess.name, guess.start, start - guess.start, guess.signed, guess.muxValue), old.evidence, old.confidence)
                     if (end > bit) out += Suggestion(message, field(guess.name.substringBeforeLast('_') + "_" + bit, bit, end - bit, mux = guess.muxValue), old.evidence, old.confidence)
                 }
-                out += Suggestion(message, field("${name}_$start", start, bit - start), "Changed only at the marker \"$note\"", 0.8)
+                out += Suggestion(message, field("${name}_$start", start, bit - start),
+                    if (times.size == 1) "Changed only at the marker \"$note\"" else "Changed at all ${times.size} \"$note\" markers and at no other time",
+                    if (times.size == 1) 0.8 else 0.95)
             }
         }
     }
