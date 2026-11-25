@@ -90,6 +90,23 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     val mine = model.mine
     val different = remember(other, mine, message, message.data.size) { if (other == null || mine == null) null else mine.differences(other, message.bus, message.id, message.data.size * 8) }
     val payloads by produceState<FrameStore.Payloads?>(null, revision, message) { value = withContext(Dispatchers.Default) { store.payloads(message) } }
+    // each page of a multiplexed message: index in [payloads] of its last frame at the cursor, so its signals show a value whichever page is up
+    val pageFrames = remember(payloads, cursor, following, decoder) {
+        val mux = decoder?.multiplexor
+        val held = payloads
+        val pages = signals.mapNotNullTo(HashSet()) { signal -> signal.muxValue.toLong().takeIf { it >= 0 } }
+        val found = HashMap<Long, Int>()
+        if (mux != null && held != null && mux.fits(held.length) && pages.isNotEmpty()) {
+            var k = if (following) held.size - 1 else java.util.Arrays.binarySearch(held.times, 0, held.size, cursor)
+            if (k < 0) k = -k - 2 else while (k + 1 < held.size && held.times[k + 1] <= cursor) k++
+            while (k >= 0 && found.size < pages.size) {
+                val page = mux.raw(held.data, k * held.length)
+                if (page in pages) found.putIfAbsent(page, k)
+                k--
+            }
+        }
+        found
+    }
     val guesses by produceState(emptyList<Signal>(), revision, message, signals) {
         value = withContext(Dispatchers.Default) { Analysis.guessFields(store, message).filter { guess -> signals.none { known -> known.bits.any { it in guess.bits } } } }
     }
@@ -195,7 +212,17 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                         Checkbox(plotKey in plots, onCheckedChange = null)
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
                         Text(signal.name, Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-                        Text(if (active) format(signal, signal.raw(frame)) else "–", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                        // another page's signal: its last value, dimmed
+                        val held = payloads
+                        Text(
+                            when {
+                                active -> format(signal, signal.raw(frame))
+                                held != null && signal.fits(held.length) -> pageFrames[signal.muxValue.toLong()]?.let { format(signal, signal.raw(held.data, it * held.length)) } ?: "–"
+                                else -> "–"
+                            },
+                            fontFamily = MONO, style = MaterialTheme.typography.bodyMedium, maxLines = 1,
+                            color = if (active) Color.Unspecified else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         IconButton(onClick = { drafts[draftKey] = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
