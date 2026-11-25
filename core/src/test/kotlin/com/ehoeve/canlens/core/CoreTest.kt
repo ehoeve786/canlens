@@ -430,6 +430,13 @@ class CoreTest {
         assertEquals(0.0, best.signal.offset, 1e-9)
     }
 
+    @Test fun noSecondCounterWhereTheDbcHasOne() {
+        val store = FrameStore()
+        for (i in 0 until 400) store.frame(i * 20_000L, 1, 0x26D, byteArrayOf((i and 3).toByte(), ((i + 2) and 3).toByte()), 0, 2)
+        val dbc = Dbc.parse("BO_ 621 UNK_26D: 2 X\n SG_ UNK_26D_counter : 0|2@1+ (1,0) [0|0] \"\" X\n", "d")
+        assertTrue(AutoDecode.run(store, { dbc.messages[it.id] }, emptyList()).none { "Counter" in it.signal.name || it.signal.name.startsWith("COUNTER") })
+    }
+
     @Test fun communitySignalsTheFramesContradictAreMarked() {
         val store = FrameStore()
         for (i in 0 until 200) store.frame(i * 20_000L, 1, 0x25D, byteArrayOf((i and 1).toByte(), 0), 0, 2)

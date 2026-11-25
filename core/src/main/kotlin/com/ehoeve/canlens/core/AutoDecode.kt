@@ -138,6 +138,9 @@ object AutoDecode {
             val first = result.size
             checksums(message, payloads, free, result)
             layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result, rare)
+            // a message has one counter: with one in the DBC, a second is page data that repeats in step with it
+            if (dbcMessage != null && dbcMessage.signals.any { "counter" in it.name.lowercase() })
+                for (i in result.size - 1 downTo first) if (result[i].signal.name.startsWith("COUNTER_")) result.removeAt(i)
             // a known message's counter and checksum are called after it, as its maker does (DI_torqueCounter)
             if (dbcMessage != null) for (i in first until result.size) {
                 val found = result[i]
