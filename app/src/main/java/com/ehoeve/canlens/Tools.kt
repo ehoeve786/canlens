@@ -206,7 +206,7 @@ private val EVENT = Regex("^E(\\d+)_")
 /** Runs the automatic decoder and lists what it proposes, to be reviewed and added to the DBC. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
+fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -222,12 +222,13 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
             title = { Text("Event $number at %.1f s".format(seconds(at))) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Hint("${events[number]!!.size} fields changed here and hardly ever else. Go there to see what happened; name it and they are all listed under that name, ticked.")
+                    Hint("${events[number]!!.size} fields changed here and hardly ever else. Plot them to see what happened; name it and they are all listed under that name, ticked.")
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("What happened") }, placeholder = { Text("plug in") })
                 }
             },
             confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { model.signals.nameEvent(number, name); naming = null }) { Text("Name them") } },
-            dismissButton = { TextButton(onClick = { model.trace.cursor = at; model.trace.followLive = false; naming = null; onBack() }) { Text("Go there") } },
+            // its fields on the plots, from 10 s before to 10 s after it, so what changed shows at a glance
+            dismissButton = { TextButton(onClick = { model.plotEvent(events[number]!!); naming = null; onPlots() }) { Text("Plot them") } },
         )
     }
     // named or verified ones start ticked; plain layout guesses only when ticked by hand

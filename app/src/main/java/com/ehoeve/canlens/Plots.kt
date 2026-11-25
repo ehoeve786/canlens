@@ -124,8 +124,9 @@ fun PlotsScreen(model: AppModel) {
         value = withContext(Dispatchers.Default) {
             plots.mapIndexedNotNull { position, key ->
                 val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapIndexedNotNull null
-                val decoder = model.dbc.decoder(key.bus, key.id) ?: return@mapIndexedNotNull null
-                val signal = decoder.signals.firstOrNull { it.name == key.signal } ?: return@mapIndexedNotNull null
+                // a DBC signal, or one Decode suggested and the DBC doesn't have yet
+                val saved = model.dbc.decoder(key.bus, key.id)?.let { d -> d.signals.firstOrNull { it.name == key.signal }?.let { d to it } }
+                val (decoder, signal) = saved ?: model.plot.unsaved[key] ?: return@mapIndexedNotNull null
                 PlotData(key, signal, decoder.name, store.series(message, decoder, signal, liveFrom), SIGNAL_COLORS[position % SIGNAL_COLORS.size])
             }
         }

@@ -82,7 +82,7 @@ fun App(model: AppModel = viewModel()) {
             }
             autoDecoding && tab != Tab.MESSAGE -> {
                 BackHandler { autoDecoding = false }
-                AutoDecodeScreen(model, onBack = { autoDecoding = false }) { suggestion -> model.signals.pendingSignal = suggestion.signal; open(suggestion.message) }
+                AutoDecodeScreen(model, onBack = { autoDecoding = false }, onPlots = { autoDecoding = false; tab = Tab.PLOTS }) { suggestion -> model.signals.pendingSignal = suggestion.signal; open(suggestion.message) }
             }
             else -> Scaffold(
                 contentWindowInsets = WindowInsets(0, 0, 0, 0),   // each view's own top bar deals with the status bar

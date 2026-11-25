@@ -1,5 +1,7 @@
 package com.ehoeve.canlens
 
+import com.ehoeve.canlens.core.DbcMessage
+import com.ehoeve.canlens.core.Suggestion
 import com.ehoeve.canlens.core.AutoDecode
 import android.app.Application
 import android.content.Context
@@ -236,6 +238,24 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             }
         }
         return found
+    }
+
+    /**
+     * Plots the fields of an event (Decode's suggestions, not in a DBC yet) in place of what was plotted, around its
+     * moment, with the cursor on it.
+     */
+    fun plotEvent(fields: List<Suggestion>) {
+        val at = fields.firstOrNull()?.at ?: return
+        plot.keys.clear()
+        plot.unsaved.clear()
+        for (s in fields) {
+            val key = PlotKey(s.message.bus, s.message.id, s.signal.name)
+            plot.unsaved[key] = DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOf(s.signal)) to s.signal
+            plot.keys += key
+        }
+        trace.cursor = at
+        trace.followLive = false
+        plot.view.show(seconds(at) - 10, seconds(at) + 10)
     }
 
     /** What the number the camera reads off the car's screen is ("range"). */
