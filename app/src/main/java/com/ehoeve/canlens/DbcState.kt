@@ -1,8 +1,12 @@
 package com.ehoeve.canlens
 
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,7 +23,11 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
 
-/** A DBC in use and the bus it decodes ([ALL_BUSES] for every bus). Kept as a private copy in the app's files. */
+/**
+ * A DBC in use and the bus it decodes ([ALL_BUSES] for every bus). Kept as a private copy in the app's files, and every
+ * change is also written to the file it was opened from (or `Download/CANLens/dbc/` for one the app started), which
+ * outlives the app.
+ */
 class LoadedDbc(val dbc: Dbc, val bus: Int)
 
 const val ALL_BUSES = -1
@@ -39,6 +47,7 @@ class DbcState(
     private val report: (String) -> Unit,
 ) {
     private val folder = File(context.filesDir, "dbc").apply { mkdirs() }
+    private val io = Dispatchers.IO.limitedParallelism(1)    // one write at a time, in order
 
     val files = mutableStateListOf<LoadedDbc>()
 
@@ -65,6 +74,9 @@ class DbcState(
                 val dbc = Dbc.parse(text, name)
                 if (dbc.messages.isEmpty()) throw IOException("$name has no messages")
                 withContext(Dispatchers.IO) { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
+                // changes go back to this file, also after a restart
+                runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+                    .fold({ preferences.edit().putString("uri:$name", uri.toString()) }, { preferences.edit().remove("uri:$name") }).apply()
                 files.removeAll { it.dbc.name == name }
                 files += LoadedDbc(dbc, preferences.getInt("bus:$name", ALL_BUSES))
             } catch (e: Exception) {
@@ -82,7 +94,7 @@ class DbcState(
     fun remove(index: Int) {
         val old = files.removeAt(index)
         File(folder, old.dbc.name).delete()
-        preferences.edit().remove("bus:" + old.dbc.name).apply()
+        preferences.edit().remove("bus:" + old.dbc.name).remove("uri:" + old.dbc.name).apply()
     }
 
     fun export(index: Int, uri: Uri) {
@@ -189,6 +201,18 @@ class DbcState(
         if (index >= 0) files[index] = value else files += value
         preferences.edit().putInt("bus:" + value.dbc.name, value.bus).apply()
         val text = value.dbc.write()
-        scope.launch(Dispatchers.IO) { runCatching { File(folder, value.dbc.name).writeText(text, Charsets.ISO_8859_1) } }
+        val name = value.dbc.name
+        scope.launch(io) {
+            runCatching { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
+            runCatching { (context.contentResolver.openOutputStream(outside(name), "wt") ?: throw IOException()).use { it.write(text.toByteArray(Charsets.ISO_8859_1)) } }
+                .onFailure { preferences.edit().remove("uri:$name").apply(); withContext(Dispatchers.Main) { report("$name: only saved inside the app this time (${it.message ?: "can't write the file"})") } }
+        }
     }
+
+    /** The file outside the app that [name] is kept in: the one it was opened from, else a new one in `Download/CANLens/dbc/`. */
+    private fun outside(name: String): Uri = preferences.getString("uri:$name", null)?.let(Uri::parse) ?: (context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+        put(MediaStore.Downloads.DISPLAY_NAME, name)
+        put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+        put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens/dbc")
+    }) ?: throw IOException("can't create it in Downloads")).also { preferences.edit().putString("uri:$name", it.toString()).apply() }
 }
