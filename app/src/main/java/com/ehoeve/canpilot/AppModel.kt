@@ -30,8 +30,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val context: Context get() = getApplication()
     private val preferences = application.getSharedPreferences("canpilot", Context.MODE_PRIVATE)
 
-    /** As many chunks as half the heap holds: a phone with a large heap opens an hour-long log whole. */
-    val store = FrameStore((Runtime.getRuntime().maxMemory() / 2 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8))
+    /** As many chunks as 40 % of the heap holds: the rest is room for decoding, plotting and merging what is loaded. */
+    val store = FrameStore((Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8))
     /** Where the open logs stopped loading (source clock), so the next part can be loaded; null when they loaded whole. */
     var nextPart: Long? by mutableStateOf(null); private set
     /** Goes up whenever the store's content changed; composables read it to refresh. */

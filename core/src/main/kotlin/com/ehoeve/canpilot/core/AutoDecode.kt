@@ -61,8 +61,10 @@ object AutoDecode {
         val messages = store.messages
         val result = ArrayList<Suggestion>()
         progress("Working out the layout of ${messages.size} messages")
+        // kept only for ids seen on several buses, where they are compared: a whole long log's payloads at once would not fit
+        val shared = messages.groupingBy { it.id }.eachCount()
         val samples = HashMap<Int, FrameStore.Payloads>()
-        fun payloads(message: FrameStore.Message) = samples.getOrPut(message.index) { store.payloads(message) }
+        fun payloads(message: FrameStore.Message) = if ((shared[message.id] ?: 0) > 1) samples.getOrPut(message.index) { store.payloads(message) } else store.payloads(message)
         for (message in messages) {
             val payloads = payloads(message)
             if (payloads.size < 4) continue
