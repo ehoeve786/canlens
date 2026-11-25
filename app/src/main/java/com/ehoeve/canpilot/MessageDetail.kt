@@ -340,13 +340,13 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
 /** How a signal's status shows after its name. */
 val STATUS_MARKS = mapOf("guess" to "  ?", "plotted" to "  ~", "confirmed" to "  ✓")
 
-/** A signal's place in the bit grid: "byte 1, bit 3", "byte 1, bits 0–1", or "bits 12–19" across bytes. */
+/** A signal's place in the bit grid, by its bit number (what the editor's start bit is) and by byte and bit within it. */
 fun bitsLabel(signal: Signal): String {
     val low = signal.bits.min()
     val high = signal.bits.max()
     return when {
-        low == high -> "byte ${low / 8}, bit ${low % 8}"
-        low / 8 == high / 8 -> "byte ${low / 8}, bits ${low % 8}–${high % 8}"
+        low == high -> "bit $low · byte ${low / 8}, bit ${low % 8}"
+        low / 8 == high / 8 -> "bits $low–$high · byte ${low / 8}, bits ${low % 8}–${high % 8}"
         else -> "bits $low–$high, bytes ${low / 8}–${high / 8}"
     }
 }
