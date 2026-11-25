@@ -48,6 +48,7 @@ class DbcState(
     /** The DBC message for a frame: a DBC assigned to that bus wins over one for all buses. */
     fun decoder(bus: Int, id: Int): DbcMessage? {
         val source = sourceBus(bus)
+        if (source == PhoneSensors.PHONE_BUS) return PhoneSensors.DBC.messages[id]
         return files.firstOrNull { it.bus == source && id in it.dbc.messages }?.dbc?.messages?.get(id)
             ?: files.firstOrNull { it.bus == ALL_BUSES }?.dbc?.messages?.get(id)
     }

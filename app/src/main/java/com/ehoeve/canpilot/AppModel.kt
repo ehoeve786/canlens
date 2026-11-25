@@ -14,6 +14,7 @@ import com.ehoeve.canpilot.core.Align
 import com.ehoeve.canpilot.core.BitSummary
 import com.ehoeve.canpilot.core.Export
 import com.ehoeve.canpilot.core.Filter
+import com.ehoeve.canpilot.core.FrameSink
 import com.ehoeve.canpilot.core.FrameStore
 import com.ehoeve.canpilot.core.LogReader
 import kotlinx.coroutines.Dispatchers
@@ -29,7 +30,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val context: Context get() = getApplication()
     private val preferences = application.getSharedPreferences("canpilot", Context.MODE_PRIVATE)
 
-    val store = FrameStore()
+    /** As many chunks as half the heap holds: a phone with a large heap opens an hour-long log whole. */
+    val store = FrameStore((Runtime.getRuntime().maxMemory() / 2 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8))
+    /** Where the open logs stopped loading (source clock), so the next part can be loaded; null when they loaded whole. */
+    var nextPart: Long? by mutableStateOf(null); private set
     /** Goes up whenever the store's content changed; composables read it to refresh. */
     var revision by mutableIntStateOf(0); private set
     var status by mutableStateOf("Open a log or start a live stream"); private set
@@ -53,7 +57,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     var otherName by mutableStateOf(""); private set
 
     private fun liveStarted() {
-        logs = emptyList(); mergedLogs = emptyList()
+        logs = emptyList(); mergedLogs = emptyList(); nextPart = null
         reset(0, true, ChartView(0f, LIVE_WINDOW_SECONDS))
     }
 
@@ -65,7 +69,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** [then] runs once the logs are loaded and every part was reset for them. */
-    fun openLogs(uris: List<Uri>, then: () -> Unit = {}) {
+    fun openLogs(uris: List<Uri>, from: Long? = null, then: () -> Unit = {}) {
         if (uris.isEmpty() || busy) return
         keepReadable(uris)
         logs = uris; mergedLogs = emptyList()
@@ -78,13 +82,15 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.IO) {
                 store.clear()
                 store.dropOldest = false
+                // the next part of a log too big to load at once: the frames before [from] are read past
+                val sink = if (from == null) store else FrameSink { time, bus, id, data, offset, length -> time < from || store.frame(time, bus, id, data, offset, length) }
                 // route segments in order: natural sort puts --2-- before --10--
                 val files = uris.map { context.displayName(it) to it }.sortedWith { a, b -> naturalCompare(a.first, b.first) }
                 for ((index, file) in files.withIndex()) {
                     withContext(Dispatchers.Main) { status = "Reading ${file.first} (${index + 1}/${files.size})" }
                     val before = store.frameCount
                     try {
-                        context.openDecompressed(file.second).use { LogReader.read(it, store) { time, note -> notes += time to note } }
+                        context.openDecompressed(file.second).use { LogReader.read(it, sink) { time, note -> if (from == null || time >= from) notes += time to note } }
                         if (store.frameCount == before) problems += "${file.first}: no CAN frames"
                     } catch (e: Exception) {
                         problems += "${file.first}: ${e.message ?: e.javaClass.simpleName}"
@@ -94,6 +100,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     if (store.truncated) { problems += "memory limit reached, the rest was not loaded"; break }
                 }
             }
+            nextPart = if (store.truncated) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else null
             reset(store.firstTime, false, ChartView(seconds(store.firstTime), seconds(store.lastTime)))
             if (store.frameCount > 0) trace.markers += notes.map { Marker(((it.first - store.originMicros) / FrameStore.MICROS_PER_TICK).toInt(), it.second) }.sortedBy { it.time }
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +
@@ -109,7 +116,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         live.stop()
         live.recorded = null
         store.clear()
-        logs = emptyList(); mergedLogs = emptyList()
+        logs = emptyList(); mergedLogs = emptyList(); nextPart = null
         plot.keys.clear()
         reset(0, false, ChartView(0f, 1f))
         status = "Open a log or start a live stream"

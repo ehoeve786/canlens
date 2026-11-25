@@ -41,6 +41,9 @@ class LiveState(
     var source by mutableStateOf(LiveSource.NONE); private set
     var recording by mutableStateOf<String?>(null); private set
     var commaAddress by mutableStateOf(preferences.getString("comma", "") ?: ""); private set
+    /** Whether a stream also carries the phone's sensors, as bus [PhoneSensors.PHONE_BUS]. */
+    var phoneSensors by mutableStateOf(preferences.getBoolean("phoneSensors", true))
+        set(value) { field = value; preferences.edit().putBoolean("phoneSensors", value).apply() }
 
     /** The last recording of the stream that is, or was last, running: what a session can reopen of it. */
     var recorded: Uri? = null
@@ -50,6 +53,7 @@ class LiveState(
 
     private var job: Job? = null
     private var connection: Closeable? = null
+    private var sensors: PhoneSensors? = null
     @Volatile private var recorder: Recorder? = null
     /** Changes with every stream start and stop, so a stream that is still shutting down can't write into the next one's data. */
     @Volatile private var generation = 0
@@ -106,6 +110,15 @@ class LiveState(
                 store.frame(time, bus, id, data, offset, length)
             }
         }
+        // stamped with the stream's clock: the time of its latest frame, so they line up with the car's
+        if (phoneSensors) sensors = PhoneSensors(context) { id, data ->
+            synchronized(store) {
+                if (mine == generation && store.frameCount > 0) {
+                    recorder?.write(PhoneSensors.PHONE_BUS, id, data, 0, data.size)
+                    store.frame(store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK, PhoneSensors.PHONE_BUS, id, data, 0, data.size)
+                }
+            }
+        }.also { it.start() }
         job = scope.launch {
             launch(Dispatchers.IO) {
                 while (isActive) {
@@ -131,6 +144,7 @@ class LiveState(
     fun stop() {
         generation++
         job?.cancel(); job = null
+        sensors?.stop(); sensors = null
         runCatching { connection?.close() }; connection = null; dashKit = null
         setRecording(false)
         if (source != LiveSource.NONE) {

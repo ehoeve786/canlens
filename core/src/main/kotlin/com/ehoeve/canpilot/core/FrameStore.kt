@@ -454,6 +454,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
     companion object {
         const val CHUNK_BITS = 18
         const val CAPACITY = 1 shl CHUNK_BITS
+        /** Memory one [Chunk] takes: time, message, end, 8 payload bytes and the change mask per frame. */
+        const val CHUNK_BYTES = CAPACITY * 19L
         const val MAX_PAYLOAD = 64
         const val MICROS_PER_TICK = 100L
         const val TICKS_PER_SECOND = 10_000.0

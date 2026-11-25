@@ -10,6 +10,9 @@ import android.content.Intent
 import android.content.Context
 import android.Manifest
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Switch
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -175,6 +178,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
             Surface(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                 Column {
                     Hint(model.status, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
+                    model.nextPart?.let { from -> if (!model.busy) TextButton(onClick = { model.openLogs(model.logs, from) }, Modifier.padding(start = 4.dp)) { Text("Load the next part") } }
                     if (model.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 }
             }
@@ -309,6 +313,18 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Live stream", style = MaterialTheme.typography.titleLarge)
+            // GPS needs location permission; motion, heading, light and pressure don't
+            val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+            Row(Modifier.fillMaxWidth().toggleable(model.live.phoneSensors, role = Role.Switch) {
+                model.live.phoneSensors = it
+                if (it && context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) location.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+            }, verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Add the phone's sensors")
+                    Hint("GPS speed, motion, heading, light and air pressure as bus 9, so Decode can name the car's fields that follow them.")
+                }
+                Switch(model.live.phoneSensors, null)
+            }
             SectionTitle("comma over Wi-Fi")
             OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
                 placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
