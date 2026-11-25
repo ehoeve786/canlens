@@ -260,7 +260,11 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
                     Row(Modifier.fillMaxWidth().padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(plotKey in plots, onCheckedChange = null)
                         Box(Modifier.padding(start = 10.dp).size(10.dp).clip(CircleShape).background(SIGNAL_COLORS[index % SIGNAL_COLORS.size]))
-                        Text(signal.name + STATUS_MARKS[model.dbc.status(message.bus, message.id, signal.name)].orEmpty(), Modifier.weight(1f).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                        Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+                            Text(signal.name + STATUS_MARKS[model.dbc.status(message.bus, message.id, signal.name)].orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
+                            // where it sits in the grid: row = byte, bit 7 on the left (the colours repeat after a few signals)
+                            Hint(bitsLabel(signal))
+                        }
                         // another page's signal: its last value, dimmed
                         val held = payloads
                         Text(
@@ -335,3 +339,14 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
 
 /** How a signal's status shows after its name. */
 val STATUS_MARKS = mapOf("guess" to "  ?", "plotted" to "  ~", "confirmed" to "  ✓")
+
+/** A signal's place in the bit grid: "byte 1, bit 3", "byte 1, bits 0–1", or "bits 12–19" across bytes. */
+fun bitsLabel(signal: Signal): String {
+    val low = signal.bits.min()
+    val high = signal.bits.max()
+    return when {
+        low == high -> "byte ${low / 8}, bit ${low % 8}"
+        low / 8 == high / 8 -> "byte ${low / 8}, bits ${low % 8}–${high % 8}"
+        else -> "bits $low–$high, bytes ${low / 8}–${high / 8}"
+    }
+}
