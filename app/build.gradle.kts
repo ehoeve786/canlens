@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ehoeve.canpilot"
+    namespace = "com.ehoeve.canlens"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.ehoeve.canpilot"
+        applicationId = "com.ehoeve.canlens"
         minSdk = 29
         targetSdk = 36
         // CI passes the run number, so every build installs over the previous one

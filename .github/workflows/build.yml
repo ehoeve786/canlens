@@ -20,23 +20,23 @@ jobs:
         run: ./gradlew :core:test :app:assembleDebug -PversionCode=${{ github.run_number }}
       - uses: actions/upload-artifact@v7
         with:
-          name: canpilot-debug
+          name: canlens-debug
           path: app/build/outputs/apk/debug/app-debug.apk
       - name: Release APK
         run: |
           ./gradlew :app:assembleRelease -PversionCode=${{ github.run_number }}
-          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/canpilot-release.apk
+          mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/canlens-release.apk
       - uses: actions/upload-artifact@v7
         with:
-          name: canpilot-release
-          path: app/build/outputs/apk/release/canpilot-release.apk
+          name: canlens-release
+          path: app/build/outputs/apk/release/canlens-release.apk
       - name: Publish main's APK as the "latest" release
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp app/build/outputs/apk/release/canpilot-release.apk canpilot.apk
+          cp app/build/outputs/apk/release/canlens-release.apk canlens.apk
           git push -f origin HEAD:refs/tags/latest
           gh release view latest >/dev/null 2>&1 || gh release create latest --title "Latest build" --notes "The newest build of main, replaced on every push."
           gh release edit latest --notes "The newest build of main (${GITHUB_SHA::7}, build ${{ github.run_number }}), replaced on every push."
-          gh release upload latest canpilot.apk --clobber
+          gh release upload latest canlens.apk --clobber

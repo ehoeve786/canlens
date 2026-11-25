@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "canpilot"
+rootProject.name = "canlens"
 include(":app", ":core")
