@@ -45,6 +45,8 @@ object AutoDecode {
     }
 
     private const val GRID = 400
+    /** A pause longer than this (ticks, 30 s) separates stretches of data: two logs, or a drive and a charge. */
+    private const val GAP = 300_000
     private const val MATCH = 0.95
     private val PIPE = Regex("isotp|pipe", RegexOption.IGNORE_CASE)
     /** How closely the moments of change must agree too, and how many changes a signal needs to be compared at all. */
@@ -380,11 +382,30 @@ object AutoDecode {
     /** Renames and scales the unnamed fields that follow a decoded signal: the same quantity sent again, often on another bus. */
     private fun nameAfterKnownSignals(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, suggestions: MutableList<Suggestion>) {
         if (store.lastTime <= store.firstTime) return
-        val snapshots = store.snapshots(IntArray(GRID) { (store.firstTime + (store.lastTime - store.firstTime).toLong() * it / (GRID - 1)).toInt() })
+        // the stretches with data: several logs opened together, or a drive and a charge, leave gaps the grid skips
+        val segments = ArrayList<IntArray>()
+        var from = store.firstTime
+        var last = from
+        for (chunk in store.chunks) for (i in 0 until chunk.size) {
+            val t = chunk.time[i]
+            if (t - last > GAP) { segments += intArrayOf(from, last); from = t }
+            if (t > last) last = t
+        }
+        segments += intArrayOf(from, last)
+        val active = segments.sumOf { (it[1] - it[0]).toLong() }.coerceAtLeast(1)
+        val segmentOf = IntArray(GRID)
+        val times = IntArray(GRID) { k ->
+            var left = active * k / (GRID - 1)
+            var s = 0
+            while (s < segments.size - 1 && left > segments[s][1] - segments[s][0]) { left -= segments[s][1] - segments[s][0]; s++ }
+            segmentOf[k] = s
+            (segments[s][0] + left).toInt().coerceAtMost(segments[s][1])
+        }
+        val snapshots = store.snapshots(times)
+        val step = active.toDouble() / (GRID - 1) / FrameStore.TICKS_PER_SECOND
         // [how] it is derived from the signal: as it is, its rate of change (acceleration from speed) or its running total (distance from speed)
         class Reference(val message: FrameStore.Message, val signal: Signal, val vector: Vector, val how: String, val unit: String)
         val references = ArrayList<Reference>()
-        val step = (store.lastTime - store.firstTime) / (GRID - 1) / FrameStore.TICKS_PER_SECOND
         for (m in snapshots.messages.indices) {
             for (signal in known(snapshots.messages[m])?.signals.orEmpty()) {
                 val name = signal.name.lowercase()
@@ -399,24 +420,32 @@ object AutoDecode {
                 vector(DoubleArray(GRID) { k -> sum += raw[k] * step; sum })?.let { references += Reference(message, signal, it, "TOTAL_", signal.unit + "·s") }
             }
         }
-        if (references.isEmpty()) return
-        for (i in suggestions.indices) {
+        // slow modules answer late: a match may lag by up to 2 s, tried only where the plain match is already promising
+        val lags = minOf(5, Math.ceil(2.0 / step).toInt())
+        val vectors = HashMap<Int, Vector?>()
+        if (references.isNotEmpty()) for (i in suggestions.indices) {
             val suggestion = suggestions[i]
             val field = suggestion.signal
             if (suggestion.confidence > 0.5 || field.muxValue >= 0 || suggestion.message.index >= snapshots.messages.size) continue
-            val mine = vector(snapshots, suggestion.message.index, field) ?: continue
+            val mine = vectors.getOrPut(i) { vector(snapshots, suggestion.message.index, field) } ?: continue
             var best: Reference? = null
             var bestR = 0f
+            var bestLag = 0
             for (reference in references) {
                 // its own message, or that id on another bus: a field that repeats a signal of the same frame says nothing new;
                 // a single bit can't stand for a signal of several bits
                 if (reference.message.id == suggestion.message.id || (field.size == 1 && reference.signal.size > 1)) continue
-                val r = dot(mine.values, reference.vector.values)
+                var r = dot(mine.values, reference.vector.values)
+                var lag = 0
+                if (abs(r) >= 0.6) for (s in -lags..lags) { val shifted = shifted(mine.values, reference.vector.values, s); if (abs(shifted) > abs(r)) { r = shifted; lag = s } }
                 // a rate is already a change, and its own changes are mostly rounding noise: it is held to the value test alone
-                if (abs(r) <= abs(bestR) || (reference.how != "RATE_" && dot(mine.changes, reference.vector.changes) * Math.signum(r) < MATCH_CHANGES)) continue
-                bestR = r; best = reference
+                if (abs(r) <= abs(bestR) || (reference.how != "RATE_" && shifted(mine.changes, reference.vector.changes, lag) * Math.signum(r) < MATCH_CHANGES)) continue
+                bestR = r; best = reference; bestLag = lag
             }
             if (best == null || abs(bestR) < MATCH) continue
+            // the same match in each stretch of data (each log, when several are open): less sure where one disagrees
+            val tested = segments.indices.mapNotNull { s -> segmentR(mine.values, best.vector.values, segmentOf, s, bestLag) }
+            val agree = tested.count { it * Math.signum(bestR) >= MATCH - 0.05 }
             // a flag or a state is the same values as the signal it follows, not a scaled copy: kept raw, with its names when they match
             val state = best.how == "" && (field.size <= 4 || best.signal.size <= 4 || best.signal.valueNames.isNotEmpty())
             val fitted = bestR * best.vector.spread / mine.spread
@@ -424,9 +453,49 @@ object AutoDecode {
             val signal = Signal("LIKE_${best.how}${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, offset, if (state) "" else best.unit, -1, false)
             if (state && bestR > 0 && abs(best.signal.factor - 1.0) < 1e-9 && best.signal.offset == 0.0) signal.valueNames = best.signal.valueNames
             val what = when (best.how) { "RATE_" -> "the rate of change of "; "TOTAL_" -> "the running total of "; else -> "" }
+            val late = if (bestLag == 0) "" else " about %.1f s %s".format(abs(bestLag) * step, if (bestLag > 0) "earlier" else "later")
+            val logs = if (tested.size >= 2) ", in $agree of ${tested.size} stretches of data" else ""
             suggestions[i] = Suggestion(suggestion.message, signal,
-                "Moves with $what${best.signal.name} (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}; scaled to its units", abs(bestR).toDouble())
+                "Moves with $what${best.signal.name}$late (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}$logs; scaled to its units",
+                abs(bestR).toDouble() * if (agree < tested.size) 0.9 else 1.0)
         }
+        // unknown fields that move together are likely one quantity several times (four wheels) or one system: grouped, so a name or a test covers all
+        val open = suggestions.indices.filter { suggestions[it].confidence < 0.5 && suggestions[it].signal.size >= 4 && suggestions[it].signal.muxValue < 0 }
+        val group = IntArray(suggestions.size) { it }
+        fun root(i: Int): Int { var r = i; while (group[r] != r) r = group[r]; return r }
+        for ((x, a) in open.withIndex()) {
+            val va = vectors.getOrPut(a) { vector(snapshots, suggestions[a].message.index, suggestions[a].signal) } ?: continue
+            for (b in open.drop(x + 1)) {
+                val vb = vectors.getOrPut(b) { vector(snapshots, suggestions[b].message.index, suggestions[b].signal) } ?: continue
+                val r = dot(va.values, vb.values)
+                if (abs(r) >= MATCH && dot(va.changes, vb.changes) * Math.signum(r) >= MATCH_CHANGES) group[root(b)] = root(a)
+            }
+        }
+        val groups = open.groupBy { root(it) }.values.filter { it.size >= 2 }
+        for ((n, members) in groups.withIndex()) for (i in members) {
+            val old = suggestions[i]
+            val others = members.filter { it != i }.joinToString { "%X bit %d".format(suggestions[it].message.id, suggestions[it].signal.start) }
+            suggestions[i] = Suggestion(old.message, Signal("G${n + 1}_${old.signal.name}", old.signal.start, old.signal.size, true, old.signal.signed, 1.0, 0.0, "", -1, false),
+                "${old.evidence} · group ${n + 1}: moves with $others", 0.45)
+        }
+    }
+
+    /** Correlation of [a] and [b] (normalized as in [Vector]) with [b] [shift] places ahead, over the overlap. */
+    private fun shifted(a: FloatArray, b: FloatArray, shift: Int): Float {
+        var r = 0f
+        for (k in maxOf(0, -shift) until minOf(a.size, b.size - shift)) r += a[k] * b[k + shift]
+        return r
+    }
+
+    /** Pearson correlation of [a] and [b] (b [shift] places ahead) over the grid points of stretch [segment]; null when one doesn't move there. */
+    private fun segmentR(a: FloatArray, b: FloatArray, segmentOf: IntArray, segment: Int, shift: Int): Double? {
+        val ks = (maxOf(0, -shift) until minOf(a.size, b.size - shift)).filter { segmentOf[it] == segment }
+        if (ks.size < 20) return null
+        val ma = ks.sumOf { a[it].toDouble() } / ks.size
+        val mb = ks.sumOf { b[it + shift].toDouble() } / ks.size
+        var sab = 0.0; var saa = 0.0; var sbb = 0.0
+        for (k in ks) { val da = a[k] - ma; val db = b[k + shift] - mb; sab += da * db; saa += da * da; sbb += db * db }
+        return if (saa < 1e-12 || sbb < 1e-12) null else sab / Math.sqrt(saa * sbb)
     }
 
     /** The last word of a marker note that says which half of an action it was. */
