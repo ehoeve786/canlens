@@ -7,6 +7,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ehoeve.canpilot.core.Analysis
 import com.ehoeve.canpilot.core.AutoDecode
+import java.net.URL
+import com.ehoeve.canpilot.core.Dbc
 import com.ehoeve.canpilot.core.FieldMatch
 import com.ehoeve.canpilot.core.FrameStore
 import com.ehoeve.canpilot.core.Signal
@@ -93,6 +95,30 @@ class SignalState(
         }
     }
 
+    /**
+     * Downloads the community's Tesla DBCs (opendbc's, and joshwardell's model3dbc) and lists what they know about
+     * the messages here that the loaded DBCs don't, next to Decode's own suggestions.
+     */
+    fun checkCommunity() {
+        if (decoding || store.frameCount == 0L) return
+        decoding = true
+        autoStatus = "Downloading the community DBCs"
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    val community = COMMUNITY.map { (name, url) -> name to Dbc.parse(URL(url).openConnection().apply { connectTimeout = 15_000; readTimeout = 30_000 }.getInputStream().use { it.readBytes().toString(Charsets.ISO_8859_1) }, name) }
+                    AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community)
+                }
+            }
+            result.onSuccess { found -> autoResults = autoResults.filter { !it.evidence.startsWith("From ") } + found }
+            autoStatus = result.fold(
+                { found -> if (found.isEmpty()) "The community DBCs know nothing your DBCs don't" else "${found.size} signals from the community DBCs, ticked: check them on a plot before you rely on them" },
+                { "Couldn't get the community DBCs: ${it.message ?: it.javaClass.simpleName}" },
+            )
+            decoding = false
+        }
+    }
+
     /** Adds [accepted] to the DBCs and takes them off the list. */
     fun accept(accepted: List<Suggestion>) {
         dbc.add(accepted)
@@ -101,6 +127,11 @@ class SignalState(
     }
 
     companion object {
+        private val COMMUNITY = listOf(
+            "opendbc party" to "https://raw.githubusercontent.com/commaai/opendbc/master/opendbc/dbc/tesla_model3_party.dbc",
+            "opendbc vehicle" to "https://raw.githubusercontent.com/commaai/opendbc/master/opendbc/dbc/tesla_model3_vehicle.dbc",
+            "model3dbc" to "https://raw.githubusercontent.com/joshwardell/model3dbc/master/Model3CAN.dbc",
+        )
         /** Suggestions from this confidence up have a name or a verification behind them; below it they are plain layout guesses. */
         const val NAMED = 0.7
     }

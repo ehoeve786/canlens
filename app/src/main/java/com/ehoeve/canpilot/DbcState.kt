@@ -140,7 +140,7 @@ class DbcState(
             var index = indexFor(working, message)
             if (index < 0) { working += LoadedDbc(Dbc("canpilot-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus)); index = working.lastIndex }
             // a field every repeat of a marker test agreed on is confirmed; anything else Decode found is a guess
-            working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, suggestion.signal)
+            working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, suggestion.messageName ?: "NEW_%X".format(message.id), message.data.size, suggestion.signal)
                 .withStatus(message.id, suggestion.signal.name, if (suggestion.confidence >= 0.95 && suggestion.signal.name.startsWith("EVT_")) "confirmed" else "guess"), working[index].bus)
             changed += index
         }

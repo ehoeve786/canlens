@@ -4,13 +4,38 @@ import kotlin.math.abs
 import kotlin.math.sqrt
 
 /** A signal the automatic decoder proposes, why, and how sure it is (0..1). Meant to be reviewed, not trusted. */
-class Suggestion(val message: FrameStore.Message, val signal: Signal, val evidence: String, val confidence: Double)
+/** [messageName]: what to call the message when the DBC doesn't have it yet (NEW_<id> when null). */
+class Suggestion(val message: FrameStore.Message, val signal: Signal, val evidence: String, val confidence: Double, val messageName: String? = null)
 
 /**
  * Decodes what can be decoded without a person: the layout of every message (fields, counters, verified checksums,
  * multiplexing), then names for the fields that follow an already decoded signal or changed only at a marker.
  */
 object AutoDecode {
+    /**
+     * What [community] DBCs (name, file) know about the messages in [store] that the user's DBCs ([known]) don't:
+     * whole messages, or signals in bits the user's entry leaves free. A community message only counts when it fits
+     * the frames seen (same length), which keeps another bus's message with the same id out.
+     */
+    fun fromCommunity(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, community: List<Pair<String, Dbc>>): List<Suggestion> {
+        val result = ArrayList<Suggestion>()
+        for (message in store.messages) {
+            if (message.bus >= 128 || message.data.isEmpty()) continue
+            val mine = known(message)
+            val taken = HashSet<Int>().apply { mine?.signals?.forEach { addAll(it.bits.asList()) } }
+            for ((source, dbc) in community) {
+                val theirs = dbc.messages[message.id]?.takeIf { it.length == message.data.size } ?: continue
+                // Model3CAN names its messages ID<hex><name>
+                val name = theirs.name.removePrefix("ID%X".format(message.id)).ifEmpty { theirs.name }
+                for (signal in theirs.signals) {
+                    if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.message === message && it.signal.name == signal.name }) continue
+                    result += Suggestion(message, signal, "From $source ($name)", 0.75, name)
+                }
+            }
+        }
+        return result
+    }
+
     private const val GRID = 400
     private const val MATCH = 0.95
     private val PIPE = Regex("isotp|pipe", RegexOption.IGNORE_CASE)
