@@ -23,6 +23,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -121,11 +123,8 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
         OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
         Stepper("Start bit", draft.start, 0, FrameStore.MAX_PAYLOAD * 8 - 1) { draft.start = it }
         Stepper("Size", draft.size, 1, 64) { draft.size = it }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(draft.littleEndian, { draft.littleEndian = it })
-            Hint(if (draft.littleEndian) "Little-endian (start = lowest bit)" else "Big-endian (start = highest bit)", Modifier.padding(start = 10.dp))
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) { Switch(draft.signed, { draft.signed = it }); Hint("Signed", Modifier.padding(start = 10.dp)) }
+        SwitchRow(draft.littleEndian, if (draft.littleEndian) "Little-endian (start = lowest bit)" else "Big-endian (start = highest bit)") { draft.littleEndian = it }
+        SwitchRow(draft.signed, "Signed") { draft.signed = it }
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             val numbers = KeyboardOptions(keyboardType = KeyboardType.Decimal)
             OutlinedTextField(draft.factor, { draft.factor = it }, Modifier.weight(1f), singleLine = true, label = { Text("Factor") }, keyboardOptions = numbers)
@@ -144,9 +143,7 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
         Chart(preview, draft.name, SIGNAL_COLORS[0], view, seconds(model.trace.cursorNow), null, null, onCursor = {}, onMoved = {})
         Histogram(histogram, signal)
         OutlinedTextField(draft.valueNames, { draft.valueNames = it }, Modifier.fillMaxWidth(), label = { Text("Value names") }, placeholder = { Text("0=PARK, 1=DRIVE") })
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Switch(draft.isMultiplexor, { draft.isMultiplexor = it }); Hint("Is the multiplexor: selects which signals a frame carries", Modifier.padding(start = 10.dp))
-        }
+        SwitchRow(draft.isMultiplexor, "Is the multiplexor: selects which signals a frame carries") { draft.isMultiplexor = it }
         if (!draft.isMultiplexor) OutlinedTextField(draft.muxValue, { draft.muxValue = it }, Modifier.fillMaxWidth(), singleLine = true,
             label = { Text("Only when the multiplexor is") }, placeholder = { Text("always present") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
     }
@@ -183,5 +180,14 @@ private fun Stepper(label: String, value: Int, min: Int, max: Int, onChange: (In
         FilledTonalIconButton(onClick = { onChange((value - 1).coerceAtLeast(min)) }) { Text("−") }
         Text(value.toString(), Modifier.width(56.dp), fontFamily = MONO, textAlign = TextAlign.Center)
         FilledTonalIconButton(onClick = { onChange((value + 1).coerceAtMost(max)) }) { Text("+") }
+    }
+}
+
+/** A switch whose label toggles it too: the switch alone is a small target on a phone. */
+@Composable
+private fun SwitchRow(checked: Boolean, label: String, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().toggleable(checked, role = Role.Switch, onValueChange = onChange).padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked, null)
+        Hint(label, Modifier.padding(start = 10.dp))
     }
 }
