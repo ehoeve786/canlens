@@ -211,6 +211,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         val found = ArrayList<Pair<PlotKey, String>>()
         if (needle.isEmpty()) return found
         for (message in store.messages) {
+            // comma buses 128 and up are its own sent frames echoed back: copies that would double every hit
+            if (message.bus >= 128) continue
             val decoder = dbc.decoder(message.bus, message.id) ?: continue
             val wholeMessage = needle in decoder.name.lowercase()
             for (signal in decoder.signals) {
