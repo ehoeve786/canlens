@@ -1,5 +1,8 @@
 package com.ehoeve.canpilot
 
+import androidx.compose.material3.Switch
+import androidx.compose.ui.semantics.Role
+import androidx.compose.foundation.selection.toggleable
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
@@ -97,8 +100,14 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         load(false)
     }
 
+    /** Whether the app reopens the session's logs when it starts; off, it starts empty (the session's settings stay saved). */
+    var reopenAtStart by mutableStateOf(preferences.getBoolean("reopenAtStart", true))
+        private set
+
+    fun setReopen(on: Boolean) { reopenAtStart = on; preferences.edit().putBoolean("reopenAtStart", on).apply() }
+
     /** At the start of the app: the session it was left in. */
-    fun restore() = load(true)
+    fun restore() { if (reopenAtStart) load(true) }
 
     private fun use(name: String) {
         current = name
@@ -157,6 +166,10 @@ fun SessionSheet(model: AppModel, onClose: () -> Unit) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Sessions", style = MaterialTheme.typography.titleLarge)
             Hint("A session keeps its logs, plots, marks, markers and filter. The one in use is saved when you leave the app and comes back when you open it.")
+            Row(Modifier.fillMaxWidth().toggleable(session.reopenAtStart, role = Role.Switch) { session.setReopen(it) }, verticalAlignment = Alignment.CenterVertically) {
+                Text("Reopen its logs when the app starts", Modifier.weight(1f))
+                Switch(session.reopenAtStart, null)
+            }
             for (other in session.names.toList()) {
                 val active = other == session.current
                 Surface(onClick = { session.open(other); onClose() }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {

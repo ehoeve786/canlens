@@ -149,7 +149,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
         },
     ) { padding ->
         if (empty) {
-            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size, session = model.session.current, onSessions = { showSessions = true })
+            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size, session = model.session.current, onSessions = { showSessions = true }, onCancel = if (model.busy) ({ model.cancelling = true }) else null)
         } else Column(Modifier.padding(padding)) {
             // short labels, so that all of them fit in two rows without scrolling
             FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -179,7 +179,10 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
                 Column {
                     Hint(model.status, Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
                     model.nextPart?.let { from -> if (!model.busy) TextButton(onClick = { model.openLogs(model.logs, from) }, Modifier.padding(start = 4.dp)) { Text("Load the next part") } }
-                    if (model.busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                    if (model.busy) {
+                        TextButton(onClick = { model.cancelling = true }, Modifier.padding(start = 4.dp)) { Text("Cancel") }
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
                 }
             }
             if (changedOnly && (a == null || b == null)) {
@@ -226,7 +229,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
 }
 
 @Composable
-private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit) {
+private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit, onCancel: (() -> Unit)? = null) {
     // from the top, not centred: on a tall phone centring leaves a gap under the title
     Column(modifier.fillMaxSize().padding(horizontal = 32.dp).padding(top = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedLogo(Modifier.size(120.dp))
@@ -237,6 +240,8 @@ private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, o
         OutlinedButton(onClick = onDbc, modifier = Modifier.fillMaxWidth()) { Text(if (dbcCount == 0) "Add a DBC" else "DBC files · $dbcCount") }
         TextButton(onClick = onSessions) { Text("Session: $session") }
         Hint(status, Modifier.padding(top = 8.dp))
+        // reopening the last session's logs at the start: stop it to start empty
+        if (onCancel != null) TextButton(onClick = onCancel) { Text("Cancel") }
     }
 }
 

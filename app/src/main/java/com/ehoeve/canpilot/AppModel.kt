@@ -34,6 +34,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     val store = FrameStore((Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8))
     /** Where the open logs stopped loading (source clock), so the next part can be loaded; null when they loaded whole. */
     var nextPart: Long? by mutableStateOf(null); private set
+    /** Set by Cancel while logs load: the reading stops, and what was read so far stays. */
+    @Volatile var cancelling = false
     /** Goes up whenever the store's content changed; composables read it to refresh. */
     var revision by mutableIntStateOf(0); private set
     var status by mutableStateOf("Open a log or start a live stream"); private set
@@ -84,8 +86,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             withContext(Dispatchers.IO) {
                 store.clear()
                 store.dropOldest = false
-                // the next part of a log too big to load at once: the frames before [from] are read past
-                val sink = if (from == null) store else FrameSink { time, bus, id, data, offset, length -> time < from || store.frame(time, bus, id, data, offset, length) }
+                // the next part of a log too big to load at once: the frames before [from] are read past; Cancel stops the reading
+                cancelling = false
+                val sink = FrameSink { time, bus, id, data, offset, length -> !cancelling && ((from != null && time < from) || store.frame(time, bus, id, data, offset, length)) }
                 // route segments in order: natural sort puts --2-- before --10--
                 val files = uris.map { context.displayName(it) to it }.sortedWith { a, b -> naturalCompare(a.first, b.first) }
                 for ((index, file) in files.withIndex()) {
