@@ -1,5 +1,6 @@
 package com.ehoeve.canlens
 
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import androidx.compose.runtime.mutableIntStateOf
 import android.content.SharedPreferences
@@ -64,11 +65,13 @@ class SignalState(
     /** While a stream runs: decode again every 15 s, also away from the Decode screen, and say what got a name. */
     var keepDecoding by mutableStateOf(false); private set
 
+    private var repeating: Job? = null
+
     fun keepDecoding(on: Boolean) {
-        if (on == keepDecoding) return
+        repeating?.cancel()
         keepDecoding = on
-        if (on) scope.launch {
-            while (keepDecoding && live()) { if (!decoding) decodeEverything(); delay(15_000) }
+        repeating = if (!on) null else scope.launch {
+            while (live()) { if (!decoding) decodeEverything(); delay(15_000) }
             keepDecoding = false
         }
     }
