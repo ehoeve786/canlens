@@ -42,8 +42,10 @@ class LiveState(
     var recording by mutableStateOf<String?>(null); private set
     var commaAddress by mutableStateOf(preferences.getString("comma", "") ?: ""); private set
     /** Whether a stream also carries the phone's sensors, as bus [PhoneSensors.PHONE_BUS]. */
-    var phoneSensors by mutableStateOf(preferences.getBoolean("phoneSensors", true))
-        set(value) { field = value; preferences.edit().putBoolean("phoneSensors", value).apply() }
+    private val phoneSensorsState = mutableStateOf(preferences.getBoolean("phoneSensors", true))
+    var phoneSensors: Boolean
+        get() = phoneSensorsState.value
+        set(value) { phoneSensorsState.value = value; preferences.edit().putBoolean("phoneSensors", value).apply() }
 
     /** The last recording of the stream that is, or was last, running: what a session can reopen of it. */
     var recorded: Uri? = null
