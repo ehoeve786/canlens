@@ -9,6 +9,7 @@ import com.ehoeve.canpilot.core.Analysis
 import com.ehoeve.canpilot.core.AutoDecode
 import java.net.URL
 import com.ehoeve.canpilot.core.Dbc
+import com.ehoeve.canpilot.core.DbcMessage
 import com.ehoeve.canpilot.core.FieldMatch
 import com.ehoeve.canpilot.core.FrameStore
 import com.ehoeve.canpilot.core.Signal
@@ -117,6 +118,27 @@ class SignalState(
                 { "Couldn't get the community DBCs: ${it.message ?: it.javaClass.simpleName}" },
             )
             decoding = false
+        }
+    }
+
+    /**
+     * The suggestions as plain text, each with how its values behaved, to paste into a chat with an assistant that
+     * helps name them: one line per field, in the log's own terms.
+     */
+    suspend fun report(): String = withContext(Dispatchers.Default) {
+        buildString {
+            append("CanPilot decode report: ${store.frameCount} frames, ${store.messages.size} messages, %.0f s.\n".format((store.lastTime - store.firstTime) / FrameStore.TICKS_PER_SECOND))
+            append("bus id signal bits: values seen (min..max, distinct, changes) | what Decode found\n")
+            for (s in autoResults) {
+                val signal = s.signal
+                val series = store.series(s.message, DbcMessage(s.message.id, "", s.message.data.size, listOf(signal)), signal)
+                val stats = Analysis.stats(series, Float.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY)
+                val distinct = (0 until series.size).mapTo(HashSet()) { series.values[it] }.size
+                append("${s.message.bus} %X ${signal.name} ${signal.start}+${signal.size}".format(s.message.id))
+                if (signal.muxValue >= 0) append(" (page ${signal.muxValue})")
+                if (stats != null) append(": %s..%s, %d values, %d changes".format(stats[0], stats[1], distinct, stats[3].toInt()))
+                append(" | ${s.evidence}\n")
+            }
         }
     }
 

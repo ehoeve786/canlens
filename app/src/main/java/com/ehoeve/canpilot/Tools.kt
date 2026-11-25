@@ -1,5 +1,11 @@
 package com.ehoeve.canpilot
 
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.rememberCoroutineScope
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -187,6 +193,12 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
 @Composable
 fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
+    var keepDecoding by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    LaunchedEffect(keepDecoding, model.live.source) {
+        while (keepDecoding && model.live.source != LiveSource.NONE) { if (!model.signals.decoding) model.signals.decodeEverything(); delay(15_000) }
+    }
     val all = model.signals.autoResults
     // named or verified ones start ticked; plain layout guesses only when ticked by hand
     val chosen = remember(all) { mutableStateListOf<Suggestion>().apply { addAll(all.filter { it.confidence >= SignalState.NAMED }) } }
@@ -209,7 +221,18 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                     Button(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
                     if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.signals.decoding, onClick = { model.signals.accept(ticked, shown - ticked.toSet()) }) { Text("Add ${ticked.size} to the DBC") }
                 }
-                TextButton(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.checkCommunity() }) { Text("Check the community DBCs") }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.checkCommunity() }) { Text("Check the community DBCs") }
+                    // the list as text, to paste into a chat that helps name the fields
+                    if (all.isNotEmpty()) TextButton(onClick = {
+                        scope.launch {
+                            val text = model.signals.report()
+                            context.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text), "Share the decode report"))
+                        }
+                    }) { Text("Share a report") }
+                }
+                // a live stream: decode again every 15 s as frames come in
+                if (model.live.source != LiveSource.NONE) FilterChip(selected = keepDecoding, onClick = { keepDecoding = !keepDecoding }, label = { Text("Keep decoding while streaming") })
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
                 if (model.signals.decoding) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
