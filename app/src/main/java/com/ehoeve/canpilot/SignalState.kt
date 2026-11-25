@@ -120,10 +120,10 @@ class SignalState(
         }
     }
 
-    /** Adds [accepted] to the DBCs and takes them off the list. */
-    fun accept(accepted: List<Suggestion>) {
+    /** Adds [accepted] to the DBCs and takes them off the list, with [rejected]: shown and left unticked, so turned down. */
+    fun accept(accepted: List<Suggestion>, rejected: List<Suggestion> = emptyList()) {
         dbc.add(accepted)
-        autoResults = autoResults - accepted.toSet()
+        autoResults = autoResults - accepted.toSet() - rejected.toSet()
         report("${accepted.size} signals added. Export the DBC to keep a copy outside the app.")
     }
 

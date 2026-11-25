@@ -207,7 +207,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPick: (Suggestion) -
                     "or that changed only at one of your markers, get a name. These are suggestions: check them before you rely on them.")
                 Row(Modifier.padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Button(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.decodeEverything() }) { Text(if (all.isEmpty()) "Decode" else "Decode again") }
-                    if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.signals.decoding, onClick = { model.signals.accept(ticked) }) { Text("Add ${ticked.size} to the DBC") }
+                    if (ticked.isNotEmpty()) OutlinedButton(enabled = !model.signals.decoding, onClick = { model.signals.accept(ticked, shown - ticked.toSet()) }) { Text("Add ${ticked.size} to the DBC") }
                 }
                 TextButton(enabled = !model.signals.decoding && model.store.frameCount > 0, onClick = { model.signals.checkCommunity() }) { Text("Check the community DBCs") }
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
