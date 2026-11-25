@@ -359,6 +359,8 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     pending?.let { marker -> MarkerDialog(model, marker) { pending = null } }
     if (showMarkers) MarkerSheet(model) { showMarkers = false }
     var showGuided by remember { mutableStateOf(false) }
+    var showCamera by remember { mutableStateOf(false) }
+    if (showCamera) CameraReader(model) { showCamera = false }
     if (showGuided) ModalBottomSheet(onDismissRequest = { showGuided = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Guided test", style = MaterialTheme.typography.titleLarge)
@@ -394,6 +396,8 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                     val running = model.guided.running
                     if (running != null) AssistChip(onClick = { model.guided.stop() }, label = { Text("Stop · $running") }, leadingIcon = { Icon(Icons.Default.Close, null, Modifier.size(18.dp)) })
                     else AssistChip(onClick = { showGuided = true }, label = { Text("Guided test") })
+                    // a number on the car's screen, read by the camera as the stream comes in
+                    AssistChip(onClick = { showCamera = true }, label = { Text("Read the screen") })
                 }
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)

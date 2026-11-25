@@ -60,4 +60,9 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.core)
     implementation("com.github.luben:zstd-jni:${libs.versions.zstd.get()}@aar")
     implementation(libs.commons.compress)
+    // reading a number off the car's screen: the camera, and Google's on-device text reader (its model comes through Play services)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.mlkit.text.recognition)
 }

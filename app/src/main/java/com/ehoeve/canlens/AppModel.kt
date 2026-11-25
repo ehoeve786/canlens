@@ -238,6 +238,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         return found
     }
 
+    /** What the number the camera reads off the car's screen is ("range"). */
+    var readingName: String = preferences.getString("readingName", "")!!
+        set(value) { field = value; preferences.edit().putString("readingName", value).apply() }
+
     /** The steps of the user's own guided test, a line each. */
     var customTest: String = preferences.getString("customTest", "")!!
         set(value) { field = value; preferences.edit().putString("customTest", value).apply() }
