@@ -191,8 +191,10 @@ object AutoDecode {
         var bit = 0
         while (bit < flips.size) {
             if (flips[bit] == 0 || !allowed[bit]) { bit++; continue }
-            val start = bit
+            var start = bit
             while (bit + 1 < flips.size && allowed[bit + 1] && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * 2.5 + 2 && bit + 1 - start < 32) bit++
+            // a value of several bits whose lowest bits of the byte never change counts in steps: it starts at the byte, not above it
+            if (bit - start >= 3) while (start % 8 != 0 && allowed[start - 1] && flips[start - 1] == 0) start--
             result += field("", start, bit - start + 1)
             bit++
         }

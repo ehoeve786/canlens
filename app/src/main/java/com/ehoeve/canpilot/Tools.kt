@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
@@ -134,6 +136,7 @@ fun FindScreen(model: AppModel, onBack: () -> Unit, onPick: (FieldMatch) -> Unit
 }
 
 /** Asks for the note of a marker whose moment was already taken. Tapping outside keeps the marker with its default note. */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun MarkerDialog(model: AppModel, pending: PendingMarker, onClose: () -> Unit) {
     val default = "Marker ${model.trace.markers.size + 1}"
@@ -147,6 +150,10 @@ fun MarkerDialog(model: AppModel, pending: PendingMarker, onClose: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(note, { note = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("What happened") }, placeholder = { Text(default) })
+                // one tap saves the marker with a note used before
+                if (model.recentNotes.isNotEmpty()) FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    model.recentNotes.forEach { recent -> AssistChip(onClick = { model.addMarker(pending, recent); onClose() }, label = { Text(recent, maxLines = 1, overflow = TextOverflow.Ellipsis) }) }
+                }
                 if (pending.fileMicros != null) Hint("Written into the recording too.")
             }
         },

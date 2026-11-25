@@ -229,7 +229,16 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     fun beginMarker() = PendingMarker(trace.cursorNow, live.now())
 
+    /** Notes of the last markers, newest first: one tap repeats a step of an in-car test ("passenger in"). */
+    var recentNotes by mutableStateOf(preferences.getString("recentNotes", "")!!.split('\n').filter { it.isNotEmpty() })
+        private set
+
     fun addMarker(pending: PendingMarker, note: String) {
+        // the numbered default says nothing worth repeating
+        if (!note.matches(Regex("Marker \\d+"))) {
+            recentNotes = (listOf(note) + (recentNotes - note)).take(8)
+            preferences.edit().putString("recentNotes", recentNotes.joinToString("\n")).apply()
+        }
         trace.markers += Marker(pending.time, note)
         trace.markers.sortBy { it.time }
         if (pending.fileMicros != null) live.mark(pending.fileMicros, note)

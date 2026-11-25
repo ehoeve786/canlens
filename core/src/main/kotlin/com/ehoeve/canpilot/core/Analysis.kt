@@ -165,8 +165,10 @@ object Analysis {
         var bit = 0
         while (bit < bits) {
             if (flips[bit] == 0) { bit++; continue }
-            val start = bit
+            var start = bit
             while (bit + 1 < bits && flips[bit + 1] > 0 && flips[bit + 1] <= flips[bit] * 2.5 + 2 && bit + 1 - start < 32) bit++
+            // a value of several bits whose lowest bits of the byte never change counts in steps: it starts at the byte (as in AutoDecode)
+            if (bit - start >= 3) while (start % 8 != 0 && flips[start - 1] == 0) start--
             val size = bit - start + 1
             bit++
             val plain = Signal("FIELD_$start", start, size, true, false, 1.0, 0.0, "", -1, false)
