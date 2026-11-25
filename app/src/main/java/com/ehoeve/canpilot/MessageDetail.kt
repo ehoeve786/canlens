@@ -43,6 +43,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -128,6 +130,8 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
             }.toMap()
         }
     }
+    val trends = remember(payloads) { payloads?.let { Analysis.byteTrends(it) } ?: "" }
+    var muteKnown by rememberSaveable { mutableStateOf(false) }
     // the signal being edited is outlined in the bit grid as it is typed
     val drafted = editing?.signal()
     val outlined = when {
@@ -177,10 +181,11 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                         Hint(
                             (if (a != null && b != null) "Green: changed only between A and B. " else "Blue: changes, brighter is more often. ") +
                                 (if (different != null) "Orange: constant here and in ${model.otherName}, but not the same. Brown: changes in only one of them. " else "") +
-                                "Tap a bit to define a signal.",
+                                "Tap a bit to define a signal. Beside each byte: ↑ rising, ↓ falling, ⇄ two values, ↕ up and down, ~ nearly every frame.",
                             Modifier.padding(horizontal = 14.dp),
                         )
-                        BitGrid(frame, activity, a != null && b != null, different, outlined) { bit ->
+                        if (signals.isNotEmpty()) FilterChip(muteKnown, { muteKnown = !muteKnown }, { Text("Grey out the DBC's bits") }, Modifier.padding(horizontal = 14.dp))
+                        BitGrid(frame, activity, a != null && b != null, different, outlined, trends, muteKnown) { bit ->
                             val owner = signals.firstOrNull { bit in it.bits }
                             drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
                         }
@@ -259,7 +264,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
 
 /** One row per payload byte, most significant bit on the left. Shade = how often the bit flips; outline = its DBC signal. */
 @Composable
-private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, different: IntArray?, signals: List<Signal>, onBit: (Int) -> Unit) {
+private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, different: IntArray?, signals: List<Signal>, trends: String = "", mute: Boolean = false, onBit: (Int) -> Unit) {
     if (frame == null || frame.isEmpty()) { Hint("No frame at the cursor yet", Modifier.padding(14.dp)); return }
     val busiest = activity?.inside?.maxOrNull()?.coerceAtLeast(1) ?: 1
     val cell = MaterialTheme.shapes.extraSmall
@@ -272,14 +277,16 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
                     val inside = activity?.inside?.getOrNull(index) ?: 0
                     val outside = activity?.outside?.getOrNull(index) ?: 0
                     val heat = if (inside == 0) 0f else (0.25f + 0.75f * (Math.log1p(inside.toDouble()) / Math.log1p(busiest.toDouble())).toFloat())
+                    val owner = signals.indexOfFirst { index in it.bits }
                     val fill = when {
+                        // the DBC already explains it: only what is left unexplained lights up
+                        mute && owner >= 0 -> MaterialTheme.colorScheme.surfaceContainerHighest
                         window && inside > 0 && outside == 0 -> Color(0xFF2E7D32)
                         different?.getOrNull(index) == BitSummary.DIFFERENT -> DIFFERENT
                         different?.getOrNull(index) == BitSummary.VARIES_IN_ONE -> VARIES_IN_ONE
                         inside > 0 -> Color(0xFF1976D2).copy(alpha = heat)
                         else -> MaterialTheme.colorScheme.surfaceContainerHighest
                     }
-                    val owner = signals.indexOfFirst { index in it.bits }
                     Box(
                         Modifier.padding(1.5.dp).size(33.dp).clip(cell).background(fill)
                             .border(2.dp, if (owner >= 0) SIGNAL_COLORS[owner % SIGNAL_COLORS.size] else Color.Transparent, cell)
@@ -287,7 +294,7 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
                         contentAlignment = Alignment.Center,
                     ) { Text(if (frame[byte].toInt() shr bit and 1 == 1) "1" else "0", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium) }
                 }
-                Text("%02X".format(frame[byte].toInt() and 0xFF), Modifier.padding(start = 10.dp), fontFamily = MONO, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("%02X".format(frame[byte].toInt() and 0xFF) + " " + trends.getOrElse(byte) { ' ' }, Modifier.padding(start = 10.dp), fontFamily = MONO, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

@@ -216,6 +216,35 @@ object Analysis {
         return result
     }
 
+    /**
+     * How each byte of [p] moves, as one character: ↑ mostly up (a counter or something rising), ↓ mostly down,
+     * ⇄ between two values, ↕ up and down now and then (a measurement), ~ in most frames (noise, a checksum), blank never.
+     */
+    fun byteTrends(p: FrameStore.Payloads): String = buildString {
+        for (b in 0 until p.length) {
+            var up = 0
+            var down = 0
+            val values = HashSet<Int>()
+            for (k in 0 until p.size) {
+                val v = p.data[k * p.length + b].toInt() and 0xFF
+                if (values.size <= 2) values += v
+                if (k == 0) continue
+                // a step across the wrap counts the short way round: 255 to 0 is one up
+                val step = ((v - (p.data[(k - 1) * p.length + b].toInt() and 0xFF)) + 384) % 256 - 128
+                if (step > 0) up++ else if (step < 0) down++
+            }
+            val changes = up + down
+            append(when {
+                changes == 0 -> ' '
+                values.size <= 2 -> '⇄'
+                up >= changes * 0.8 -> '↑'
+                down >= changes * 0.8 -> '↓'
+                changes * 2 > p.size -> '~'
+                else -> '↕'
+            })
+        }
+    }
+
     /** How often each value occurs: every value when there are at most 16 different ones, else [bins] equal ranges. Label, count. */
     fun histogram(series: FrameStore.Series, bins: Int = 20): List<Pair<String, Int>> {
         if (series.size == 0) return emptyList()
