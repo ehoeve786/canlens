@@ -78,7 +78,14 @@ object AutoDecode {
         // markers first: they cut their bits out of the guessed fields, and what is left is then compared
         if (markers.isNotEmpty()) progress("Looking at what changed at ${markers.size} markers")
         // repeats of an action, and its two halves ("door open", "door closed"), are one test: the bit must change at every one
-        for ((action, times) in markers.groupBy({ it.second.replace(HALF, "").trim().ifEmpty { it.second }.lowercase() }, { it.first })) changedOnlyAt(store, known, times, action, result)
+        if (markers.isNotEmpty()) {
+            // every marker's window, 1 s before to 2 s after it, counted in one pass
+            val second = FrameStore.TICKS_PER_SECOND.toInt()
+            val starts = markers.map { it.first - second }.distinct().sorted().toIntArray()
+            val (total, windows) = store.windowFlips(starts, 3 * second)
+            for ((action, times) in markers.groupBy({ it.second.replace(HALF, "").trim().ifEmpty { it.second }.lowercase() }, { it.first }))
+                changedOnlyAt(store, known, total, windows, times.map { starts.binarySearch(it - second) }.distinct(), action, result)
+        }
         progress("Comparing ${result.size} fields with the decoded signals")
         nameAfterKnownSignals(store, known, result)
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
@@ -425,19 +432,17 @@ object AutoDecode {
     /** The last word of a marker note that says which half of an action it was. */
     private val HALF = Regex("\\s+(on|off|in|out|open|opened|close|closed|up|down|start|stop|pressed|released|lock|locked|unlock|unlocked)$", RegexOption.IGNORE_CASE)
 
-    /** Bits that changed around every one of [times] (1 s before to 2 s after) and at no other time. */
-    private fun changedOnlyAt(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, times: List<Int>, note: String, out: MutableList<Suggestion>) {
-        val second = FrameStore.TICKS_PER_SECOND.toInt()
+    /** Bits that flipped in every one of windows [mine] (indexes into [windows]) and at no other time. */
+    private fun changedOnlyAt(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, total: Array<IntArray?>, windows: Array<Array<IntArray?>?>, mine: List<Int>, note: String, out: MutableList<Suggestion>) {
         val name = "EVT_" + note.uppercase().replace(Regex("[^A-Z0-9]+"), "_").trim('_').take(24).ifEmpty { "MARKER" }
-        val windows = times.map { store.bitActivity(it - second, it + 2 * second) }
-        for (m in windows[0].indices) {
-            val activity = windows[0][m] ?: continue
-            val message = activity.message
-            val taken = BooleanArray(activity.inside.size)
+        for (m in total.indices) {
+            val flips = total[m] ?: continue
+            val inWindows = windows[m] ?: continue
+            val message = store.messages[m]
+            val taken = BooleanArray(flips.size)
             known(message)?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in taken.indices) taken[bit] = true }
-            // a window's flips inside and outside add up to all of them: what is left after every window is "elsewhere"
-            fun only(bit: Int) = !taken[bit] && windows.all { (it[m]?.inside?.get(bit) ?: 0) > 0 } &&
-                activity.inside[bit] + activity.outside[bit] - windows.sumOf { it[m]?.inside?.get(bit) ?: 0 } <= 0
+            // flipped in each of its windows, and all of its flips are in them
+            fun only(bit: Int) = !taken[bit] && mine.all { (inWindows[it]?.get(bit) ?: 0) > 0 } && flips[bit] == mine.sumOf { inWindows[it]?.get(bit) ?: 0 }
             var bit = 0
             while (bit < message.data.size * 8) {
                 if (!only(bit)) { bit++; continue }
@@ -454,8 +459,8 @@ object AutoDecode {
                     if (end > bit) out += Suggestion(message, field(guess.name.substringBeforeLast('_') + "_" + bit, bit, end - bit, mux = guess.muxValue), old.evidence, old.confidence)
                 }
                 out += Suggestion(message, field("${name}_$start", start, bit - start),
-                    if (times.size == 1) "Changed only at the marker \"$note\"" else "Changed at all ${times.size} \"$note\" markers and at no other time",
-                    if (times.size == 1) 0.8 else 0.95)
+                    if (mine.size == 1) "Changed only at the marker \"$note\"" else "Changed at all ${mine.size} \"$note\" markers and at no other time",
+                    if (mine.size == 1) 0.8 else 0.95)
             }
         }
     }

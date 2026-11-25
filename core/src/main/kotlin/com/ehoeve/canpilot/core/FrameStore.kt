@@ -245,6 +245,43 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         return result
     }
 
+    /**
+     * Bit flips of every message in each of the windows [starts]`[w]`..starts[w] + [span] (ascending; a frame in two
+     * overlapping windows counts in the later), and in all frames, in one pass. `[m][w]` is null where message m had
+     * no flips in window w. Index = byte * 8 + bit, as in [bitActivity].
+     */
+    fun windowFlips(starts: IntArray, span: Int): Pair<Array<IntArray?>, Array<Array<IntArray?>?>> {
+        val known = messages
+        val total = arrayOfNulls<IntArray>(known.size)
+        val windows = arrayOfNulls<Array<IntArray?>>(known.size)
+        val previous = arrayOfNulls<ByteArray>(known.size)
+        val previousLength = IntArray(known.size)
+        for (chunk in chunks) {
+            for (i in 0 until chunk.size) {
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m >= known.size) continue
+                val start = chunk.start(i)
+                val length = chunk.end[i] - start
+                val last = previous[m] ?: ByteArray(MAX_PAYLOAD).also { previous[m] = it; total[m] = IntArray(MAX_PAYLOAD * 8) }
+                val t = chunk.time[i]
+                var w = java.util.Arrays.binarySearch(starts, t).let { if (it < 0) -it - 2 else it }
+                if (w >= 0 && t > starts[w] + span) w = -1
+                for (b in 0 until minOf(length, previousLength[m])) {
+                    var changed = (chunk.blob[start + b].toInt() xor last[b].toInt()) and 0xFF
+                    while (changed != 0) {
+                        val bit = b * 8 + Integer.numberOfTrailingZeros(changed)
+                        total[m]!![bit]++
+                        if (w >= 0) (windows[m] ?: arrayOfNulls<IntArray>(starts.size).also { windows[m] = it }).let { it[w] ?: IntArray(MAX_PAYLOAD * 8).also { counts -> it[w] = counts } }[bit]++
+                        changed = changed and (changed - 1)
+                    }
+                }
+                System.arraycopy(chunk.blob, start, last, 0, length)
+                previousLength[m] = length
+            }
+        }
+        return total to windows
+    }
+
     /** Passes every held frame to [sink] in order, until it returns false. */
     fun replay(sink: FrameSink) {
         val known = messages
