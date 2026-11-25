@@ -127,7 +127,7 @@ class SignalState(
      */
     suspend fun report(): String = withContext(Dispatchers.Default) {
         buildString {
-            append("BusSleuth decode report: ${store.frameCount} frames, ${store.messages.size} messages, %.0f s.\n".format((store.lastTime - store.firstTime) / FrameStore.TICKS_PER_SECOND))
+            append("CANLens decode report: ${store.frameCount} frames, ${store.messages.size} messages, %.0f s.\n".format((store.lastTime - store.firstTime) / FrameStore.TICKS_PER_SECOND))
             append("bus id signal bits: values seen (min..max, distinct, changes) | what Decode found\n")
             for (s in autoResults) {
                 val signal = s.signal
