@@ -337,6 +337,20 @@ class CoreTest {
         assertEquals("kph/s", accel.signal.unit)
     }
 
+    @Test fun findsBitsThatFlipTogether() {
+        val store = FrameStore()
+        for (i in 0 until 1000) {
+            val door = if ((i / 100) % 2 == 1) 1 else 0
+            store.frame(i * 20_000L, 0, 0x101, byteArrayOf(door.toByte()), 0, 1)
+            store.frame(i * 20_000L + 5_000, 1, 0x202, byteArrayOf(0, (door shl 3 or (i and 1 shl 6)).toByte()), 0, 2)     // the door again, and a bit that toggles all the time
+        }
+        val similar = Analysis.similarBits(store, store.messages.first { it.id == 0x101 }, 0)
+        assertEquals(0x202, similar.first().message.id)
+        assertEquals(11, similar.first().bit)
+        assertTrue(similar.first().score > 0.99)
+        assertTrue(similar.none { it.bit == 14 })
+    }
+
     @Test fun keepsSignalStatusesInTheFile() {
         val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
         val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")

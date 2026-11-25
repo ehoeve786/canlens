@@ -246,6 +246,70 @@ object Analysis {
     }
 
     /** How often each value occurs: every value when there are at most 16 different ones, else [bins] equal ranges. Label, count. */
+    /** A bit of another message and how well its flips line up with the chosen bit's (1 = always together, never apart). */
+    class SimilarBit(val message: FrameStore.Message, val bit: Int, val score: Double)
+
+    /**
+     * Bits anywhere in [store] that flip when bit [bit] of [message] flips, within [window] ticks, and rarely at
+     * other times: the same event seen by another module, or on another bus. Scored by flips together over all flips.
+     */
+    fun similarBits(store: FrameStore, message: FrameStore.Message, bit: Int, window: Int = 3000, limit: Int = 20): List<SimilarBit> {
+        val known = store.messages
+        val times = ArrayList<Int>()
+        val previous = Array(known.size) { ByteArray(FrameStore.MAX_PAYLOAD) }
+        val previousLength = IntArray(known.size)
+        // first the chosen bit's flips, then every other bit's against them
+        fun walk(visit: (m: Int, b: Int, time: Int) -> Unit) {
+            previousLength.fill(0)
+            for (chunk in store.chunks) for (i in 0 until chunk.size) {
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m >= known.size) continue
+                val start = chunk.start(i)
+                val length = chunk.end[i] - start
+                val last = previous[m]
+                for (byte in 0 until minOf(length, previousLength[m])) {
+                    var changed = (chunk.blob[start + byte].toInt() xor last[byte].toInt()) and 0xFF
+                    while (changed != 0) { val b = Integer.numberOfTrailingZeros(changed); visit(m, byte * 8 + b, chunk.time[i]); changed = changed and (changed - 1) }
+                }
+                System.arraycopy(chunk.blob, start, last, 0, length)
+                previousLength[m] = length
+            }
+        }
+        walk { m, b, time -> if (m == message.index && b == bit) times += time }
+        if (times.size < 2) return emptyList()
+        val together = HashMap<Long, Int>()
+        val all = HashMap<Long, Int>()
+        walk { m, b, time ->
+            if (m == message.index && b == bit) return@walk
+            val key = m.toLong() shl 16 or b.toLong()
+            all[key] = (all[key] ?: 0) + 1
+            var at = times.binarySearch(time)
+            if (at < 0) at = -at - 1
+            if ((at < times.size && times[at] - time <= window) || (at > 0 && time - times[at - 1] <= window)) together[key] = (together[key] ?: 0) + 1
+        }
+        return together.entries.filter { it.value >= 2 }
+            .map { (key, hits) -> SimilarBit(known[(key shr 16).toInt()], (key and 0xFFFF).toInt(), minOf(hits, times.size).toDouble() / (all[key]!! + times.size - minOf(hits, times.size))) }
+            .filter { it.score >= 0.3 }.sortedByDescending { it.score }.take(limit)
+    }
+
+    /** Lowest, highest and average value of [series] between [from] and [to] (seconds), and how often it changed; null without samples. */
+    fun stats(series: FrameStore.Series, from: Float, to: Float): FloatArray? {
+        var n = 0
+        var low = Float.MAX_VALUE
+        var high = -Float.MAX_VALUE
+        var sum = 0.0
+        var changes = 0
+        for (i in 0 until series.size) {
+            if (series.times[i] !in from..to) continue
+            val v = series.values[i]
+            if (n > 0 && v != series.values[i - 1]) changes++
+            n++; sum += v
+            if (v < low) low = v
+            if (v > high) high = v
+        }
+        return if (n == 0) null else floatArrayOf(low, high, (sum / n).toFloat(), changes.toFloat())
+    }
+
     /** A value (or a range's start), how often it occurs, and when it was first seen (seconds; NaN for a range). */
     class Bar(val label: String, val count: Int, val first: Float)
 

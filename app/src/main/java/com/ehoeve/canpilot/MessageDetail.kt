@@ -43,6 +43,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.FilterChip
 import androidx.compose.runtime.produceState
@@ -64,7 +67,7 @@ import kotlinx.coroutines.withContext
 // ---- one message: bits, signals, plots
 
 @Composable
-fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> Unit) {
+fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameStore.Message) -> Unit, onPlots: () -> Unit) {
     var transmitting by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<String?>(null) }
     val revision = model.revision
@@ -132,6 +135,35 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
     }
     val trends = remember(payloads) { payloads?.let { Analysis.byteTrends(it) } ?: "" }
     var muteKnown by rememberSaveable { mutableStateOf(false) }
+    // a held bit: the bits of other messages that flip at the same moments
+    var similarTo by remember(message) { mutableStateOf<Int?>(null) }
+    similarTo?.let { bit ->
+        val similar by produceState<List<Analysis.SimilarBit>?>(null, bit) { value = withContext(Dispatchers.Default) { Analysis.similarBits(store, message, bit) } }
+        AlertDialog(
+            onDismissRequest = { similarTo = null },
+            confirmButton = { TextButton(onClick = { similarTo = null }) { Text("Close") } },
+            title = { Text("Flips with byte ${bit / 8} bit ${bit % 8}") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    when {
+                        similar == null -> LinearProgressIndicator(Modifier.fillMaxWidth())
+                        similar!!.isEmpty() -> Hint("No other bit flips at the same moments (it has to flip at least twice).")
+                        else -> for (hit in similar!!) {
+                            val owner = model.dbc.decoder(hit.message.bus, hit.message.id)
+                            val name = owner?.signals?.firstOrNull { hit.bit in it.bits }?.name ?: owner?.name ?: ""
+                            Row(Modifier.fillMaxWidth().clickable { similarTo = null; onOpen(hit.message) }.padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("bus ${hit.message.bus} · ${hexId(hit.message.id)} · byte ${hit.bit / 8} bit ${hit.bit % 8}", fontFamily = MONO, style = MaterialTheme.typography.bodySmall)
+                                    if (name.isNotEmpty()) Hint(name)
+                                }
+                                Text("${(hit.score * 100).toInt()}%", fontFamily = MONO)
+                            }
+                        }
+                    }
+                }
+            },
+        )
+    }
     // the signal being edited is outlined in the bit grid as it is typed
     val drafted = editing?.signal()
     val outlined = when {
@@ -181,11 +213,11 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
                         Hint(
                             (if (a != null && b != null) "Green: changed only between A and B. " else "Blue: changes, brighter is more often. ") +
                                 (if (different != null) "Orange: constant here and in ${model.otherName}, but not the same. Brown: changes in only one of them. " else "") +
-                                "Tap a bit to define a signal. Beside each byte: ↑ rising, ↓ falling, ⇄ two values, ↕ up and down, ~ nearly every frame.",
+                                "Tap a bit to define a signal, hold it to find bits elsewhere that flip with it. Beside each byte: ↑ rising, ↓ falling, ⇄ two values, ↕ up and down, ~ nearly every frame.",
                             Modifier.padding(horizontal = 14.dp),
                         )
                         if (signals.isNotEmpty()) FilterChip(muteKnown, { muteKnown = !muteKnown }, { Text("Grey out the DBC's bits") }, Modifier.padding(horizontal = 14.dp))
-                        BitGrid(frame, activity, a != null && b != null, different, outlined, trends, muteKnown) { bit ->
+                        BitGrid(frame, activity, a != null && b != null, different, outlined, trends, muteKnown, onLong = { similarTo = it }) { bit ->
                             val owner = signals.firstOrNull { bit in it.bits }
                             drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
                         }
@@ -263,8 +295,9 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onPlots: () -> U
 }
 
 /** One row per payload byte, most significant bit on the left. Shade = how often the bit flips; outline = its DBC signal. */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, different: IntArray?, signals: List<Signal>, trends: String = "", mute: Boolean = false, onBit: (Int) -> Unit) {
+private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window: Boolean, different: IntArray?, signals: List<Signal>, trends: String = "", mute: Boolean = false, onLong: (Int) -> Unit = {}, onBit: (Int) -> Unit) {
     if (frame == null || frame.isEmpty()) { Hint("No frame at the cursor yet", Modifier.padding(14.dp)); return }
     val busiest = activity?.inside?.maxOrNull()?.coerceAtLeast(1) ?: 1
     val cell = MaterialTheme.shapes.extraSmall
@@ -290,7 +323,7 @@ private fun BitGrid(frame: ByteArray?, activity: FrameStore.BitActivity?, window
                     Box(
                         Modifier.padding(1.5.dp).size(33.dp).clip(cell).background(fill)
                             .border(2.dp, if (owner >= 0) SIGNAL_COLORS[owner % SIGNAL_COLORS.size] else Color.Transparent, cell)
-                            .clickable { onBit(index) },
+                            .combinedClickable(onLongClick = { onLong(index) }) { onBit(index) },
                         contentAlignment = Alignment.Center,
                     ) { Text(if (frame[byte].toInt() shr bit and 1 == 1) "1" else "0", fontFamily = MONO, style = MaterialTheme.typography.bodyMedium) }
                 }

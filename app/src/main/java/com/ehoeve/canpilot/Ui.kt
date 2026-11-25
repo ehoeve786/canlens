@@ -98,7 +98,7 @@ fun App(model: AppModel = viewModel()) {
                     when (tab) {
                         Tab.MESSAGES -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }, onOpen = open)
                         Tab.FRAMES -> TraceScreen(model, message, onSelect = { selected = it.bus to it.id }, onOpen = open)
-                        Tab.MESSAGE -> if (message != null) MessageDetail(model, message) { tab = Tab.PLOTS }
+                        Tab.MESSAGE -> if (message != null) MessageDetail(model, message, onOpen = open) { tab = Tab.PLOTS }
                             else Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Hint("Pick a message in Messages or Frames to see its bits and signals here.") }
                         Tab.PLOTS -> PlotsScreen(model)
                     }

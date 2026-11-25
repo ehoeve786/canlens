@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.ehoeve.canpilot.core.Analysis
 import com.ehoeve.canpilot.core.FrameStore
 import com.ehoeve.canpilot.core.Signal
 import kotlinx.coroutines.Dispatchers
@@ -212,6 +213,10 @@ fun PlotsScreen(model: AppModel) {
                             Column(Modifier.weight(1f).padding(horizontal = 8.dp)) {
                                 Text(plot.key.signal, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                                 Hint("bus ${plot.key.bus} · ${hexId(plot.key.id)} · ${plot.messageName}")
+                                // over the marked stretch: lowest, highest, average, and how often it changed
+                                if (marked && plot.stateLabels == null) remember(plot.series, a, b) { Analysis.stats(plot.series, seconds(minOf(a!!, b!!)), seconds(maxOf(a, b))) }?.let { (low, high, mean, changes) ->
+                                    Hint("A–B: %s to %s, average %s, %d changes".format(number(low), number(high), number(mean), changes.toInt()))
+                                }
                             }
                             Text(plot.labelAt(cursor), fontFamily = MONO, fontWeight = FontWeight.Bold, maxLines = 1, style = MaterialTheme.typography.bodyMedium)
                             IconButton(onClick = { model.plot.keys.remove(plot.key) }) { Icon(Icons.Default.Close, "Remove ${plot.key.signal}", Modifier.size(18.dp)) }
@@ -245,6 +250,8 @@ fun PlotsScreen(model: AppModel) {
         }
     }
 }
+
+private fun number(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && kotlin.math.abs(v) < 1e7f) v.toInt().toString() else "%.3g".format(v)
 
 /** A state over time as coloured blocks, each labelled with its value where the block is wide enough. Shares the plots' time range and gestures. */
 @Composable
