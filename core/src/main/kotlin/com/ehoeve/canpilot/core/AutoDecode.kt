@@ -19,17 +19,25 @@ object AutoDecode {
      */
     fun fromCommunity(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, community: List<Pair<String, Dbc>>): List<Suggestion> {
         val result = ArrayList<Suggestion>()
+        val samples = HashMap<Int, FrameStore.Payloads>()
+        fun payloads(message: FrameStore.Message) = samples.getOrPut(message.index) { store.payloads(message) }
         for (message in store.messages) {
-            if (message.bus >= 128 || message.data.isEmpty()) continue
+            if (message.bus >= 128 || message.data.isEmpty() || community.none { message.id in it.second.messages }) continue
+            // the same frames on a lower bus too (the party bus is seen on 0 and 2): suggested there only
+            if (store.messages.any { it.id == message.id && it.bus < message.bus && copies(payloads(message), payloads(it)) }) continue
             val mine = known(message)
             val taken = HashSet<Int>().apply { mine?.signals?.forEach { addAll(it.bits.asList()) } }
+            // the first DBC that knows the message speaks for it: two files naming the same bits differently would only double the list
+            var answered = false
             for ((source, dbc) in community) {
+                if (answered) break
                 val theirs = dbc.messages[message.id]?.takeIf { it.length == message.data.size } ?: continue
                 // Model3CAN names its messages ID<hex><name>
                 val name = theirs.name.removePrefix("ID%X".format(message.id)).ifEmpty { theirs.name }
                 for (signal in theirs.signals) {
                     if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.message === message && it.signal.name == signal.name }) continue
                     result += Suggestion(message, signal, "From $source ($name)", 0.75, name)
+                    answered = true
                 }
             }
         }
