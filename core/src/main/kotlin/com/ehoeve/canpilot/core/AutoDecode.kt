@@ -357,8 +357,12 @@ object AutoDecode {
                 bestR = r; best = reference
             }
             if (best == null || abs(bestR) < MATCH) continue
-            val factor = bestR * best.vector.spread / mine.spread
-            val signal = Signal("LIKE_${best.how}${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, best.vector.mean - factor * mine.mean, best.unit, -1, false)
+            // a flag or a state is the same values as the signal it follows, not a scaled copy: kept raw, with its names when they match
+            val state = best.how == "" && (field.size <= 4 || best.signal.size <= 4 || best.signal.valueNames.isNotEmpty())
+            val fitted = bestR * best.vector.spread / mine.spread
+            val (factor, offset) = if (state) 1.0 to 0.0 else Analysis.tidy(fitted, best.vector.mean - fitted * mine.mean)
+            val signal = Signal("LIKE_${best.how}${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, offset, if (state) "" else best.unit, -1, false)
+            if (state && bestR > 0 && abs(best.signal.factor - 1.0) < 1e-9 && best.signal.offset == 0.0) signal.valueNames = best.signal.valueNames
             val what = when (best.how) { "RATE_" -> "the rate of change of "; "TOTAL_" -> "the running total of "; else -> "" }
             suggestions[i] = Suggestion(suggestion.message, signal,
                 "Moves with $what${best.signal.name} (bus ${best.message.bus}, ${"%X".format(best.message.id)}), r = ${"%.3f".format(abs(bestR))}; scaled to its units", abs(bestR).toDouble())

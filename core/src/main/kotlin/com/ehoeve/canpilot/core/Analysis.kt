@@ -34,6 +34,20 @@ object Analysis {
         return result
     }
 
+    /**
+     * A fitted factor and offset as a DBC would have them: a factor within 3 % of a round one (1, 2, 2.5 or 5 times a
+     * power of ten, either sign) becomes that, and then an offset within one step of a whole number becomes it. A fit
+     * comes out a little off because the samples are; the real encoding almost never is.
+     */
+    fun tidy(factor: Double, offset: Double): Pair<Double, Double> {
+        if (factor == 0.0 || factor.isNaN()) return factor to offset
+        val magnitude = Math.pow(10.0, Math.floor(Math.log10(abs(factor))))
+        val round = doubleArrayOf(1.0, 2.0, 2.5, 5.0, 10.0).map { it * magnitude * Math.signum(factor) }.minBy { abs(it - factor) }
+        if (abs(round - factor) > abs(round) * 0.03) return factor to offset
+        val whole = Math.rint(offset)
+        return round to (if (abs(offset - whole) <= abs(round)) whole else offset)
+    }
+
     private fun named(found: Signal, factor: Double, offset: Double) =
         Signal("FOUND_${found.start}_${found.size}", found.start, found.size, found.littleEndian, found.signed, factor, offset, "", -1, false)
 
@@ -146,8 +160,8 @@ object Analysis {
                 if (spreadX < 1e-12) continue
                 val r = together / sqrt(spreadX * spreadY)
                 if (abs(r) < minimum) continue
-                val factor = together / spreadX
-                found += FieldMatch(snapshots.messages[m], named(candidate, factor, meanY - factor * meanX), abs(r))
+                val (factor, offset) = tidy(together / spreadX, meanY - together / spreadX * meanX)
+                found += FieldMatch(snapshots.messages[m], named(candidate, factor, offset), abs(r))
             }
         }
         return best(found, limit, compareByDescending<FieldMatch> { it.score }.thenByDescending { it.signal.size })

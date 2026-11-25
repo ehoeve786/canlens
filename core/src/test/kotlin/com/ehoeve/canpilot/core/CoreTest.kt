@@ -351,6 +351,13 @@ class CoreTest {
         assertTrue(similar.none { it.bit == 14 })
     }
 
+    @Test fun tidiesFittedScales() {
+        assertEquals(0.1 to 0.0, Analysis.tidy(0.0995, 0.03))
+        assertEquals(0.5 to -40.0, Analysis.tidy(0.5012, -39.8))
+        assertEquals(-1.0 to 1.0, Analysis.tidy(-0.98, 0.99))
+        assertEquals(0.188 to 0.05, Analysis.tidy(0.188, 0.05))                    // not near a round factor: left as fitted
+    }
+
     @Test fun keepsSignalStatusesInTheFile() {
         val dbc = Dbc.parse("BO_ 100 A: 8 X\n SG_ S : 0|8@1+ (1,0) [0|0] \"\" X\n\nCM_ SG_ 100 S \"from the maker\";\n", "t.dbc")
         val marked = Dbc.parse(dbc.withStatus(100, "S", "plotted").withStatus(100, "S", "confirmed").write(), "t.dbc")
