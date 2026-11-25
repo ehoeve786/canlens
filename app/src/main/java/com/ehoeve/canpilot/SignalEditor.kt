@@ -103,6 +103,19 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
             SectionTitle(if (draft.original == null) "New signal" else "Edit signal", Modifier.weight(1f))
             if (draft.original != null) TextButton(onClick = { model.dbc.deleteSignal(message, draft.original); onClose() }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             TextButton(onClick = onClose) { Text("Cancel") }
+            // saves this one and opens a copy for the next: the number in the name and the multiplexor page go up by one
+            TextButton(enabled = signal != null, onClick = {
+                model.dbc.saveSignal(message, signal!!, draft.original)
+                val taken = model.dbc.decoder(message.bus, message.id)?.signals.orEmpty().mapTo(HashSet()) { it.name }
+                val stem = signal.name.trimEnd { it.isDigit() }
+                var number = signal.name.substring(stem.length).toIntOrNull() ?: 1
+                var name: String
+                do name = stem + ++number while (name in taken)
+                model.signals.drafts[message.bus to message.id] = SignalDraft(null, signal).also {
+                    it.name = name
+                    if (signal.muxValue >= 0) it.muxValue = (signal.muxValue + 1).toString()
+                }
+            }) { Text("Copy") }
             Button(enabled = signal != null, onClick = { model.dbc.saveSignal(message, signal!!, draft.original); onClose() }) { Text("Save") }
         }
         OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
