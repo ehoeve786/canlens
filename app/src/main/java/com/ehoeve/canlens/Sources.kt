@@ -220,6 +220,56 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         return null
     }
 
+    /**
+     * Installs [image] through the USB port (the firmware's "O,<size>" command: written to its other OTA slot, then it
+     * restarts). [progress] gets the percentage sent. Blocks; the firmware's answer, "O,ok" or "O,error <why>".
+     */
+    fun flash(image: ByteArray, progress: (Int) -> Unit): String {
+        val device = find() ?: throw IOException("No DashKit on USB")
+        if (!permitted(device)) throw AccessRefused("USB access to the DashKit was not allowed")
+        val data = (0 until device.interfaceCount).map { device.getInterface(it) }.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA }
+            ?: throw IOException("The USB device has no serial interface")
+        val endpoints = (0 until data.endpointCount).map { data.getEndpoint(it) }.filter { it.type == UsbConstants.USB_ENDPOINT_XFER_BULK }
+        val input = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_IN } ?: throw IOException("No way to read from the DashKit")
+        val output = endpoints.firstOrNull { it.direction == UsbConstants.USB_DIR_OUT } ?: throw IOException("No way to write to the DashKit")
+        val connection = manager.openDevice(device) ?: throw IOException("Can't open the DashKit's USB port")
+        try {
+            if (!connection.claimInterface(data, true)) throw IOException("Can't claim the DashKit's serial interface")
+            fun write(bytes: ByteArray, from: Int, count: Int) {
+                var at = from
+                while (at < from + count) {
+                    val sent = connection.bulkTransfer(output, bytes, at, minOf(16384, from + count - at), 5000)
+                    if (sent <= 0) throw IOException("The DashKit stopped taking the image")
+                    at += sent
+                }
+            }
+            val head = "O,${image.size}\n".toByteArray()
+            write(head, 0, head.size)
+            var told = 0
+            for (at in image.indices step 16384) {
+                write(image, at, minOf(16384, image.size - at))
+                val percent = (at + minOf(16384, image.size - at)) * 100 / image.size
+                if (percent >= told + 10) { told = percent; progress(percent) }
+            }
+            // its frame lines keep coming: the answer is the "O" line among them, within a minute (flash writes take a while)
+            val chunk = ByteArray(16384)
+            val line = StringBuilder()
+            val until = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < until) {
+                val n = connection.bulkTransfer(input, chunk, chunk.size, 500)
+                for (i in 0 until maxOf(n, 0)) {
+                    val c = chunk[i].toInt().toChar()
+                    if (c != '\n') { if (line.length < 200) line.append(c); continue }
+                    if (line.startsWith("O,")) return line.toString().trimEnd('\r')
+                    line.setLength(0)
+                }
+            }
+            throw IOException("no answer: this DashKit's firmware may not install over USB yet")
+        } finally {
+            connection.close()
+        }
+    }
+
     /** Reads frames into [sink] until [close], the sink returns false, or the cable is pulled (IOException); [ready] once the port is ours. */
     fun run(sink: FrameSink, ready: () -> Unit = {}) {
         val device = find() ?: throw IOException("No DashKit on USB")

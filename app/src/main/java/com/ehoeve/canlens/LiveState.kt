@@ -114,42 +114,44 @@ class LiveState(
         .joinToString("") { "%02x".format(it) }.also { preferences.edit().putString("wifiKey", it).apply() }
 
     /**
-     * Installs the firmware in [uri] over the DashKit's Wi-Fi link (its other OTA slot, as DashPilot does over
-     * Bluetooth; it goes back to the old one if the new one doesn't start). Ends a stream first.
+     * Installs the firmware in [uri] into the DashKit's other OTA slot, as DashPilot does over Bluetooth (it goes back
+     * to the old one if the new one doesn't start): over USB, else over Wi-Fi. Ends a stream first.
      */
-    fun flashOverWifi(uri: Uri) {
+    fun flash(uri: Uri, usb: Boolean) {
         stop()
+        val how = if (usb) "USB" else "Wi-Fi"
         scope.launch(Dispatchers.IO) {
             val result = runCatching {
                 val image = (context.contentResolver.openInputStream(uri) ?: throw IOException("can't read the file")).use { it.readBytes() }
                 // an ESP32 app image starts with 0xE9: anything else is the wrong file (a zip, an APK)
                 if (image.isEmpty() || image[0] != 0xE9.toByte()) throw IOException("that isn't a firmware image (.bin)")
-                val host = findDashKit()
-                java.net.Socket().use { socket ->
-                    socket.connect(java.net.InetSocketAddress(host, DashKitWifi.PORT), 5000)
-                    socket.soTimeout = 30_000
-                    val out = socket.getOutputStream()
-                    out.write("O,${image.size},${wifiKey()}\n".toByteArray())
-                    var sent = 0
-                    var told = 0
-                    while (sent < image.size) {
-                        val n = minOf(16384, image.size - sent)
-                        out.write(image, sent, n)
-                        sent += n
-                        val percent = sent * 100 / image.size
-                        if (percent >= told + 10) { told = percent; withContext(Dispatchers.Main) { report("Installing over Wi-Fi: $percent %") } }
-                    }
-                    out.flush()
-                    // the log and metrics come on the same connection: the answer is the "O" line among them
-                    val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
-                    val until = System.currentTimeMillis() + 30_000   // its metrics come every second: a time limit, not a silence one
-                    generateSequence { if (System.currentTimeMillis() < until) reader.readLine() else null }.firstOrNull { it.startsWith("O,") }
-                        ?: throw IOException("this DashKit's firmware can't install over Wi-Fi yet: install the wifi-stream build with DashPilot once")
-                }
+                val progress = { percent: Int -> scope.launch { report("Installing over $how: $percent %") }; Unit }
+                if (usb) DashKitUsb(context).flash(image, progress) else flashOverWifi(image, progress)
             }
             withContext(Dispatchers.Main) {
-                report(result.fold({ if (it == "O,ok") "Firmware installed over Wi-Fi: the DashKit is restarting" else "Not installed: ${it.removePrefix("O,error ")}" }, { "Not installed: ${it.message}" }))
+                report(result.fold({ if (it == "O,ok") "Firmware installed over $how: the DashKit is restarting" else "Not installed: ${it.removePrefix("O,error ")}" }, { "Not installed: ${it.message}" }))
             }
+        }
+    }
+
+    private fun flashOverWifi(image: ByteArray, progress: (Int) -> Unit): String {
+        java.net.Socket().use { socket ->
+            socket.connect(java.net.InetSocketAddress(findDashKit(), DashKitWifi.PORT), 5000)
+            socket.soTimeout = 30_000
+            val out = socket.getOutputStream()
+            out.write("O,${image.size},${wifiKey()}\n".toByteArray())
+            var told = 0
+            for (at in image.indices step 16384) {
+                out.write(image, at, minOf(16384, image.size - at))
+                val percent = (at + minOf(16384, image.size - at)) * 100 / image.size
+                if (percent >= told + 10) { told = percent; progress(percent) }
+            }
+            out.flush()
+            // the log and metrics come on the same connection: the answer is the "O" line among them
+            val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+            val until = System.currentTimeMillis() + 30_000   // its metrics come every second: a time limit, not a silence one
+            return generateSequence { if (System.currentTimeMillis() < until) reader.readLine() else null }.firstOrNull { it.startsWith("O,") }
+                ?: throw IOException("this DashKit's firmware can't install over Wi-Fi yet: install the wifi-stream build with DashPilot once")
         }
     }
 
