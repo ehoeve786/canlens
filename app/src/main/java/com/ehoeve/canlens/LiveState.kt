@@ -140,7 +140,10 @@ class LiveState(
                         if (percent >= told + 10) { told = percent; withContext(Dispatchers.Main) { report("Installing over Wi-Fi: $percent %") } }
                     }
                     out.flush()
-                    socket.getInputStream().bufferedReader().readLine() ?: throw IOException("no answer")
+                    // the log and metrics come on the same connection: the answer is the "O" line among them
+                    val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+                    generateSequence { reader.readLine() }.firstOrNull { it.startsWith("O,") }
+                        ?: throw IOException("this DashKit's firmware can't install over Wi-Fi yet: install the wifi-stream build with DashPilot once")
                 }
             }
             withContext(Dispatchers.Main) {
