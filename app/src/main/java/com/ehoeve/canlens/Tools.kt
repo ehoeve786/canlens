@@ -178,7 +178,7 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
             Text("Markers", style = MaterialTheme.typography.titleLarge)
             Hint("Tap one to move the cursor there. A–B puts the marks from 1 s before to 2 s after it.")
             val (readings, done) = model.trace.markers.toList().partition { AutoDecode.READING.matches(it.note) }
-            readings.groupBy { AutoDecode.READING.find(it.note)!!.groupValues[1] }.forEach { (name, of) ->
+            readings.groupBy { AutoDecode.READING.find(it.note)!!.groupValues[1].lowercase() }.forEach { (name, of) ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Hint("${of.size} readings of $name", Modifier.weight(1f))
                     TextButton(onClick = { model.trace.markers.removeAll(of) }) { Text("Remove") }

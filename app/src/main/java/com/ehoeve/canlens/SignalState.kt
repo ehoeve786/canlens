@@ -129,7 +129,9 @@ class SignalState(
         autoStatus = "Starting"
         // a marker is something done, or a number read off the car ("range=312")
         val (read, done) = trace.markers.map { it.time to it.note }.partition { AutoDecode.READING.matches(it.second) }
-        val readings = read.groupBy({ AutoDecode.READING.find(it.second)!!.groupValues[1].lowercase() }, { it.first to AutoDecode.READING.find(it.second)!!.groupValues[2].toDouble() })
+        // "21,5" and "−5" as well as "21.5" and "-5"
+        val readings = read.mapNotNull { (time, note) -> AutoDecode.reading(note)?.let { (name, value) -> Triple(name.lowercase(), time, value) } }
+            .groupBy({ it.first }, { it.second to it.third })
         val named = autoResults.filter { it.confidence >= NAMED }.mapTo(HashSet(), ::key)
         val started = generation
         decodeJob = scope.launch {
