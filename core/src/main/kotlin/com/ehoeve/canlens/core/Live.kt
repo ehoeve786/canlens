@@ -207,7 +207,7 @@ object DashKitLine {
         if (c2 < 0 || c3 < 0) return true
         val c4 = line.indexOf(',', c3 + 1)
         val bus = line.substring(2, c2).toIntOrNull() ?: return true
-        val id = line.substring(c2 + 1, c3).toLongOrNull(16) ?: return true
+        val id = line.substring(c2 + 1, c3).toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
         val length = LogReader.hex(line, c3 + 1, if (c4 < 0) line.length else c4, buffer)
         val device = if (c4 < 0 || clock == null) null else line.substring(c4 + 1).toLongOrNull(16)
         return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, CanId.of(id, c3 - c2 - 1 > 3), buffer, 0, length)
@@ -227,6 +227,8 @@ class DeviceClock {
     fun micros(device: Long, arrival: Long): Long {
         if (last < 0) offset = arrival - device
         else if (device < last && last - device > 0x80000000L) wraps += 0x100000000L
+        // a frame from just before the last wrap, arriving after one from just after it: the earlier lap
+        else if (device > last && device - last > 0x80000000L) return device + wraps - 0x100000000L + offset
         last = device
         return device + wraps + offset
     }

@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.ehoeve.canlens"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.ehoeve.canlens"
@@ -68,7 +68,7 @@ dependencies {
     implementation(libs.androidx.compose.ui)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material.icons.core)
-    implementation("com.github.luben:zstd-jni:${libs.versions.zstd.get()}@aar")
+    implementation(variantOf(libs.zstd.jni) { artifactType("aar") })
     implementation(libs.commons.compress)
     // reading a number off the car's screen: the camera, and Google's on-device text reader (its model comes through Play services)
     implementation(libs.androidx.camera.camera2)

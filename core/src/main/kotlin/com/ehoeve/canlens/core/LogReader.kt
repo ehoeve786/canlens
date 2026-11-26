@@ -125,7 +125,7 @@ object LogReader {
         var busStart = busEnd
         while (busStart > close + 2 && line[busStart - 1].isDigit()) busStart--
         val bus = if (busStart < busEnd) line.substring(busStart, busEnd).toIntOrNull() ?: 0 else 0
-        val id = line.substring(space + 1, hash).toLongOrNull(16) ?: return true
+        val id = line.substring(space + 1, hash).toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
         var p = hash + 1
         if (p < line.length && line[p] == '#') p += 2
         val length = hex(line, p, line.length, buffer)
@@ -152,7 +152,7 @@ object LogReader {
      * DashPilot's older recordings (`ms,bus,id,data`; a bus of 16 or 17 marks the DashKit firmware's own statistics).
      */
     private class CsvColumns(header: String) {
-        private val names = header.lowercase().split(',').map { it.trim() }
+        private val names = header.lowercase().split(',').map { it.trim().trim('"') }
         private val milliseconds = names.indexOf("ms")
         private val time = if (milliseconds >= 0) milliseconds else names.indexOfFirst { it == "time stamp" || it == "time" || it == "timestamp" }
         private val id = names.indexOfFirst { it == "id" || it == "addr" || it == "address" }
@@ -160,11 +160,13 @@ object LogReader {
         private val data = names.indexOf("data")
         private val length = names.indexOfFirst { it == "len" || it == "dlc" }
         private val firstByte = names.indexOf("d1")
+        private val extended = names.indexOf("extended")
 
         init { if (time < 0 || id < 0 || (data < 0 && firstByte < 0)) throw IOException("Unknown CSV columns: $header") }
 
         fun row(line: String, buffer: ByteArray, sink: FrameSink): Boolean {
-            val c = line.split(',')
+            // quoted cells ("123") are read without their quotes; a comma inside quotes doesn't occur in these exports
+            val c = line.split(',').map { it.trim().trim('"') }
             if (c.size <= maxOf(time, id, data, firstByte)) return true
             val stamp = c[time].trim()
             // a decimal point means seconds; SavvyCAN writes whole microseconds
@@ -175,7 +177,7 @@ object LogReader {
             }
             val frameBus = c.getOrNull(bus)?.trim()?.toIntOrNull() ?: 0
             if (milliseconds >= 0 && frameBus and 0x10 != 0) return true
-            val frameId = c[id].trim().removePrefix("0x").removePrefix("0X").toLongOrNull(16) ?: return true
+            val frameId = c[id].removePrefix("0x").removePrefix("0X").toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
             val n = if (data >= 0) {
                 val text = c[data].trim().removePrefix("0x").removePrefix("0X")
                 hex(text, 0, text.length, buffer)
@@ -186,7 +188,8 @@ object LogReader {
                 if (ok) count else -1
             }
             if (micros < 0 || n < 0) return true
-            return sink.frame(micros, frameBus, frameId.toInt(), buffer, 0, n)
+            val isExtended = c.getOrNull(extended)?.lowercase().let { it == "true" || it == "1" }
+            return sink.frame(micros, frameBus, CanId.of(frameId, isExtended), buffer, 0, n)
         }
     }
 

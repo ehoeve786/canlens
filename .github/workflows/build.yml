@@ -19,19 +19,19 @@ jobs:
       group: build-${{ github.ref }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
       - name: Test and build
         run: ./gradlew :core:test :app:assembleDebug -PversionCode=${{ github.run_number }}
       - name: Lint
         # reports only, until the existing warnings are cleared
         continue-on-error: true
         run: ./gradlew :app:lintDebug -PversionCode=${{ github.run_number }}
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: canlens-debug
           path: app/build/outputs/apk/debug/app-debug.apk
@@ -50,7 +50,7 @@ jobs:
           ./gradlew :app:assembleRelease -PversionCode=${{ github.run_number }}
           rm -f "$RUNNER_TEMP/release.jks"
           mv app/build/outputs/apk/release/app-release.apk app/build/outputs/apk/release/canlens-release.apk
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: canlens-release
           path: app/build/outputs/apk/release/canlens-release.apk
@@ -66,8 +66,8 @@ jobs:
       group: publish-latest
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: canlens-release
           path: ${{ runner.temp }}/apk
