@@ -164,8 +164,8 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
         const val NAME = "DashKit"
         val CAN_SERVICE: UUID = UUID.fromString("CADA0000-CA00-B1E0-B0D6-C000AA0100A1")
         val CONTROL: UUID = UUID.fromString("CADA0004-CA00-B1E0-B0D6-C000AA0100A1")
-        val TX_SERVICE: UUID = UUID.fromString("CADA0100-CA00-B1E0-B0D6-C000AA0100A1")
-        val TX_LINES: UUID = UUID.fromString("CADA0101-CA00-B1E0-B0D6-C000AA0100A1")
+        val TX_SERVICE: UUID = UUID.fromString("CADA0300-CA00-B1E0-B0D6-C000AA0100A1")
+        val TX_LINES: UUID = UUID.fromString("CADA0301-CA00-B1E0-B0D6-C000AA0100A1")
         /** The firmware's keepalive opcode (VC_CMD_PING): it drops a link whose pings stopped. */
         const val PING: Byte = 0x45
         const val PING_EVERY = 15
