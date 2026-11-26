@@ -224,6 +224,8 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Hint("${events[number]!!.size} fields changed here and hardly ever else. Plot them to see what happened; name it and they are all listed under that name, ticked.")
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("What happened") }, placeholder = { Text("plug in") })
+                    // not something done in the car (a module's log entry, a wake-up): gone, also from later decodes
+                    TextButton(onClick = { model.signals.reject(events[number]!!); naming = null }) { Text("Reject this event") }
                 }
             },
             confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = { model.signals.nameEvent(number, name); naming = null }) { Text("Name them") } },

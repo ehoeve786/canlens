@@ -203,6 +203,12 @@ class SignalState(
         }
     }
 
+    /** Turns down [fields] (an event's) whatever they are, remembered like any rejection. */
+    fun reject(fields: List<Suggestion>) {
+        autoResults = autoResults - fields.toSet()
+        if (rejected.addAll(fields.map(::key))) saveRejected()
+    }
+
     /** Adds [accepted] to the DBCs and takes them off the list, with [declined]: shown and left unticked, so turned down. */
     fun accept(accepted: List<Suggestion>, declined: List<Suggestion> = emptyList()) {
         dbc.add(accepted)
