@@ -73,6 +73,17 @@ private fun lowerBound(times: FloatArray, size: Int, t: Float): Int {
     return low
 }
 
+/** The first index of [times] after [t]: one less is the last sample at or before it. */
+private fun upperBound(times: FloatArray, size: Int, t: Float): Int {
+    var low = 0
+    var high = size
+    while (low < high) {
+        val mid = (low + high) ushr 1
+        if (times[mid] <= t) low = mid + 1 else high = mid
+    }
+    return low
+}
+
 /** Pinch to zoom, drag sideways to pan, tap to move the cursor. Vertical drags are left to the list around it. */
 fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit): Modifier = this
     .pointerInput(view) { detectTapGestures { onCursor(view.start + it.x / size.width * (view.end - view.start)) } }
@@ -196,7 +207,7 @@ fun Chart(
             canvas.drawText(number(range.endInclusive), size.width - 12f, text.textSize + 6f, text)
             canvas.drawText(number(range.start), size.width - 12f, size.height - 8f, text)
             // the value under the cursor: the last sample at or before it
-            val at = lowerBound(series.times, n, cursor + 1e-6f) - 1
+            val at = upperBound(series.times, n, cursor) - 1
             if (labels && at >= 0) canvas.drawText(number(series.values[at]), size.width - 12f, size.height / 2, text)
         }
         text.textAlign = Paint.Align.LEFT
