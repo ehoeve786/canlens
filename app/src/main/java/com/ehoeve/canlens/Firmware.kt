@@ -39,6 +39,7 @@ fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("DashKit firmware", style = MaterialTheme.typography.titleLarge)
+            status?.build?.takeIf { it.isNotEmpty() }?.let { Hint("Built $it") }
             val m = status?.metrics
             Text(
                 if (status == null) "Not connected over Wi-Fi"

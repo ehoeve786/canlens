@@ -128,7 +128,8 @@ class LiveState(
                 val progress = { percent: Int -> scope.launch { report("Installing over $how: $percent %") }; Unit }
                 if (usb) DashKitUsb(context).flash(image, progress) else flashOverWifi(image, progress)
             }
-            withContext(Dispatchers.Main) {
+            // queued like the progress reports, so it comes after the last of them
+            scope.launch {
                 report(result.fold({ if (it == "O,ok") "Firmware installed over $how: the DashKit is restarting" else "Not installed: ${it.removePrefix("O,error ")}" }, { "Not installed: ${it.message}" }))
             }
         }

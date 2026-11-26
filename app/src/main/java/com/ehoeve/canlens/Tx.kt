@@ -104,7 +104,7 @@ class TxState(context: Context, private val store: FrameStore, private val scope
                 !status.wifiOn -> "The DashKit has its Wi-Fi off: it didn't take the settings"
                 status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0" -> "The DashKit is on $ssid at ${status.wifiAddress}"
                 else -> "The DashKit is joining $ssid"
-            } + if (status.heapKb >= 0) " · ${status.heapKb} KB free" else ""
+            } + (if (status.heapKb >= 0) " · ${status.heapKb} KB free" else "") + (if (status.build.isNotEmpty()) " · firmware built ${status.build}" else "")
             if (status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0") break
         }
     }

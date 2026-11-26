@@ -18,6 +18,8 @@ class DashKitStatus {
     /** The Wi-Fi link's last "M" line, [METRICS] in order; null until one came. */
     @Volatile var metrics: LongArray? = null
     /** What Bluetooth last said of the DashKit's Wi-Fi: on, and its address ("0.0.0.0" until it joined). */
+    /** When the firmware it runs was built ("V" line), empty until said: tells one build from the next. */
+    @Volatile var build = ""
     @Volatile var wifiOn = false
     /** Whether a status had the Wi-Fi part at all (firmware without it, or a read cut short, has none). */
     @Volatile var wifiSeen = false
@@ -54,6 +56,7 @@ class DashKitStatus {
             logLines++
             return
         }
+        if (line.startsWith("V,")) { build = line.substring(2).trim(); return }
         val fields = line.split(',')
         if (fields[0] == "M" && fields.size > METRICS.size) { metrics = LongArray(METRICS.size) { fields[it + 1].toLongOrNull() ?: 0 }; return }
         if (fields[0] == "W" && fields.size >= 3) {
