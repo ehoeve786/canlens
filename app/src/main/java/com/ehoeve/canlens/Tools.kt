@@ -210,7 +210,14 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
     var showPlain by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    val all = model.signals.autoResults
+    // what has been saved into a DBC since (from the editor, say) is no longer a suggestion: its bits are taken
+    val dbcs = model.dbc.files.toList()
+    val all = remember(model.signals.autoResults, dbcs) {
+        model.signals.autoResults.filter { s ->
+            val known = model.dbc.decoder(s.message.bus, s.message.id)?.signals.orEmpty().filter { it.muxValue < 0 || s.signal.muxValue < 0 || it.muxValue == s.signal.muxValue }
+            s.signal.isMultiplexor || known.none { k -> k.bits.any { it in s.signal.bits } }
+        }
+    }
     // events: fields that changed together at one moment, by their number, to look at and name as one
     val events = all.filter { it.at != null }.groupBy { EVENT.find(it.signal.name)?.groupValues?.get(1)?.toInt() ?: 0 }.filterKeys { it > 0 }.toSortedMap()
     var naming by remember { mutableStateOf<Int?>(null) }
