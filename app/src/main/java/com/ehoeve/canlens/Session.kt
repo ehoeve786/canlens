@@ -4,6 +4,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.toggleable
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
