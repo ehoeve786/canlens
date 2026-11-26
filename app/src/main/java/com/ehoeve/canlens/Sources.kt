@@ -48,18 +48,27 @@ fun Context.displayName(uri: Uri): String =
 /** The file's content, decompressed if it is zstd (rlog.zst), bzip2 (rlog.bz2) or gzip. */
 fun Context.openDecompressed(uri: Uri): InputStream {
     val raw = BufferedInputStream(contentResolver.openInputStream(uri) ?: throw IOException("Can't open ${displayName(uri)}"), 1 shl 16)
-    raw.mark(4)
-    val magic = ByteArray(4)
-    val n = raw.read(magic)
-    raw.reset()
-    fun at(i: Int) = if (i < n) magic[i].toInt() and 0xFF else -1
-    return when {
-        at(0) == 0x28 && at(1) == 0xB5 && at(2) == 0x2F && at(3) == 0xFD -> ZstdInputStream(raw).setContinuous(true)
-        at(0) == 'B'.code && at(1) == 'Z'.code && at(2) == 'h'.code -> BZip2CompressorInputStream(raw, true)
-        at(0) == 0x1F && at(1) == 0x8B -> GZIPInputStream(raw)
-        else -> raw
+    // the decompressors read a header at once: one that throws leaves [raw] for us to close
+    return try {
+        raw.mark(4)
+        val magic = ByteArray(4)
+        val n = raw.read(magic)
+        raw.reset()
+        fun at(i: Int) = if (i < n) magic[i].toInt() and 0xFF else -1
+        when {
+            at(0) == 0x28 && at(1) == 0xB5 && at(2) == 0x2F && at(3) == 0xFD -> ZstdInputStream(raw).setContinuous(true)
+            at(0) == 'B'.code && at(1) == 'Z'.code && at(2) == 'h'.code -> BZip2CompressorInputStream(raw, true)
+            at(0) == 0x1F && at(1) == 0x8B -> GZIPInputStream(raw)
+            else -> raw
+        }
+    } catch (e: Exception) {
+        raw.close()
+        throw e
     }
 }
+
+/** The user would not let the app at a device: retrying would only ask again, so a live stream ends on it. */
+class AccessRefused(message: String) : IOException(message)
 
 /** Monotonic microseconds that start at the wall clock: a clock change mid-stream can't reorder frames. */
 class Clock {
@@ -85,7 +94,13 @@ class Recorder(context: Context) : Closeable {
         }
         uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
         // zstd as it is written: about a tenth of the size, and the reader takes it as it is, a cut-off end included
-        writer = ZstdOutputStream(context.contentResolver.openOutputStream(uri) ?: throw IOException("Can't write $name")).bufferedWriter(Charsets.US_ASCII)
+        writer = try {
+            ZstdOutputStream(context.contentResolver.openOutputStream(uri) ?: throw IOException("Can't write $name")).bufferedWriter(Charsets.US_ASCII)
+        } catch (e: Exception) {
+            // no empty file left behind in Downloads
+            runCatching { context.contentResolver.delete(uri, null, null) }
+            throw e
+        }
     }
 
     private var closed = false
@@ -156,7 +171,7 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
     /** Reads frames into [sink] until [close], the sink returns false, or the cable is pulled (IOException). */
     fun run(sink: FrameSink) {
         val device = find() ?: throw IOException("No DashKit on USB")
-        if (!permitted(device)) throw IOException("USB access to the DashKit was not allowed")
+        if (!permitted(device)) throw AccessRefused("USB access to the DashKit was not allowed")
         var input: UsbEndpoint? = null
         var output: UsbEndpoint? = null
         val data = (0 until device.interfaceCount).map { device.getInterface(it) }.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_CDC_DATA }
@@ -238,8 +253,17 @@ class DashKitWifi(private val host: String) : Closeable {
         val clock = Clock()
         val busClock = DeviceClock()
         val payload = ByteArray(64)
-        socket.getInputStream().bufferedReader(Charsets.US_ASCII).forEachLine { line ->
-            if (line.startsWith("A,")) { if (!DashKitLine.parse(line, clock.micros(), payload, sink, busClock)) throw IOException("stopped") } else status.read(line)
+        val input = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
+        // read by hand, not by readLine: a link that never sends a newline can't grow a line without end
+        val line = StringBuilder(64)
+        while (true) {
+            val c = input.read()
+            if (c < 0) break
+            if (c == '\n'.code) {
+                val text = line.toString()
+                line.setLength(0)
+                if (text.startsWith("A,")) { if (!DashKitLine.parse(text, clock.micros(), payload, sink, busClock)) throw IOException("stopped") } else status.read(text)
+            } else if (c != '\r'.code && line.length < MAX_LINE) line.append(c.toChar())
         }
     }
 
@@ -247,5 +271,6 @@ class DashKitWifi(private val host: String) : Closeable {
 
     companion object {
         const val PORT = 62402
+        private const val MAX_LINE = 1024
     }
 }
