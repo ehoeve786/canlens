@@ -245,26 +245,31 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
             }
             val head = "O,${image.size}\n".toByteArray()
             write(head, 0, head.size)
+            // its 1 KB USB buffer loses what comes faster than flash writes: send USB_CHUNK bytes per "K" line it sends,
+            // then wait for the "O" line among its frame lines (the check after the last chunk takes a while)
+            var sent = 0
             var told = 0
-            for (at in image.indices step 16384) {
-                write(image, at, minOf(16384, image.size - at))
-                val percent = (at + minOf(16384, image.size - at)) * 100 / image.size
-                if (percent >= told + 10) { told = percent; progress(percent) }
-            }
-            // its frame lines keep coming: the answer is the "O" line among them, within a minute (flash writes take a while)
             val chunk = ByteArray(16384)
             val line = StringBuilder()
-            val until = SystemClock.elapsedRealtime() + 60_000
+            var until = SystemClock.elapsedRealtime() + 30_000
             while (SystemClock.elapsedRealtime() < until) {
                 val n = connection.bulkTransfer(input, chunk, chunk.size, 500)
                 for (i in 0 until maxOf(n, 0)) {
                     val c = chunk[i].toInt().toChar()
                     if (c != '\n') { if (line.length < 200) line.append(c); continue }
-                    if (line.startsWith("O,")) return line.toString().trimEnd('\r')
+                    val text = line.trimEnd('\r').toString()
                     line.setLength(0)
+                    if (text.startsWith("O,")) return if (sent == 0 && "stopped" in text) "$text (this firmware can't install over USB yet: install it over Wi-Fi once)" else text
+                    if (text != "K" || sent >= image.size) continue
+                    val count = minOf(USB_CHUNK, image.size - sent)
+                    write(image, sent, count)
+                    sent += count
+                    until = SystemClock.elapsedRealtime() + if (sent < image.size) 30_000 else 60_000
+                    val percent = sent * 100L / image.size
+                    if (percent >= told + 10) { told = percent.toInt(); progress(told) }
                 }
             }
-            throw IOException("no answer: this DashKit's firmware may not install over USB yet")
+            throw IOException(if (sent == 0) "no answer: this DashKit's firmware can't install over USB yet: install it over Wi-Fi once" else "the DashKit stopped answering")
         } finally {
             connection.close()
         }
@@ -334,6 +339,8 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         const val USB_SERIAL_JTAG = 0x1001
         /** The RTS bit of CDC's control line state: the ESP32-S3's reset line. */
         private const val RTS = 2
+        /** Install image bytes per "K" from the DashKit: half its USB buffer (firmware can_manager.c USB_CHUNK). */
+        private const val USB_CHUNK = 512
         /** Transmit lines waiting for the USB port; more are dropped (the sender is told by the firmware's counts). */
         const val MAX_WAITING = 64
         private const val ACTION_PERMISSION = "com.ehoeve.canlens.USB_PERMISSION"
