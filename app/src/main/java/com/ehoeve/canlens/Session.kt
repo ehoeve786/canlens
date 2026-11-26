@@ -44,7 +44,7 @@ import java.io.File
  * cursor and the frames filter. It is written when the app is left or another session is opened, and the one in use
  * comes back when the app starts. DBC files are shared by all sessions.
  */
-class SessionState(private val model: AppModel, context: Context, private val preferences: SharedPreferences) {
+class SessionState(private val model: AppModel, private val context: Context, private val preferences: SharedPreferences) {
     private val folder = File(context.filesDir, "sessions").apply { mkdirs() }
 
     var current by mutableStateOf(preferences.getString("session", null) ?: DEFAULT); private set
@@ -78,13 +78,31 @@ class SessionState(private val model: AppModel, context: Context, private val pr
             .put("merged", JSONArray(model.mergedLogs.map { it.toString() }))
             // the markers' times are in the part's own: the same part comes back
             .put("from", part?.takeIf { model.logs.isNotEmpty() } ?: JSONObject.NULL)
-            .put("plots", JSONArray(plot.keys.map { JSONObject().put("bus", it.bus).put("id", it.id).put("signal", it.signal) }))
+            // a plotted Decode suggestion isn't in any DBC: it can't come back
+            .put("plots", JSONArray(plot.keys.filter { it !in plot.unsaved }.map { JSONObject().put("bus", it.bus).put("id", it.id).put("signal", it.signal) }))
             .put("markers", JSONArray(trace.markers.map { JSONObject().put("time", it.time).put("note", it.note) }))
             .put("cursor", trace.cursorNow).put("markA", trace.markA ?: JSONObject.NULL).put("markB", trace.markB ?: JSONObject.NULL)
             .put("filter", trace.filter).put("fixed", trace.fixed)
             .put("overlay", plot.overlay).put("sharedScale", plot.sharedScale)
             .put("viewStart", plot.view.start.toDouble()).put("viewEnd", plot.view.end.toDouble())
         runCatching { file(current).writeWhole(json.toString()) }
+        runCatching { releaseUnused() }
+    }
+
+    /** Gives back the lasting access to documents no session opens and no DBC is saved to (Android allows only so many). */
+    private fun releaseUnused() {
+        val keep = HashSet<String>()
+        for (name in names) {
+            val json = runCatching { JSONObject(file(name).readText()) }.getOrNull() ?: continue
+            for (key in listOf("logs", "merged")) json.optJSONArray(key)?.let { list -> for (i in 0 until list.length()) keep += list.getString(i) }
+        }
+        for ((key, value) in preferences.all) if (key.startsWith("uri:") && value is String) keep += value
+        val resolver = context.contentResolver
+        for (grant in resolver.persistedUriPermissions) {
+            if (grant.uri.toString() in keep) continue
+            val flags = (if (grant.isReadPermission) Intent.FLAG_GRANT_READ_URI_PERMISSION else 0) or (if (grant.isWritePermission) Intent.FLAG_GRANT_WRITE_URI_PERMISSION else 0)
+            runCatching { resolver.releasePersistableUriPermission(grant.uri, flags) }
+        }
     }
 
     /** Saves the session in use and opens [name]. */
