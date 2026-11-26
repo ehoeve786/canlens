@@ -54,20 +54,37 @@ class SessionState(private val model: AppModel, context: Context, private val pr
 
     private fun file(name: String) = File(folder, "$name.json")
 
+    /**
+     * False while the app holds nothing of the session in use: it started without reopening it (the setting is off, or
+     * its logs crashed the app last time). Leaving the app then must not write the empty workspace over the saved one;
+     * once a log is opened or recorded, that is the session again.
+     */
+    private var holding = true
+
+    /**
+     * Where the open part of a log too big to load at once starts (source clock, the `from` of [AppModel.openLogs]);
+     * null when the logs were loaded from their start. Set by [AppModel] whenever logs are opened, closed or a stream starts.
+     */
+    var part: Long? = null
+
     fun save() {
         if (model.busy) return   // half-loaded data is not the session
+        if (!holding && model.logs.isEmpty() && model.live.recorded == null) return
+        holding = true
         val trace = model.trace
         val plot = model.plot
         val json = JSONObject()
             .put("logs", JSONArray(model.logs.ifEmpty { listOfNotNull(model.live.recorded) }.map { it.toString() }))
             .put("merged", JSONArray(model.mergedLogs.map { it.toString() }))
+            // the markers' times are in the part's own: the same part comes back
+            .put("from", part?.takeIf { model.logs.isNotEmpty() } ?: JSONObject.NULL)
             .put("plots", JSONArray(plot.keys.map { JSONObject().put("bus", it.bus).put("id", it.id).put("signal", it.signal) }))
             .put("markers", JSONArray(trace.markers.map { JSONObject().put("time", it.time).put("note", it.note) }))
             .put("cursor", trace.cursorNow).put("markA", trace.markA ?: JSONObject.NULL).put("markB", trace.markB ?: JSONObject.NULL)
             .put("filter", trace.filter).put("fixed", trace.fixed)
             .put("overlay", plot.overlay).put("sharedScale", plot.sharedScale)
             .put("viewStart", plot.view.start.toDouble()).put("viewEnd", plot.view.end.toDouble())
-        runCatching { file(current).writeText(json.toString()) }
+        runCatching { file(current).writeWhole(json.toString()) }
     }
 
     /** Saves the session in use and opens [name]. */
@@ -87,6 +104,9 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         names += clean
         names.sort()
         model.closeLogs()
+        val trace = model.trace
+        val plot = model.plot
+        trace.filter = ""; trace.fixed = false; plot.overlay = false; plot.sharedScale = false
         save()
     }
 
@@ -100,16 +120,17 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         load(false)
     }
 
-    /** Whether the app reopens the session's logs when it starts; off, it starts empty (the session's settings stay saved). */
+    /** Whether the app reopens the session's logs when it starts; off, it starts empty and the saved session is left as it is until a log is opened. */
     var reopenAtStart by mutableStateOf(preferences.getBoolean("reopenAtStart", true))
         private set
 
     fun setReopen(on: Boolean) { reopenAtStart = on; preferences.edit().putBoolean("reopenAtStart", on).apply() }
 
     /** At the start of the app: the session it was left in. */
-    fun restore() { if (reopenAtStart) load(true) }
+    fun restore() { if (reopenAtStart) load(true) else holding = false }
 
     private fun use(name: String) {
+        holding = true
         current = name
         preferences.edit().putString("session", name).apply()
     }
@@ -122,13 +143,15 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         // a log that crashed the app while it was reopened at the start is not tried again
         if (starting && preferences.getBoolean(RESTORING, false)) {
             preferences.edit().putBoolean(RESTORING, false).apply()
+            holding = false
             return
         }
         val settle = { apply(json); preferences.edit().putBoolean(RESTORING, false).apply() }
         if (logs.isEmpty()) { if (!starting) model.closeLogs(); settle(); return }
         if (starting) preferences.edit().putBoolean(RESTORING, true).commit()
         val merged = uris("merged")
-        model.openLogs(logs) { if (merged.isEmpty() || model.store.frameCount == 0L) settle() else model.mergeLogs(merged, settle) }
+        val from = if (json.isNull("from")) null else json.optLong("from")
+        model.openLogs(logs, from) { if (merged.isEmpty() || model.store.frameCount == 0L) settle() else model.mergeLogs(merged, settle) }
     }
 
     /** Puts back what was set up; runs after the session's logs are loaded, when every part has been reset for them. */

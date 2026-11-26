@@ -25,7 +25,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileNotFoundException
 import java.io.IOException
+import java.security.MessageDigest
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * A DBC in use and the bus it decodes ([ALL_BUSES] for every bus). Kept as a private copy in the app's files, and every
@@ -58,7 +61,7 @@ class DbcState(
     val files = mutableStateListOf<LoadedDbc>()
 
     init {
-        for (file in folder.listFiles().orEmpty().sortedBy { it.name }) {
+        for (file in folder.listFiles().orEmpty().filterNot { it.name.endsWith(PART_FILE) }.sortedBy { it.name }) {
             runCatching { files += LoadedDbc(Dbc.parse(file.readText(), file.name), preferences.getInt("bus:" + file.name, ALL_BUSES)) }
         }
     }
@@ -69,20 +72,23 @@ class DbcState(
         if (source == PhoneSensors.PHONE_BUS) return PhoneSensors.DBC.messages[id]
         if (source == OpenpilotBus.BUS) return OpenpilotBus.DBC.messages[id]
         return files.firstOrNull { it.bus == source && id in it.dbc.messages }?.dbc?.messages?.get(id)
-            ?: files.firstOrNull { it.bus == ALL_BUSES }?.dbc?.messages?.get(id)
+            ?: files.firstOrNull { it.bus == ALL_BUSES && id in it.dbc.messages }?.dbc?.messages?.get(id)
     }
 
     fun open(uri: Uri) {
         scope.launch {
             try {
                 val name = context.displayName(uri).replace('/', '_')
-                val text = withContext(Dispatchers.IO) { (context.contentResolver.openInputStream(uri) ?: throw IOException("Can't open $name")).use { it.readBytes().toString(Charsets.ISO_8859_1) } }
+                val bytes = withContext(Dispatchers.IO) { (context.contentResolver.openInputStream(uri) ?: throw IOException("Can't open $name")).use { it.readBytes() } }
+                val text = bytes.toString(Charsets.ISO_8859_1)
                 val dbc = Dbc.parse(text, name)
                 if (dbc.messages.isEmpty()) throw IOException("$name has no messages")
-                withContext(Dispatchers.IO) { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
-                // changes go back to this file, also after a restart
+                withContext(Dispatchers.IO) { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
+                // changes go back to this file, also after a restart, as long as nothing else changed it
                 runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
-                    .fold({ preferences.edit().putString("uri:$name", uri.toString()) }, { preferences.edit().remove("uri:$name") }).apply()
+                    .fold({ preferences.edit().putString("uri:$name", uri.toString()).putString("seen:$name", fingerprint(bytes)) }, { preferences.edit().remove("uri:$name").remove("seen:$name") }).apply()
+                // the app's earlier versions of a file by this name are not this one's
+                forget(name)
                 files.removeAll { it.dbc.name == name }
                 files += LoadedDbc(dbc, preferences.getInt("bus:$name", ALL_BUSES))
             } catch (e: Exception) {
@@ -100,7 +106,16 @@ class DbcState(
     fun remove(index: Int) {
         val old = files.removeAt(index)
         File(folder, old.dbc.name).delete()
-        preferences.edit().remove("bus:" + old.dbc.name).remove("uri:" + old.dbc.name).apply()
+        preferences.edit().remove("bus:" + old.dbc.name).remove("uri:" + old.dbc.name).remove("seen:" + old.dbc.name).apply()
+        // Undo doesn't bring a removed DBC back
+        forget(old.dbc.name)
+    }
+
+    /** Takes [name] out of the history, and backs it up again before its next change. */
+    private fun forget(name: String) {
+        history.removeAll { it.first == name }
+        canUndo = history.isNotEmpty()
+        backedUp.remove(name)
     }
 
     fun export(index: Int, uri: Uri) {
@@ -122,7 +137,9 @@ class DbcState(
         dbc = dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, signal)
         if (replaces != null && replaces != signal.name) {
             val at = plots.indexOf(PlotKey(message.bus, message.id, replaces))
-            if (at >= 0) plots[at] = PlotKey(message.bus, message.id, signal.name)
+            val renamed = PlotKey(message.bus, message.id, signal.name)
+            // a plot keeps one key per signal: if the new name was plotted already, the old one's plot goes
+            if (at >= 0) { if (renamed in plots) plots.removeAt(at) else plots[at] = renamed }
         }
         replace(index, LoadedDbc(dbc, old.bus))
     }
@@ -208,13 +225,37 @@ class DbcState(
         preferences.edit().putInt("bus:" + value.dbc.name, value.bus).apply()
         val text = value.dbc.write()
         val name = value.dbc.name
+        val first = backedUp.add(name)
         scope.launch(io) {
-            if (backedUp.add(name)) runCatching { backUp(name) }
-            runCatching { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
-            runCatching { (context.contentResolver.openOutputStream(outside(name), "wt") ?: throw IOException()).use { it.write(text.toByteArray(Charsets.ISO_8859_1)) } }
-                .onFailure { preferences.edit().remove("uri:$name").apply(); withContext(Dispatchers.Main) { report("$name: only saved inside the app this time (${it.message ?: "can't write the file"})") } }
+            if (first) runCatching { backUp(name) }
+            runCatching { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
+            val bytes = text.toByteArray(Charsets.ISO_8859_1)
+            try {
+                var uri = outside(name)
+                // changed by something else since the app read or wrote it: that stays, the app's version goes to a new copy
+                val changed = changedOutside(name, uri)
+                if (changed) { preferences.edit().remove("uri:$name").remove("seen:$name").apply(); uri = outside(name) }
+                (context.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("can't write the file")).use { it.write(bytes) }
+                preferences.edit().putString("seen:$name", fingerprint(bytes)).apply()
+                if (changed) withContext(Dispatchers.Main) { report("$name was changed outside the app, so it was left as it is: the app's version is in a new copy in Download/CANLens/dbc/") }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                // gone, or no longer allowed: the next change goes to a new copy; anything else may pass, the file is kept
+                val lost = e is SecurityException || e is FileNotFoundException
+                if (lost) preferences.edit().remove("uri:$name").remove("seen:$name").apply()
+                withContext(Dispatchers.Main) { report("$name: only saved inside the app this time (${e.message ?: "can't write the file"})") }
+            }
         }
     }
+
+    /** Whether the file at [uri] differs from what the app last read from it or wrote to it; false when that isn't known. */
+    private fun changedOutside(name: String, uri: Uri): Boolean {
+        val seen = preferences.getString("seen:$name", null) ?: return false
+        val now = (context.contentResolver.openInputStream(uri) ?: throw IOException("can't read the file")).use { it.readBytes() }
+        return fingerprint(now) != seen
+    }
+
+    private fun fingerprint(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
     /**
      * Copies [name] as it is before this run's first change to `Download/CANLens/dbc/history/`, under its name and

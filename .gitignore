@@ -5,3 +5,9 @@ local.properties
 *.iml
 .kotlin/
 captures/
+*.apk
+*.aab
+*.jks
+.cxx/
+.DS_Store
+.claude/worktrees/

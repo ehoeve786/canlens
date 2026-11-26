@@ -321,11 +321,20 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onClose) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Live stream", style = MaterialTheme.typography.titleLarge)
-            // GPS needs location permission; motion, heading, light and pressure don't
-            val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+            // GPS needs precise location; motion, heading, light and pressure need nothing, so the sensors stay on either way.
+            // Android 12 and up ignore a request for precise location without approximate in it.
+            var gpsNote by remember { mutableStateOf<String?>(null) }
+            val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+                gpsNote = when {
+                    granted[Manifest.permission.ACCESS_FINE_LOCATION] == true -> null
+                    granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true -> "Approximate location only: no GPS speed. Allow precise location for it."
+                    else -> "No location access: no GPS speed. The other sensors still work."
+                }
+            }
             Row(Modifier.fillMaxWidth().toggleable(model.live.phoneSensors, role = Role.Switch) {
                 model.live.phoneSensors = it
-                if (it && context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) location.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+                if (it && context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                    location.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
             }, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("Add the phone's sensors")
@@ -333,6 +342,7 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
                 }
                 Switch(model.live.phoneSensors, null)
             }
+            if (model.live.phoneSensors) gpsNote?.let { Hint(it) }
             SectionTitle("comma over Wi-Fi")
             OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
                 placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
@@ -414,7 +424,7 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                 FilterChip(selected = model.trace.markB != null, onClick = { model.trace.markB = model.trace.cursorNow }, label = { Text(model.trace.markB?.let { "B  %.2f".format(seconds(it)) } ?: "Mark B") })
                 if (model.trace.markA != null || model.trace.markB != null) IconButton(onClick = { model.trace.markA = null; model.trace.markB = null }) { Icon(Icons.Default.Close, "Clear marks") }
                 if (model.live.source != LiveSource.NONE && !model.trace.followLive) AssistChip(onClick = { model.trace.followLive = true }, label = { Text("Now") })
-                AssistChip(onClick = { pending = model.beginMarker() }, label = { Text("Marker") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
+                AssistChip(onClick = { pending = model.beginMarker(atCursor = true) }, label = { Text("Marker") }, leadingIcon = { Icon(Icons.Default.Add, null, Modifier.size(18.dp)) })
                 if (model.live.source != LiveSource.NONE) FilterChip(selected = model.live.recording != null, onClick = { model.live.setRecording(model.live.recording == null) }, label = { Text("Record") },
                     leadingIcon = { Box(Modifier.size(10.dp).clip(CircleShape).background(RECORDING)) })
                 if (model.trace.markers.isNotEmpty()) AssistChip(onClick = { showMarkers = true }, label = { Text("Markers · ${model.trace.markers.size}") })

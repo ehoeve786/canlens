@@ -40,12 +40,41 @@ object Analysis {
      * comes out a little off because the samples are; the real encoding almost never is.
      */
     fun tidy(factor: Double, offset: Double): Pair<Double, Double> {
-        if (factor == 0.0 || factor.isNaN()) return factor to offset
-        val magnitude = Math.pow(10.0, Math.floor(Math.log10(abs(factor))))
-        val round = doubleArrayOf(1.0, 2.0, 2.5, 5.0, 10.0).map { it * magnitude * Math.signum(factor) }.minBy { abs(it - factor) }
-        if (abs(round - factor) > abs(round) * 0.03) return factor to offset
+        val round = roundFactor(factor) ?: return factor to offset
         val whole = Math.rint(offset)
         return round to (if (abs(offset - whole) <= abs(round)) whole else offset)
+    }
+
+    /** The round factor within 3 % of [factor] (as in [tidy]), or null when there is none. */
+    internal fun roundFactor(factor: Double): Double? {
+        if (factor == 0.0 || factor.isNaN() || factor.isInfinite()) return null
+        val magnitude = Math.pow(10.0, Math.floor(Math.log10(abs(factor))))
+        val round = doubleArrayOf(1.0, 2.0, 2.5, 5.0, 10.0).map { it * magnitude * Math.signum(factor) }.minBy { abs(it - factor) }
+        return if (abs(round - factor) > abs(round) * 0.03) null else round
+    }
+
+    /**
+     * [tidy], kept only where the rounded scale still fits the samples [x] to [y] (those [valid] marks, all when null):
+     * its RMS error at most 2 % of [y]'s spread above the fitted one's. Rounding the factor moves every value by its
+     * distance from zero, which can be far more than the fit allows. Else the fit as it came.
+     */
+    internal fun tidyChecked(factor: Double, offset: Double, x: DoubleArray, y: DoubleArray, valid: BooleanArray? = null): Pair<Double, Double> {
+        val tidied = tidy(factor, offset)
+        if (tidied.first == factor && tidied.second == offset) return tidied
+        var n = 0
+        var mean = 0.0
+        for (k in x.indices) if (valid == null || valid[k]) { n++; mean += y[k] }
+        if (n == 0) return tidied
+        mean /= n
+        var spread = 0.0
+        var fitted = 0.0
+        var rounded = 0.0
+        for (k in x.indices) if (valid == null || valid[k]) {
+            spread += (y[k] - mean) * (y[k] - mean)
+            fitted += (x[k] * factor + offset - y[k]).let { it * it }
+            rounded += (x[k] * tidied.first + tidied.second - y[k]).let { it * it }
+        }
+        return if (sqrt(rounded / n) <= sqrt(fitted / n) + 0.02 * sqrt(spread / n)) tidied else factor to offset
     }
 
     private fun named(found: Signal, factor: Double, offset: Double) =
@@ -160,7 +189,7 @@ object Analysis {
                 if (spreadX < 1e-12) continue
                 val r = together / sqrt(spreadX * spreadY)
                 if (abs(r) < minimum) continue
-                val (factor, offset) = tidy(together / spreadX, meanY - together / spreadX * meanX)
+                val (factor, offset) = tidyChecked(together / spreadX, meanY - together / spreadX * meanX, x, y, valid)
                 found += FieldMatch(snapshots.messages[m], named(candidate, factor, offset), abs(r))
             }
         }
@@ -188,16 +217,25 @@ object Analysis {
             bit++
         }
         val result = ArrayList<Signal>()
-        for (segment in joinCarries(segments, store.payloads(message), null)) {
+        // the frames are read once and every segment decoded from them (shorter frames are zero-padded)
+        val p = store.payloads(message)
+        for (segment in joinCarries(segments, p, null)) {
             val start = segment.start
             val size = segment.size
             val plain = Signal("FIELD_$start", start, size, true, false, 1.0, 0.0, "", -1, false)
-            val series = store.series(message, DbcMessage(message.id, "", 0, listOf(plain)), plain)
             var steps = 0
-            // a counter may wrap from below its field's top (0..14): from the highest value seen back to 0 counts as a step
-            val highest = (0 until series.size).maxOfOrNull { series.values[it] } ?: 0f
-            if (size in 2..8) for (i in 1 until series.size) if ((series.values[i] - series.values[i - 1]).toInt() and ((1 shl size) - 1) == 1 || (series.values[i] == 0f && series.values[i - 1] == highest)) steps++
-            val counter = size in 2..8 && series.size >= 8 && steps >= (series.size - 1) * 0.9
+            if (size in 2..8 && p.size >= 8) {
+                // a counter may wrap from below its field's top (0..14): from the highest value seen back to 0 counts as a step
+                var highest = 0L
+                for (k in 0 until p.size) highest = maxOf(highest, plain.raw(p.data, k * p.length))
+                var previous = plain.raw(p.data, 0)
+                for (k in 1 until p.size) {
+                    val value = plain.raw(p.data, k * p.length)
+                    if ((value - previous).toInt() and ((1 shl size) - 1) == 1 || (value == 0L && previous == highest)) steps++
+                    previous = value
+                }
+            }
+            val counter = size in 2..8 && p.size >= 8 && steps >= (p.size - 1) * 0.9
             val checksum = !counter && size == 8 && start % 8 == 0 && activity.frames >= 8 &&
                 (start until start + 8).all { flips[it] in (activity.frames * 0.3).toInt()..(activity.frames * 0.7).toInt() }
             result += if (counter || checksum) Signal((if (counter) "COUNTER_" else "CHECKSUM_") + start, start, size, true, false, 1.0, 0.0, "", -1, false) else plain
@@ -294,19 +332,104 @@ object Analysis {
         }
         walk { m, b, time -> if (m == message.index && b == bit) times += time }
         if (times.size < 2) return emptyList()
-        val together = HashMap<Long, Int>()
-        val all = HashMap<Long, Int>()
+        // counters per bit of every message, key = message * BITS + bit: plain arrays while they are small enough, else maps
+        val slots = known.size.toLong() * BITS
+        val dense = slots <= DENSE_SLOTS
+        val togetherCounts = if (dense) IntArray(slots.toInt()) else null
+        val allCounts = if (dense) IntArray(slots.toInt()) else null
+        val togetherMap = if (dense) null else HashMap<Int, Int>()
+        val allMap = if (dense) null else HashMap<Int, Int>()
+        val stamps = times.toIntArray()
         walk { m, b, time ->
             if (m == message.index && b == bit) return@walk
-            val key = m.toLong() shl 16 or b.toLong()
-            all[key] = (all[key] ?: 0) + 1
-            var at = times.binarySearch(time)
+            val key = m * BITS + b
+            var at = java.util.Arrays.binarySearch(stamps, time)
             if (at < 0) at = -at - 1
-            if ((at < times.size && times[at] - time <= window) || (at > 0 && time - times[at - 1] <= window)) together[key] = (together[key] ?: 0) + 1
+            val near = (at < stamps.size && stamps[at] - time <= window) || (at > 0 && time - stamps[at - 1] <= window)
+            if (dense) {
+                allCounts!![key]++
+                if (near) togetherCounts!![key]++
+            } else {
+                allMap!![key] = (allMap[key] ?: 0) + 1
+                if (near) togetherMap!![key] = (togetherMap[key] ?: 0) + 1
+            }
         }
-        return together.entries.filter { it.value >= 2 }
-            .map { (key, hits) -> SimilarBit(known[(key shr 16).toInt()], (key and 0xFFFF).toInt(), minOf(hits, times.size).toDouble() / (all[key]!! + times.size - minOf(hits, times.size))) }
-            .filter { it.score >= 0.3 }.sortedByDescending { it.score }.take(limit)
+        val found = ArrayList<SimilarBit>()
+        fun add(key: Int, hits: Int, all: Int) {
+            if (hits < 2) return
+            val score = minOf(hits, stamps.size).toDouble() / (all + stamps.size - minOf(hits, stamps.size))
+            if (score >= 0.3) found += SimilarBit(known[key / BITS], key % BITS, score)
+        }
+        if (dense) { for (key in togetherCounts!!.indices) if (togetherCounts[key] >= 2) add(key, togetherCounts[key], allCounts!![key]) }
+        else for ((key, hits) in togetherMap!!) add(key, hits, allMap!![key]!!)
+        return found.sortedByDescending { it.score }.take(limit)
+    }
+
+    private const val BITS = FrameStore.MAX_PAYLOAD * 8
+    /** Counters [similarBits] keeps in two arrays rather than maps: 8 MB each, enough for 4096 messages. */
+    private const val DENSE_SLOTS = 2L shl 20
+
+    /** Payload bytes [batches] lets be loaded at once: a whole long log's frames would not fit a phone's heap. */
+    const val BATCH_BYTES = 64L shl 20
+
+    /** What loading [message]'s frames as [FrameStore.Payloads] takes, with [held] frames in the store. */
+    private fun payloadBytes(message: FrameStore.Message, held: Long) = minOf(message.count, held) * (message.data.size.coerceAtLeast(1) + 4)
+
+    /**
+     * [groups] of messages that are looked at together, cut into runs whose frames take at most [budget] bytes as
+     * payloads (a bigger group is a run by itself), so a run can be loaded with [payloads] in one pass.
+     */
+    fun batches(store: FrameStore, groups: List<List<FrameStore.Message>>, budget: Long = BATCH_BYTES): List<List<List<FrameStore.Message>>> {
+        val held = store.chunks.sumOf { it.size.toLong() }
+        val result = ArrayList<List<List<FrameStore.Message>>>()
+        var run = ArrayList<List<FrameStore.Message>>()
+        var bytes = 0L
+        for (group in groups) {
+            val size = group.sumOf { payloadBytes(it, held) }
+            if (run.isNotEmpty() && bytes + size > budget) { result += run; run = ArrayList(); bytes = 0 }
+            run += group
+            bytes += size
+        }
+        if (run.isNotEmpty()) result += run
+        return result
+    }
+
+    /** [FrameStore.payloads] of each of [messages], by message index, in one pass over the store. */
+    fun payloads(store: FrameStore, messages: Collection<FrameStore.Message>): HashMap<Int, FrameStore.Payloads> {
+        val chunks = store.chunks
+        val held = chunks.sumOf { it.size.toLong() }
+        val list = messages.toList()
+        val slot = IntArray((list.maxOfOrNull { it.index } ?: -1) + 1) { -1 }
+        val lengths = IntArray(list.size)
+        val times = arrayOfNulls<IntArray>(list.size)
+        val data = arrayOfNulls<ByteArray>(list.size)
+        val n = IntArray(list.size)
+        for ((s, message) in list.withIndex()) {
+            slot[message.index] = s
+            lengths[s] = message.data.size.coerceAtLeast(1)
+            // its frame count is right for a log; a live store may have dropped some, and frames may still arrive
+            val capacity = minOf(message.count, held, (Int.MAX_VALUE / lengths[s]).toLong()).toInt().coerceAtLeast(16)
+            times[s] = IntArray(capacity)
+            data[s] = ByteArray(capacity * lengths[s])
+        }
+        for (chunk in chunks) {
+            val size = chunk.size
+            for (i in 0 until size) {
+                val m = chunk.message[i].toInt() and 0xFFFF
+                if (m >= slot.size) continue
+                val s = slot[m]
+                if (s < 0) continue
+                val length = lengths[s]
+                var t = times[s]!!
+                if (n[s] == t.size) { t = t.copyOf(n[s] * 2); times[s] = t; data[s] = data[s]!!.copyOf(n[s] * 2 * length) }
+                val start = chunk.start(i)
+                System.arraycopy(chunk.blob, start, data[s]!!, n[s] * length, minOf(length, chunk.end[i] - start))
+                t[n[s]++] = chunk.time[i]
+            }
+        }
+        val result = HashMap<Int, FrameStore.Payloads>(list.size * 2)
+        for ((s, message) in list.withIndex()) result[message.index] = FrameStore.Payloads(times[s]!!, data[s]!!, lengths[s], n[s])
+        return result
     }
 
     /** Lowest, highest and average value of [series] between [from] and [to] (seconds), and how often it changed; null without samples. */

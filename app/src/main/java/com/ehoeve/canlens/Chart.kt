@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,6 +26,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
@@ -39,6 +41,8 @@ import androidx.compose.ui.unit.dp
 import com.ehoeve.canlens.core.FrameStore
 import com.ehoeve.canlens.core.Signal
 import kotlin.math.abs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** The time range (seconds) the charts of one message show; they zoom and pan together. */
 class ChartView(private val first: Float, private val last: Float) {
@@ -64,6 +68,27 @@ class ChartView(private val first: Float, private val last: Float) {
 
 /** First index in times[0 until size] with a value >= [t]. */
 private fun lowerBound(times: FloatArray, size: Int, t: Float): Int {
+    var low = 0
+    var high = size
+    while (low < high) {
+        val mid = (low + high) ushr 1
+        if (times[mid] < t) low = mid + 1 else high = mid
+    }
+    return low
+}
+
+/** The first index of [times] after [t]: one less is the last sample at or before it. */
+private fun upperBound(times: FloatArray, size: Int, t: Float): Int {
+    var low = 0
+    var high = size
+    while (low < high) {
+        val mid = (low + high) ushr 1
+        if (times[mid] <= t) low = mid + 1 else high = mid
+    }
+    return low
+}
+
+private fun lowerBound(times: IntArray, size: Int, t: Int): Int {
     var low = 0
     var high = size
     while (low < high) {
@@ -141,7 +166,11 @@ private fun DrawScope.drawSeries(series: FrameStore.Series, color: Color, view: 
             val c = x(times[i]).toInt()
             val v = values[i]
             if (c != column) {
-                if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+                if (column != Int.MIN_VALUE) {
+                    drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+                    // columns without a sample: the value holds until the next one, as in the steps above
+                    if (c > column + 1) drawLine(color, Offset(column.toFloat(), y(values[i - 1])), Offset(c.toFloat(), y(values[i - 1])))
+                }
                 column = c
                 // start from the previous value so neighbouring columns join up
                 columnLow = if (i > from) minOf(v, values[i - 1]) else v
@@ -151,7 +180,12 @@ private fun DrawScope.drawSeries(series: FrameStore.Series, color: Color, view: 
                 if (v > columnHigh) columnHigh = v
             }
         }
-        if (column != Int.MIN_VALUE) drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+        if (column != Int.MIN_VALUE) {
+            drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
+            // and the last value on to the right edge
+            val end = minOf(width, x(view.end))
+            if (end > column + 1) drawLine(color, Offset(column.toFloat(), y(values[to - 1])), Offset(end, y(values[to - 1])))
+        }
     }
 }
 
@@ -196,7 +230,7 @@ fun Chart(
             canvas.drawText(number(range.endInclusive), size.width - 12f, text.textSize + 6f, text)
             canvas.drawText(number(range.start), size.width - 12f, size.height - 8f, text)
             // the value under the cursor: the last sample at or before it
-            val at = lowerBound(series.times, n, cursor + 1e-6f) - 1
+            val at = upperBound(series.times, n, cursor) - 1
             if (labels && at >= 0) canvas.drawText(number(series.values[at]), size.width - 12f, size.height / 2, text)
         }
         text.textAlign = Paint.Align.LEFT
@@ -233,9 +267,10 @@ fun OverlayChart(
     }
 }
 
-private fun number(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && abs(v) < 1e7f) v.toInt().toString() else "%.3f".format(v)
+private fun number(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && abs(v) < 1e7f) v.toInt().toString() else "%.4g".format(v)
 
 private const val STRIP_COLUMNS = 320
+private const val STRIP_FRAMES_PER_COLUMN = 512
 
 /**
  * The payload of one message over time: a column per moment, a row per bit (byte 0 on top, its bit 7 first). Set bits
@@ -247,30 +282,40 @@ fun HistoryStrip(payloads: FrameStore.Payloads?, signals: List<Signal>, view: Ch
     val rows = payloads.length * 8
     val start = view.start
     val end = view.end
-    val image = remember(payloads, signals, start, end) {
-        val pixels = IntArray(STRIP_COLUMNS * rows)
-        val lit = IntArray(rows) { row ->
-            val bit = row / 8 * 8 + 7 - row % 8
-            val owner = signals.indexOfFirst { bit in it.bits }
-            if (owner >= 0) SIGNAL_COLORS[owner % SIGNAL_COLORS.size].toArgb() else 0xFF90A4AE.toInt()
-        }
-        for (column in 0 until STRIP_COLUMNS) {
-            val time = ticks(start + (column + 0.5f) / STRIP_COLUMNS * (end - start))
-            // the last frame at or before this column's time
-            var low = 0
-            var high = payloads.size
-            while (low < high) { val mid = (low + high) ushr 1; if (payloads.times[mid] <= time) low = mid + 1 else high = mid }
-            val frame = low - 1
-            if (frame < 0) continue
-            for (row in 0 until rows) {
-                val set = payloads.data[frame * payloads.length + row / 8].toInt() shr (7 - row % 8) and 1 == 1
-                pixels[row * STRIP_COLUMNS + column] = if (set) lit[row] else 0xFF1B2126.toInt()
+    val image by produceState<ImageBitmap?>(null, payloads, signals, start, end) {
+        value = withContext(Dispatchers.Default) {
+            val pixels = IntArray(STRIP_COLUMNS * rows)
+            val lit = IntArray(rows) { row ->
+                val bit = row / 8 * 8 + 7 - row % 8
+                val owner = signals.indexOfFirst { bit in it.bits }
+                if (owner >= 0) SIGNAL_COLORS[owner % SIGNAL_COLORS.size].toArgb() else 0xFF90A4AE.toInt()
             }
+            val length = payloads.length
+            val bytes = IntArray(length)
+            for (column in 0 until STRIP_COLUMNS) {
+                // a bit is lit when it was set in any frame of the column's stretch of time
+                val first = lowerBound(payloads.times, payloads.size, ticks(start + column.toFloat() / STRIP_COLUMNS * (end - start)))
+                val last = lowerBound(payloads.times, payloads.size, ticks(start + (column + 1f) / STRIP_COLUMNS * (end - start)))
+                java.util.Arrays.fill(bytes, 0)
+                if (first < last) {
+                    // zoomed far out, a column reads at most STRIP_FRAMES_PER_COLUMN of its frames, evenly spread
+                    val stride = (last - first + STRIP_FRAMES_PER_COLUMN - 1) / STRIP_FRAMES_PER_COLUMN
+                    for (frame in first until last step stride) for (b in 0 until length) bytes[b] = bytes[b] or payloads.data[frame * length + b].toInt()
+                } else {
+                    // none in it: the frame before holds
+                    if (first == 0) continue
+                    for (b in 0 until length) bytes[b] = payloads.data[(first - 1) * length + b].toInt()
+                }
+                for (row in 0 until rows) {
+                    val set = bytes[row / 8] shr (7 - row % 8) and 1 == 1
+                    pixels[row * STRIP_COLUMNS + column] = if (set) lit[row] else 0xFF1B2126.toInt()
+                }
+            }
+            Bitmap.createBitmap(pixels, STRIP_COLUMNS, rows, Bitmap.Config.ARGB_8888).asImageBitmap()
         }
-        Bitmap.createBitmap(pixels, STRIP_COLUMNS, rows, Bitmap.Config.ARGB_8888).asImageBitmap()
     }
     Canvas(Modifier.fillMaxWidth().height((rows * 2).coerceIn(48, 128).dp).clip(RoundedCornerShape(10.dp)).background(Color(0xFF151A1E)).timeGestures(view, onCursor, onMoved)) {
-        drawImage(image, dstSize = IntSize(size.width.toInt(), size.height.toInt()), filterQuality = FilterQuality.None)
+        image?.let { drawImage(it, dstSize = IntSize(size.width.toInt(), size.height.toInt()), filterQuality = FilterQuality.None) }
         val cursorX = (cursor - start) / (end - start) * size.width
         if (cursorX in 0f..size.width) drawLine(Color.White, Offset(cursorX, 0f), Offset(cursorX, size.height))
     }

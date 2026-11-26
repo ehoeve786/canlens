@@ -18,60 +18,106 @@ object AutoDecode {
      * the frames seen (same length), which keeps another bus's message with the same id out.
      */
     fun fromCommunity(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, community: List<Pair<String, Dbc>>): List<Suggestion> {
+        val messages = store.messages
+        val asked = messages.filterTo(HashSet()) { message -> message.bus < 128 && message.data.isNotEmpty() && community.any { message.id in it.second.messages } }
+        val ids = asked.mapTo(HashSet()) { it.id }
+        val found = arrayOfNulls<List<Suggestion>>(messages.size)
+        // an id's messages on all buses are loaded together, as they are compared (as in [run])
+        for (batch in Analysis.batches(store, messages.filter { it.id in ids }.groupBy { it.id }.values.toList())) {
+            val loaded = Analysis.payloads(store, batch.flatten())
+            for (group in batch) {
+                for (message in group) if (message in asked) found[message.index] = fromCommunity(message, group, loaded, known(message), community)
+                for (message in group) loaded.remove(message.index)
+            }
+        }
+        return found.flatMap { it.orEmpty() }
+    }
+
+    /** What [community] knows about [message], whose frames and those of the rest of its [group] are [loaded]; [mine] is its DBC entry. */
+    private fun fromCommunity(message: FrameStore.Message, group: List<FrameStore.Message>, loaded: Map<Int, FrameStore.Payloads>, mine: DbcMessage?, community: List<Pair<String, Dbc>>): List<Suggestion> {
         val result = ArrayList<Suggestion>()
-        // kept only for ids seen on several buses, where they are compared (as in [run])
-        val shared = store.messages.groupingBy { it.id }.eachCount()
-        val samples = HashMap<Int, FrameStore.Payloads>()
-        fun payloads(message: FrameStore.Message) = if ((shared[message.id] ?: 0) > 1) samples.getOrPut(message.index) { store.payloads(message) } else store.payloads(message)
-        for (message in store.messages) {
-            if (message.bus >= 128 || message.data.isEmpty() || community.none { message.id in it.second.messages }) continue
-            // the same frames on a lower bus too (the party bus is seen on 0 and 2): suggested there only
-            if (store.messages.any { it.id == message.id && it.bus < message.bus && copies(payloads(message), payloads(it)) }) continue
-            val mine = known(message)
-            val taken = HashSet<Int>().apply { mine?.signals?.forEach { addAll(it.bits.asList()) } }
-            // the first DBC that knows the message speaks for it: two files naming the same bits differently would only double the list
-            var answered = false
-            for ((source, dbc) in community) {
-                if (answered) break
-                val theirs = dbc.messages[message.id]?.takeIf { it.length == message.data.size } ?: continue
-                // Model3CAN names its messages ID<hex><name>
-                val name = theirs.name.removePrefix("ID%X".format(message.id)).ifEmpty { theirs.name }
-                // the frames have the last word: a signal they contradict is listed unticked with the reason, and a flag
-                // that is really part of a counter puts the whole layout in doubt (another model's message under this id)
-                val frames = payloads(message)
-                val misfits = theirs.signals.filter { it.fits(message.data.size) }.mapNotNull { signal -> misfit(signal, frames)?.let { signal to it } }
-                val layout = misfits.firstOrNull { it.second.startsWith("flips") }
-                for (signal in theirs.signals) {
-                    if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.message === message && it.signal.name == signal.name }) continue
-                    val why = misfits.firstOrNull { it.first === signal }?.second ?: layout?.let { "${it.first.name} ${it.second}, so this layout is not this car's" }
-                    result += Suggestion(message, signal, "From $source ($name)" + (why?.let { " · doesn't fit: $it" } ?: ""), if (why == null) 0.75 else 0.3, name)
-                    answered = true
-                }
+        val frames = loaded.getValue(message.index)
+        // the same frames on a lower bus too (the party bus is seen on 0 and 2): suggested there only
+        if (group.any { it.bus < message.bus && copies(frames, loaded.getValue(it.index)) }) return result
+        val taken = HashSet<Int>().apply { mine?.signals?.forEach { addAll(it.bits.asList()) } }
+        // the first DBC that knows the message speaks for it: two files naming the same bits differently would only double the list
+        var answered = false
+        for ((source, dbc) in community) {
+            if (answered) break
+            val theirs = dbc.messages[message.id]?.takeIf { it.length == message.data.size } ?: continue
+            // Model3CAN names its messages ID<hex><name>
+            val name = theirs.name.removePrefix("ID%X".format(message.id)).ifEmpty { theirs.name }
+            // the frames have the last word: a signal they contradict is listed unticked with the reason, and a flag
+            // that is really part of a counter puts the whole layout in doubt (another model's message under this id)
+            val misfits = theirs.signals.filter { it.fits(message.data.size) }.mapNotNull { signal -> misfit(signal, frames)?.let { signal to it } }
+            val layout = misfits.firstOrNull { it.second.startsWith("flips") }
+            for (signal in theirs.signals) {
+                if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.signal.name == signal.name }) continue
+                val why = misfits.firstOrNull { it.first === signal }?.second ?: layout?.let { "${it.first.name} ${it.second}, so this layout is not this car's" }
+                result += Suggestion(message, signal, "From $source ($name)" + (why?.let { " · doesn't fit: $it" } ?: ""), if (why == null) 0.75 else 0.3, name)
+                answered = true
             }
         }
         return result
     }
 
-    /** A marker note that is a number read off the car: "range=312", "soc = 78.5". */
-    val READING = Regex("""^(.+?)\s*=\s*(-?\d+(?:\.\d+)?)$""")
+    /** A marker note that is a number read off the car: "range=312", "soc = 78.5", "temp = -3,5" (a decimal comma, and − or – for minus too). */
+    val READING = Regex("""^(.+?)\s*=\s*([-−–]?\d+(?:[.,]\d+)?)$""")
+
+    /** The name and value of a [READING] note, or null when it isn't one. */
+    fun reading(note: String): Pair<String, Double>? = READING.find(note)?.let { match ->
+        match.groupValues[1] to match.groupValues[2].replace('−', '-').replace('–', '-').replace(',', '.').toDouble()
+    }
 
     /**
      * Fields that carry the numbers the user read off the car's screen: [readings] has, by name, the moments and the
      * values. Five readings of at least four different values are asked for, since any field fits two or three; a
      * field counts when a factor and offset bring it within 2 % of the readings' span at every one of them.
+     * Readings that only rise or only fall, in step with the clock (a charge, a trip), are fitted just as well by any
+     * field that trends with time (an odometer, an energy counter): then a field only counts when a round factor and
+     * a whole offset fit, as the car's own encoding would, and it is listed as less sure.
      */
     fun fromReadings(store: FrameStore, known: (FrameStore.Message) -> DbcMessage?, readings: Map<String, List<Pair<Int, Double>>>): List<Suggestion> =
         readings.filter { (_, points) -> points.size >= 5 && points.map { it.second }.distinct().size >= 4 }.flatMap { (name, points) ->
-            val span = points.maxOf { it.second } - points.minOf { it.second }
-            Analysis.findByValue(store, points, span * 0.02, 3)
+            val sorted = points.sortedBy { it.first }
+            val wanted = DoubleArray(sorted.size) { sorted[it].second }
+            val tolerance = (wanted.max() - wanted.min()) * 0.02
+            val clockLike = followsTheClock(sorted, tolerance)
+            val matches = Analysis.findByValue(store, points, tolerance, 3)
                 .filter { match -> known(match.message)?.signals.orEmpty().none { signal -> signal.bits.any { it in match.signal.bits } } }
-                .map { match ->
-                    val found = match.signal
-                    val (factor, offset) = Analysis.tidy(found.factor, found.offset)
-                    Suggestion(match.message, Signal("READ_${name.uppercase().replace(Regex("\\W+"), "_")}_${found.start}", found.start, found.size, found.littleEndian, found.signed, factor, offset, "", -1, false),
-                        "Reads your ${points.size} readings of \"$name\" (${points.minOf { it.second }} to ${points.maxOf { it.second }})", 0.8)
-                }
+            // the fields' raw values at the readings, to check the rounded scale against
+            val snapshots = if (matches.isEmpty()) null else store.snapshots(IntArray(sorted.size) { sorted[it].first })
+            matches.mapNotNull { match ->
+                val found = match.signal
+                val m = match.message.index
+                val plain = Signal("", found.start, found.size, found.littleEndian, found.signed, 1.0, 0.0, "", -1, false)
+                val raw = DoubleArray(sorted.size) { k -> plain.physical(plain.raw(snapshots!!.data[m], k * snapshots.length[m])) }
+                fun fits(scale: Pair<Double, Double>) = raw.indices.all { abs(raw[it] * scale.first + scale.second - wanted[it]) <= tolerance }
+                val tidied = Analysis.tidy(found.factor, found.offset)
+                val tidyFits = fits(tidied)
+                if (clockLike && !(tidyFits && Analysis.roundFactor(found.factor) != null && tidied.second == Math.rint(tidied.second))) return@mapNotNull null
+                val (factor, offset) = if (tidyFits) tidied else found.factor to found.offset
+                Suggestion(match.message, Signal("READ_${name.uppercase().replace(Regex("\\W+"), "_")}_${found.start}", found.start, found.size, found.littleEndian, found.signed, factor, offset, "", -1, false),
+                    "Reads your ${points.size} readings of \"$name\" (${wanted.min()} to ${wanted.max()})" +
+                        (if (clockLike) " · they only rise or fall, in step with the time, which any trending field fits: kept for its round scale" else ""),
+                    if (clockLike) 0.6 else 0.8)
+            }
         }
+
+    /** True when [points] (in time order) only rise or only fall, and a straight line in time fits them within [tolerance]. */
+    private fun followsTheClock(points: List<Pair<Int, Double>>, tolerance: Double): Boolean {
+        val rising = (1 until points.size).all { points[it].second >= points[it - 1].second }
+        val falling = (1 until points.size).all { points[it].second <= points[it - 1].second }
+        if (!rising && !falling) return false
+        val meanT = points.sumOf { it.first.toDouble() } / points.size
+        val meanV = points.sumOf { it.second } / points.size
+        var tt = 0.0
+        var tv = 0.0
+        for ((t, v) in points) { tt += (t - meanT) * (t - meanT); tv += (t - meanT) * (v - meanV) }
+        if (tt < 1e-12) return false
+        val slope = tv / tt
+        return points.all { (t, v) -> abs(meanV + slope * (t - meanT) - v) <= tolerance }
+    }
 
     /**
      * Why [signal] can't be what frames [p] carry, or null: a flag or small state that changes in a quarter of the
@@ -109,6 +155,9 @@ object AutoDecode {
     private const val MIN_CHANGES = 5
     /** Frames a message needs before a page selector is looked for in it. */
     private const val MIN_PAGED = 64
+    /** Frames a page selector is looked for in at most, in stretches of this many consecutive ones. */
+    private const val MUX_FRAMES = 20_000
+    private const val MUX_STRETCH = 1000
 
     /**
      * [known] gives the DBC entry of a message, if any; its signals are left alone and used as references.
@@ -120,35 +169,17 @@ object AutoDecode {
         // flags and states that changed up to three times, with the times: what [events] groups
         val rare = HashMap<Suggestion, IntArray>()
         progress("Working out the layout of ${messages.size} messages")
-        // kept only for ids seen on several buses, where they are compared: a whole long log's payloads at once would not fit
-        val shared = messages.groupingBy { it.id }.eachCount()
-        val samples = HashMap<Int, FrameStore.Payloads>()
-        fun payloads(message: FrameStore.Message) = if ((shared[message.id] ?: 0) > 1) samples.getOrPut(message.index) { store.payloads(message) } else store.payloads(message)
-        for (message in messages) {
-            val payloads = payloads(message)
-            if (payloads.size < 4) continue
-            // the same id on a lower bus sending the same frames: a copy (forwarded, or a comma's echo of what it sent)
-            if (messages.any { it.id == message.id && it.bus < message.bus && copies(payloads, payloads(it)) }) continue
-            if (diagnostic(message, payloads)) continue
-            val free = BooleanArray(payloads.length * 8) { true }
-            val dbcMessage = known(message)
-            // a pipe carries conversations (ISO-TP over a private id): its bytes are content, not a layout
-            if (dbcMessage != null && PIPE.containsMatchIn(dbcMessage.name)) continue
-            dbcMessage?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
-            val first = result.size
-            checksums(message, payloads, free, result)
-            layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result, rare)
-            // a message has one counter: with one in the DBC, a second is page data that repeats in step with it
-            if (dbcMessage != null && dbcMessage.signals.any { "counter" in it.name.lowercase() })
-                for (i in result.size - 1 downTo first) if (result[i].signal.name.startsWith("COUNTER_")) result.removeAt(i)
-            // a known message's counter and checksum are called after it, as its maker does (DI_torqueCounter)
-            if (dbcMessage != null) for (i in first until result.size) {
-                val found = result[i]
-                val kind = when { found.signal.name.startsWith("COUNTER_") -> "Counter"; found.signal.name.startsWith("CHECKSUM_") -> "Checksum"; else -> continue }
-                val name = (dbcMessage.name + kind).let { name -> if (dbcMessage.signals.none { it.name == name } && (first until i).none { result[it].signal.name == name }) name else "${name}_${found.signal.start}" }
-                result[i] = Suggestion(message, field(name, found.signal.start, found.signal.size), found.evidence, found.confidence)
+        // an id's messages on all buses are loaded together, as they are compared; a long log a part at a time, as all
+        // its frames at once would not fit; the results are kept in the order of the messages
+        val layouts = arrayOfNulls<List<Suggestion>>(messages.size)
+        for (batch in Analysis.batches(store, messages.groupBy { it.id }.values.toList())) {
+            val loaded = Analysis.payloads(store, batch.flatten())
+            for (group in batch) {
+                for (message in group) layouts[message.index] = decode(message, group, loaded, known, rare)
+                for (message in group) loaded.remove(message.index)
             }
         }
+        for (found in layouts) if (found != null) result += found
         // markers first: they cut their bits out of the guessed fields, and what is left is then compared
         if (markers.isNotEmpty()) progress("Looking at what changed at ${markers.size} markers")
         // repeats of an action, and its two halves ("door open", "door closed"), are one test: the bit must change at every one
@@ -166,6 +197,34 @@ object AutoDecode {
         return result.sortedWith(compareByDescending<Suggestion> { it.confidence }.thenBy { it.message.bus }.thenBy { it.message.id }.thenBy { it.signal.start })
     }
 
+    /** The layout of [message], whose frames and those of the rest of its [group] (the same id on other buses) are [loaded]. */
+    private fun decode(message: FrameStore.Message, group: List<FrameStore.Message>, loaded: Map<Int, FrameStore.Payloads>, known: (FrameStore.Message) -> DbcMessage?, rare: MutableMap<Suggestion, IntArray>): List<Suggestion> {
+        val result = ArrayList<Suggestion>()
+        val payloads = loaded.getValue(message.index)
+        if (payloads.size < 4) return result
+        // the same id on a lower bus sending the same frames: a copy (forwarded, or a comma's echo of what it sent)
+        if (group.any { it.bus < message.bus && copies(payloads, loaded.getValue(it.index)) }) return result
+        if (diagnostic(message, payloads)) return result
+        val free = BooleanArray(payloads.length * 8) { true }
+        val dbcMessage = known(message)
+        // a pipe carries conversations (ISO-TP over a private id): its bytes are content, not a layout
+        if (dbcMessage != null && PIPE.containsMatchIn(dbcMessage.name)) return result
+        dbcMessage?.signals?.forEach { signal -> for (bit in signal.bits) if (bit in free.indices) free[bit] = false }
+        checksums(message, payloads, free, result)
+        layout(message, payloads, free, dbcMessage?.multiplexor?.takeIf { it.fits(payloads.length) }, result, rare)
+        // a message has one counter: with one in the DBC, a second is page data that repeats in step with it
+        if (dbcMessage != null && dbcMessage.signals.any { "counter" in it.name.lowercase() })
+            for (i in result.size - 1 downTo 0) if (result[i].signal.name.startsWith("COUNTER_")) result.removeAt(i)
+        // a known message's counter and checksum are called after it, as its maker does (DI_torqueCounter)
+        if (dbcMessage != null) for (i in result.indices) {
+            val found = result[i]
+            val kind = when { found.signal.name.startsWith("COUNTER_") -> "Counter"; found.signal.name.startsWith("CHECKSUM_") -> "Checksum"; else -> continue }
+            val name = (dbcMessage.name + kind).let { name -> if (dbcMessage.signals.none { it.name == name } && (0 until i).none { result[it].signal.name == name }) name else "${name}_${found.signal.start}" }
+            result[i] = Suggestion(message, field(name, found.signal.start, found.signal.size), found.evidence, found.confidence)
+        }
+        return result
+    }
+
     /**
      * Diagnostic traffic (ISO-TP: OBD and UDS requests and answers) on the ids set aside for it: its first byte is a
      * frame type and length, not a field, and its contents are a conversation, not a signal.
@@ -181,11 +240,15 @@ object AutoDecode {
     /** True when nearly every one of the first frames of [mine] is also a frame of [other]. */
     private fun copies(mine: FrameStore.Payloads, other: FrameStore.Payloads): Boolean {
         if (mine.length != other.length) return false
-        val seen = HashSet<java.nio.ByteBuffer>(other.size * 2)
-        for (k in 0 until other.size) seen += java.nio.ByteBuffer.wrap(other.data, k * other.length, other.length).slice()
+        // the few frames of [mine] are hashed, with how often each occurs, and [other] is read once against them
         val n = minOf(mine.size, 200)
+        val wanted = HashMap<java.nio.ByteBuffer, Int>(n * 2)
+        for (k in 0 until n) wanted.merge(java.nio.ByteBuffer.wrap(mine.data, k * mine.length, mine.length).slice(), 1, Int::plus)
         var found = 0
-        for (k in 0 until n) if (java.nio.ByteBuffer.wrap(mine.data, k * mine.length, mine.length).slice() in seen) found++
+        for (k in 0 until other.size) {
+            if (wanted.isEmpty() || found * 10 >= n * 9) break
+            found += wanted.remove(java.nio.ByteBuffer.wrap(other.data, k * other.length, other.length).slice()) ?: 0
+        }
         return found * 10 >= n * 9
     }
 
@@ -196,27 +259,37 @@ object AutoDecode {
     private fun checksums(message: FrameStore.Message, p: FrameStore.Payloads, free: BooleanArray, out: MutableList<Suggestion>) {
         if (p.length < 2 || p.size < 8) return
         val idSum = (message.id and 0xFF) + (message.id ushr 8 and 0xFF)
+        // each frame's sum and XOR of all its bytes, once: those of all bytes but one are these less that byte
+        val sums = IntArray(p.size)
+        val xors = IntArray(p.size)
+        for (k in 0 until p.size) {
+            var sum = 0
+            var x = 0
+            for (b in 0 until p.length) { val v = p.data[k * p.length + b].toInt() and 0xFF; sum += v; x = x xor v }
+            sums[k] = sum
+            xors[k] = x
+        }
+        val needed = p.size - p.size / 100
+        val allowed = p.size - needed
         for (at in 0 until p.length) {
             if (!(at * 8 until at * 8 + 8).all { free[it] }) continue
-            var teslaSum = 0; var plainSum = 0; var xor = 0
-            var varies = false
-            for (k in 0 until p.size) {
-                var sum = 0
-                var x = 0
-                for (b in 0 until p.length) if (b != at) { val v = p.data[k * p.length + b].toInt() and 0xFF; sum += v; x = x xor v }
-                val actual = p.data[k * p.length + at].toInt() and 0xFF
-                if (actual == (sum + idSum) and 0xFF) teslaSum++
-                if (actual == sum and 0xFF) plainSum++
-                if (actual == x) xor++
-                if (actual != p.data[at].toInt() and 0xFF) varies = true
-            }
             // a constant byte can match by accident: all the other bytes constant too
-            if (!varies) continue
-            val needed = p.size - p.size / 100
+            val first = p.data[at].toInt() and 0xFF
+            if ((1 until p.size).none { k -> p.data[k * p.length + at].toInt() and 0xFF != first }) continue
+            var teslaMisses = 0; var plainMisses = 0; var xorMisses = 0
+            for (k in 0 until p.size) {
+                val actual = p.data[k * p.length + at].toInt() and 0xFF
+                val sum = sums[k] - actual
+                if (actual != (sum + idSum) and 0xFF) teslaMisses++
+                if (actual != sum and 0xFF) plainMisses++
+                if (actual != xors[k] xor actual) xorMisses++
+                // every test already failed: the rest of the frames can't change that
+                if (teslaMisses > allowed && plainMisses > allowed && xorMisses > allowed) break
+            }
             val how = when {
-                teslaSum >= needed -> "the sum of the other bytes and the ID (Tesla's)"
-                plainSum >= needed -> "the sum of the other bytes"
-                xor >= needed -> "the XOR of the other bytes"
+                teslaMisses <= allowed -> "the sum of the other bytes and the ID (Tesla's)"
+                plainMisses <= allowed -> "the sum of the other bytes"
+                xorMisses <= allowed -> "the XOR of the other bytes"
                 else -> crc(message, p, at, free, out) ?: continue
             }
             for (bit in at * 8 until at * 8 + 8) free[bit] = false
@@ -314,31 +387,48 @@ object AutoDecode {
     private fun multiplexor(p: FrameStore.Payloads, free: BooleanArray, all: IntArray): Signal? {
         // a handful of frames that differ is not pages taking turns
         if (p.size < MIN_PAGED) return null
+        // a long log is looked at in stretches of consecutive frames spread evenly over it
+        val stretches = if (p.size <= MUX_FRAMES) 1 else MUX_FRAMES / MUX_STRETCH
+        val stretch = if (stretches == 1) p.size else MUX_STRETCH
+        val frames = stretches * stretch
+        val masks = IntArray(p.length)
+        // by value (at most 8 bits): the frame it was last seen in, -1 for none in this stretch; and whether seen at all
+        val lastAt = IntArray(256)
+        val seen = BooleanArray(256)
         for (candidate in segments(all, free)) {
             if (candidate.size > 8) continue
-            val last = HashMap<Long, Int>()
+            for (byte in 0 until p.length) masks[byte] = maskOutside(candidate, byte)
+            val ones = (1L shl candidate.size) - 1
+            seen.fill(false)
+            var distinct = 0
             var changes = 0
             var steps = 0
             var consecutive = 0L
             var sameValue = 0L
-            var previous = 0L
-            for (k in 0 until p.size) {
-                val value = candidate.raw(p.data, k * p.length)
-                if (k > 0 && value != previous) changes++
-                if (k > 0 && (value - previous) and ((1L shl candidate.size) - 1) == 1L) steps++
-                previous = value
-                val earlier = last.put(value, k)
-                if (last.size > 16) break
-                for (byte in 0 until p.length) {
-                    val mask = maskOutside(candidate, byte)
-                    val now = p.data[k * p.length + byte].toInt()
-                    if (k > 0) consecutive += Integer.bitCount((now xor p.data[(k - 1) * p.length + byte].toInt()) and mask)
-                    if (earlier != null) sameValue += Integer.bitCount((now xor p.data[earlier * p.length + byte].toInt()) and mask)
+            scan@ for (s in 0 until stretches) {
+                val from = if (stretches == 1) 0 else ((p.size - stretch).toLong() * s / (stretches - 1)).toInt()
+                lastAt.fill(-1)
+                var previous = 0L
+                for (k in from until from + stretch) {
+                    val value = candidate.raw(p.data, k * p.length)
+                    if (k > from && value != previous) changes++
+                    if (k > from && (value - previous) and ones == 1L) steps++
+                    previous = value
+                    val v = value.toInt()
+                    val earlier = lastAt[v]
+                    lastAt[v] = k
+                    if (!seen[v]) { seen[v] = true; if (++distinct > 16) break@scan }
+                    val row = k * p.length
+                    for (byte in 0 until p.length) {
+                        val now = p.data[row + byte].toInt()
+                        if (k > from) consecutive += Integer.bitCount((now xor p.data[row - p.length + byte].toInt()) and masks[byte])
+                        if (earlier >= 0) sameValue += Integer.bitCount((now xor p.data[earlier * p.length + byte].toInt()) and masks[byte])
+                    }
                 }
             }
             // a counter also changes in every frame and repeats its values, but it counts up by one; a selector doesn't
-            if (steps >= (p.size - 1) * 0.9) continue
-            if (last.size in 2..16 && changes >= p.size * 0.3 && consecutive >= p.size / 2 && sameValue * 2 < consecutive) return candidate
+            if (steps >= (frames - stretches) * 0.9) continue
+            if (distinct in 2..16 && changes >= frames * 0.3 && consecutive >= frames / 2 && sameValue * 2 < consecutive) return candidate
         }
         return null
     }
@@ -532,7 +622,8 @@ object AutoDecode {
             }
         }
         // slow modules answer late: a match may lag by up to 2 s, tried only where the plain match is already promising
-        val lags = minOf(5, Math.ceil(2.0 / step).toInt())
+        // (none when the grid's moments are more than 2 s apart: a shift of one would be a longer lag than that)
+        val lags = (2.0 / step).toInt().coerceIn(0, 20)
         val vectors = HashMap<Int, Vector?>()
         if (references.isNotEmpty()) for (i in suggestions.indices) {
             val suggestion = suggestions[i]
@@ -575,7 +666,14 @@ object AutoDecode {
             // a flag or a state is the same values as the signal it follows, not a scaled copy: kept raw, with its names when they match
             val state = best.how == "" && (field.size <= 4 || best.signal.size <= 4 || best.signal.valueNames.isNotEmpty())
             val fitted = bestR * best.vector.spread / mine.spread
-            val (factor, offset) = if (state) 1.0 to 0.0 else Analysis.tidy(fitted, best.vector.mean - fitted * mine.mean)
+            val (factor, offset) = if (state) 1.0 to 0.0 else {
+                // the rounded scale is checked against the values it was fitted to, over the moments the lag leaves
+                val raw = values(snapshots, suggestion.message.index, field)!!
+                val overlap = maxOf(0, -bestLag) until minOf(GRID, GRID - bestLag)
+                val x = DoubleArray(overlap.count()) { raw[overlap.first + it] }
+                val y = DoubleArray(x.size) { best.raw[overlap.first + it + bestLag] }
+                Analysis.tidyChecked(fitted, best.vector.mean - fitted * mine.mean, x, y)
+            }
             val signal = Signal("LIKE_${best.how}${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, factor, offset, if (state) "" else best.unit, -1, false)
             if (state && bestR > 0 && abs(best.signal.factor - 1.0) < 1e-9 && best.signal.offset == 0.0) signal.valueNames = best.signal.valueNames
             val what = when (best.how) { "RATE_" -> "the rate of change of "; "TOTAL_" -> "the running total of "; else -> "" }
@@ -616,7 +714,8 @@ object AutoDecode {
         var from = 0
         while (from < moments.size) {
             var to = from
-            while (to + 1 < moments.size && moments[to + 1].second - moments[to].second <= FrameStore.TICKS_PER_SECOND) to++
+            // within a second of the group's first: compared with the last, changes a second apart each would chain up into one event
+            while (to + 1 < moments.size && moments[to + 1].second - moments[from].second <= FrameStore.TICKS_PER_SECOND) to++
             if (to > from) {
                 number++
                 val at = moments[from].second
@@ -674,8 +773,9 @@ object AutoDecode {
                 for (old in overlapped) {
                     val guess = old.signal
                     val end = guess.start + guess.size
-                    if (guess.start < start) out += Suggestion(message, field(guess.name, guess.start, start - guess.start, guess.signed, guess.muxValue), old.evidence, old.confidence)
-                    if (end > bit) out += Suggestion(message, field(guess.name.substringBeforeLast('_') + "_" + bit, bit, end - bit, mux = guess.muxValue), old.evidence, old.confidence)
+                    // little-endian: the sign bit is the top one, so only the upper piece can be signed
+                    if (guess.start < start) out += Suggestion(message, field(guess.name, guess.start, start - guess.start, mux = guess.muxValue), old.evidence, old.confidence)
+                    if (end > bit) out += Suggestion(message, field(guess.name.substringBeforeLast('_') + "_" + bit, bit, end - bit, guess.signed, guess.muxValue), old.evidence, old.confidence)
                 }
                 out += Suggestion(message, field("${name}_$start", start, bit - start),
                     if (mine.size == 1) "Changed only at the marker \"$note\"" else "Changed at all ${mine.size} \"$note\" markers and at no other time",

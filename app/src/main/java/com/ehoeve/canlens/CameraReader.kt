@@ -54,9 +54,15 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 
 private tailrec fun Context.lifecycleOwner(): LifecycleOwner? = this as? LifecycleOwner ?: (this as? ContextWrapper)?.baseContext?.lifecycleOwner()
 
-private val NUMBER = Regex("""-?\d+(?:\.\d+)?""")
+// a decimal comma ("21,5") and the typographic minus and dash count too
+private val NUMBER = Regex("""[-−–]?\d+(?:[.,]\d+)?""")
 
-/** The number in [text] nearest the middle of a [width] x [height] picture: the one the crosshair is on. */
+/**
+ * The number in [text] nearest the middle of a [width] x [height] picture: the one the crosshair is on, as "-21.5".
+ * Null when none has its centre within the middle 25 % of the width and 20 % of the height: the 96 x 48 dp box is about
+ * a quarter of a phone's width and a tenth of the preview's height, and the preview crops the picture, so this is the
+ * box with some room around it; a number elsewhere on the car's screen isn't taken for it.
+ */
 private fun middleNumber(text: SeenText, width: Int, height: Int): String? =
     text.textBlocks.flatMap { it.lines }.flatMap { it.elements }.mapNotNull { element ->
         val box = element.boundingBox ?: return@mapNotNull null
@@ -64,7 +70,8 @@ private fun middleNumber(text: SeenText, width: Int, height: Int): String? =
         val number = NUMBER.find(element.text)?.value?.takeIf { it.length * 2 >= element.text.length } ?: return@mapNotNull null
         val dx = box.exactCenterX() - width / 2f
         val dy = box.exactCenterY() - height / 2f
-        number to dx * dx + dy * dy
+        if (Math.abs(dx) > width * 0.125f || Math.abs(dy) > height * 0.1f) return@mapNotNull null
+        number.replace('−', '-').replace('–', '-').replace(',', '.') to dx * dx + dy * dy
     }.minByOrNull { it.second }?.first
 
 /**
@@ -96,6 +103,8 @@ fun CameraReader(model: AppModel, onClose: () -> Unit) {
         var next = 0L
         var before: String? = null
         var noted: String? = null
+        // the dialog can close before the camera is ready: then the camera isn't bound at all
+        var disposed = false
         val analysis = ImageAnalysis.Builder().setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST).build()
         analysis.setAnalyzer(main) { frame ->
             val image = frame.image
@@ -104,8 +113,13 @@ fun CameraReader(model: AppModel, onClose: () -> Unit) {
             next = now + 500
             val turned = frame.imageInfo.rotationDegrees
             val (width, height) = if (turned % 180 == 0) frame.width to frame.height else frame.height to frame.width
-            recognizer.process(InputImage.fromMediaImage(image, turned))
+            // a frame the reader can't take is closed here, or the camera sends no more
+            val reading = try { recognizer.process(InputImage.fromMediaImage(image, turned)) } catch (e: Exception) {
+                frame.close(); seen = e.message ?: "The text reader isn't ready yet"; return@setAnalyzer
+            }
+            reading
                 .addOnSuccessListener { text ->
+                    if (disposed) return@addOnSuccessListener
                     val number = middleNumber(text, width, height)
                     seen = number ?: "no number in the middle"
                     val into = current
@@ -120,6 +134,8 @@ fun CameraReader(model: AppModel, onClose: () -> Unit) {
                 .addOnCompleteListener { frame.close() }
         }
         cameras.addListener({
+            // both run on the main thread: closed before, nothing is bound; closed after, onDispose unbinds
+            if (disposed) return@addListener
             runCatching {
                 val camera = cameras.get()
                 camera.unbindAll()
@@ -127,6 +143,7 @@ fun CameraReader(model: AppModel, onClose: () -> Unit) {
             }.onFailure { seen = "Camera: ${it.message}" }
         }, main)
         onDispose {
+            disposed = true
             analysis.clearAnalyzer()
             if (cameras.isDone) runCatching { cameras.get().unbindAll() }
             recognizer.close()

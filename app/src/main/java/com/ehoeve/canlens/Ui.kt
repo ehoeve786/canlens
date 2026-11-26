@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,18 +46,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ehoeve.canlens.core.FrameStore
 import com.ehoeve.canlens.core.Signal
+import java.util.Locale
+import kotlin.math.roundToInt
 
 val MONO = FontFamily.Monospace
 
 fun seconds(time: Int) = time / FrameStore.TICKS_PER_SECOND.toFloat()
-fun ticks(seconds: Float) = (seconds * FrameStore.TICKS_PER_SECOND).toInt()
+/** To the nearest tick: a time that went through [seconds] comes back as the same tick. */
+fun ticks(seconds: Float): Int = (seconds * FrameStore.TICKS_PER_SECOND).let { if (it.isNaN()) 0 else it.roundToInt() }
 fun hexId(id: Int) = if (id in 0..0x7FF) "%03X".format(id) else "%08X".format(id)
 fun hexBytes(data: ByteArray) = buildString(data.size * 3) { for (b in data) { append("%02X".format(b.toInt() and 0xFF)).append(' ') } }.trimEnd()
 
 fun format(signal: Signal, raw: Long): String {
     signal.valueNames[raw]?.let { return "$it ($raw)" }
     val value = signal.physical(raw)
-    val number = if (value == Math.rint(value) && Math.abs(value) < 1e15) value.toLong().toString() else "%.4f".format(value).trimEnd('0').trimEnd('.')
+    val number = if (value == Math.rint(value) && Math.abs(value) < 1e15) value.toLong().toString() else "%.4f".format(Locale.ROOT, value).trimEnd('0').trimEnd('.')
     return if (signal.unit.isEmpty()) number else "$number ${signal.unit}"
 }
 
@@ -98,7 +102,8 @@ fun App(model: AppModel = viewModel()) {
                     when (tab) {
                         Tab.MESSAGES -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }, onOpen = open)
                         Tab.FRAMES -> TraceScreen(model, message, onSelect = { selected = it.bus to it.id }, onOpen = open)
-                        Tab.MESSAGE -> if (message != null) MessageDetail(model, message, onOpen = open) { tab = Tab.PLOTS }
+                        // keyed by the message: what MessageDetail remembers (the frame at the cursor, the bit activity) is of one message
+                        Tab.MESSAGE -> if (message != null) key(message.bus, message.id) { MessageDetail(model, message, onOpen = open) { tab = Tab.PLOTS } }
                             else Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Hint("Pick a message in Messages or Frames to see its bits and signals here.") }
                         Tab.PLOTS -> PlotsScreen(model)
                     }

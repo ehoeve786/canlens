@@ -11,25 +11,35 @@ android {
         applicationId = "com.ehoeve.canlens"
         minSdk = 29
         targetSdk = 36
-        // CI passes the run number, so every build installs over the previous one
+        // CI passes the run number, so every CI build installs over the previous one; a local build is 1 unless
+        // given -PversionCode, so it installs over a CI build only with a higher number
         versionCode = (project.findProperty("versionCode") as String?)?.toInt() ?: 1
         versionName = "0.1." + versionCode
     }
 
+    // The release key, when CI has one in its secrets (RELEASE_KEYSTORE is the path of the keystore file it writes).
+    val releaseKeystore = providers.environmentVariable("RELEASE_KEYSTORE").orNull
     signingConfigs {
-        // A key kept in the repository: builds from CI and from any PC are signed alike and update each other.
+        // A key kept in the repository: debug builds from CI and from any PC are signed alike and update each other.
+        // Anyone with the repository can sign with it, so it is not for builds handed out to others.
         getByName("debug") {
             storeFile = file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
         }
+        if (releaseKeystore != null) create("release") {
+            storeFile = file(releaseKeystore)
+            storePassword = providers.environmentVariable("RELEASE_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("RELEASE_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("RELEASE_KEY_PASSWORD").get()
+        }
     }
 
     buildTypes {
         debug { signingConfig = signingConfigs.getByName("debug") }
-        // signed with the same key, so a release installs over a debug build and the other way round
-        release { signingConfig = signingConfigs.getByName("debug") }
+        // with the release key when there is one; without it (a local build, a fork) with the debug key as before
+        release { signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug") }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11

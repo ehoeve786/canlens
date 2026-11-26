@@ -22,6 +22,8 @@ import java.io.Closeable
 import java.io.IOException
 import java.net.InetAddress
 import kotlin.concurrent.thread
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 enum class LiveSource { NONE, COMMA, DASHKIT, DASHKIT_WIFI }
 
@@ -72,10 +74,20 @@ class LiveState(
         val port = typed.substringAfter(':', "").trim().toIntOrNull() ?: CommaStream.cerealPort("can")
         start(LiveSource.COMMA, "comma") { sink ->
             val host = findComma(typed.substringBefore(':'), port)
-            // the DashKit's chassis bus, from dashkitd on the comma, as bus 3; a comma without it just has no bus 3
-            val chassis = CandumpStream(host)
-            thread(isDaemon = true) { runCatching { chassis.run(sink) } }
-            try { CommaStream(host, port).also { connection = it }.use { it.run(sink) } } finally { chassis.close() }
+            // the DashKit's chassis bus, from dashkitd on the comma, as bus 3; a comma without it just has no bus 3.
+            // It is connected again while the comma's stream runs: it ends after a quiet spell, and the car's bus may sleep.
+            val done = AtomicBoolean()
+            val chassis = AtomicReference<CandumpStream?>()
+            thread(isDaemon = true) {
+                while (!done.get()) {
+                    val stream = CandumpStream(host)
+                    chassis.set(stream)
+                    if (done.get()) { stream.close(); break }
+                    runCatching { stream.run(sink) }
+                    if (!done.get()) runCatching { Thread.sleep(2000) }
+                }
+            }
+            try { CommaStream(host, port).also { connection = it }.use { it.run(sink) } } finally { done.set(true); chassis.get()?.close() }
         }
     }
 
@@ -142,7 +154,11 @@ class LiveState(
         job = scope.launch {
             launch(Dispatchers.IO) {
                 while (isActive) {
-                    val problem = try { connect(sink); "stream ended" } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
+                    val problem = try { connect(sink); "stream ended" } catch (e: AccessRefused) {
+                        // asking again every 2 s would pester the user: a refusal ends the stream
+                        withContext(Dispatchers.Main) { if (isActive) { stop(); report("$name: ${e.message}. Stopped") } }
+                        break
+                    } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
                     if (!isActive) break
                     withContext(Dispatchers.Main) { report("$name: $problem. Retrying") }
                     delay(2000)
@@ -182,7 +198,8 @@ class LiveState(
         } else {
             val old = recorder
             recorder = null; recording = null
-            scope.launch(Dispatchers.IO) { runCatching { old?.close() } }
+            // a thread of its own, not [scope]: from onCleared the scope is already cancelled, and the log's end would be lost
+            if (old != null) thread(name = "recorder-close") { runCatching { old.close() } }
         }
     }
 

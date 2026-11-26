@@ -17,14 +17,17 @@ import java.util.concurrent.Executors
  * Reads candump lines from a TCP port, as dashkitd on the comma serves the DashKit's chassis bus ([PORT]): the bus the
  * comma's harness doesn't reach, stamped with the comma's monotonic clock like its own `can` events, so the two line up.
  */
-class CandumpStream(private val host: String, private val port: Int = PORT) : Closeable {
+class CandumpStream(private val host: String, private val port: Int = PORT, private val silenceMs: Int = SILENCE_MS) : Closeable {
     private val socket = Socket()
 
-    /** Blocks until [close], the sink says stop, or the connection ends (IOException). */
+    /** Blocks until [close], the sink says stop, or the connection ends or says nothing for [silenceMs] (IOException). */
     fun run(sink: FrameSink) {
         socket.connect(InetSocketAddress(host, port), 5000)
+        socket.soTimeout = silenceMs
         val buffer = ByteArray(FrameStore.MAX_PAYLOAD)
-        socket.getInputStream().bufferedReader(Charsets.US_ASCII).forEachLine { line ->
+        val lines = LineReader(socket.getInputStream())
+        while (true) {
+            val line = try { lines.readLine() } catch (e: SocketTimeoutException) { throw IOException("$host:$port sent nothing for ${silenceMs / 1000.0} s") } ?: return
             if (!LogReader.candump(line, buffer, sink)) throw IOException("stopped")
         }
     }
@@ -35,6 +38,9 @@ class CandumpStream(private val host: String, private val port: Int = PORT) : Cl
         const val PORT = 62401
     }
 }
+
+/** How long a live link may stay silent before it counts as gone and is dropped, for the caller to connect again. */
+const val SILENCE_MS = 10_000
 
 /** Finds a comma device by the ZeroMQ publisher it runs (cereal's bridge), on the networks this device is in. */
 object CommaFinder {
@@ -96,14 +102,23 @@ object CommaFinder {
  * Subscribes to one openpilot service that the device publishes over ZeroMQ (cereal's `bridge`, or a process
  * started with ZMQ=1) and hands every `can` Event's frames to a sink. A minimal ZMTP 3.0 SUB socket over plain TCP.
  */
-class CommaStream(private val host: String, private val port: Int = cerealPort("can")) : Closeable {
+class CommaStream(private val host: String, private val port: Int = cerealPort("can"), private val silenceMs: Int = SILENCE_MS) : Closeable {
     private val socket = Socket()
 
-    /** Blocks until [close] or an error; throws IOException when the connection fails or ends. */
+    /** Blocks until [close] or an error; throws IOException when the connection fails, ends or says nothing for [silenceMs]. */
     fun run(sink: FrameSink) {
         socket.connect(InetSocketAddress(host, port), 5000)
         socket.tcpNoDelay = true
-        socket.soTimeout = 3000
+        socket.soTimeout = silenceMs
+        try {
+            stream(sink)
+        } catch (e: SocketTimeoutException) {
+            // the `can` service publishes many times a second: a link this quiet is taken as gone
+            throw IOException("$host:$port sent nothing for ${silenceMs / 1000.0} s")
+        }
+    }
+
+    private fun stream(sink: FrameSink) {
         val out = socket.getOutputStream()
         val input = DataInputStream(socket.getInputStream().buffered(1 shl 16))
         // greeting: signature, version 3.0, mechanism NULL, not a server
@@ -120,16 +135,20 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
         var message = ByteArray(1 shl 16)
         val starts = IntArray(513)
         while (true) {
-            val flags = try { input.readUnsignedByte() } catch (e: SocketTimeoutException) { continue }   // nothing published yet
-            socket.soTimeout = 10000   // inside a frame now: a stall this long means the link is gone
+            val flags = input.readUnsignedByte()
             val size = if (flags and 2 != 0) input.readLong() else input.readUnsignedByte().toLong()
             if (size !in 0..MAX_FRAME) throw IOException("Bad frame from $host:$port")
             if (message.size < size) message = ByteArray(size.toInt())
             input.readFully(message, 0, size.toInt())
-            socket.soTimeout = 3000
             if (flags and 4 != 0) {
+                // a command: its name, then its properties
+                val name = if (size >= 1 && (message[0].toInt() and 0xFF) < size) String(message, 1, message[0].toInt() and 0xFF, Charsets.US_ASCII) else ""
+                if (name == "ERROR") {
+                    val reason = if (size >= 7 && 7 + (message[6].toInt() and 0xFF) <= size) String(message, 7, message[6].toInt() and 0xFF, Charsets.US_ASCII) else "no reason given"
+                    throw IOException("$host:$port refused the connection: $reason")
+                }
                 // the publisher's READY ends the handshake: subscribe to every topic (a one-byte message, 1)
-                out.write(byteArrayOf(0, 1, 1)); out.flush()
+                if (name == "READY") { out.write(byteArrayOf(0, 1, 1)); out.flush() }
                 continue
             }
             if (size < 8) continue
@@ -214,8 +233,10 @@ class DeviceClock {
 
 /** Appends microseconds as decimal seconds with six decimals. */
 fun StringBuilder.appendSeconds(timeMicros: Long): StringBuilder {
-    append(timeMicros / 1_000_000).append('.')
-    val fraction = (timeMicros % 1_000_000).toString()
+    // the sign, then both parts without it: -1.5 s is -1.500000, not -1.-500000
+    if (timeMicros < 0) append('-')
+    append(Math.abs(timeMicros / 1_000_000)).append('.')
+    val fraction = Math.abs(timeMicros % 1_000_000).toString()
     repeat(6 - fraction.length) { append('0') }
     return append(fraction)
 }
@@ -227,12 +248,12 @@ fun StringBuilder.appendMarker(timeMicros: Long, note: String) {
     append(MARKER_PREFIX).appendSeconds(timeMicros).append(") ").append(note.replace('\n', ' ').replace('\r', ' ')).append('\n')
 }
 
-/** Appends one frame in candump's log format, the one DashPilot records and [LogReader] reads back. */
+/** Appends one frame in candump's log format, the one DashPilot records and [LogReader] reads back; over 8 bytes, CAN FD's `id##<flags><data>`. */
 fun StringBuilder.appendCandump(timeMicros: Long, bus: Int, id: Int, data: ByteArray, offset: Int, length: Int) {
     val hex = "0123456789ABCDEF"
     append('(').appendSeconds(timeMicros).append(") can").append(bus).append(' ')
     for (shift in (if (id in 0..0x7FF) 8 else 28) downTo 0 step 4) append(hex[id ushr shift and 15])
-    append('#')
+    append(if (length > 8) "##0" else "#")
     for (i in offset until offset + length) { append(hex[data[i].toInt() ushr 4 and 15]); append(hex[data[i].toInt() and 15]) }
     append('\n')
 }
