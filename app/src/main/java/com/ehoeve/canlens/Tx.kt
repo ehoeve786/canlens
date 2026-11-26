@@ -72,7 +72,9 @@ class TxState(context: Context, private val store: FrameStore, private val scope
         if (bleClock == null) bleClock = scope.launch { while (isActive) { delay(1000); ble.everySecond() } }
     }
 
-    fun close() { stop(); bleClock?.cancel(); bleClock = null; ble.close() }
+    fun close() { stop(); dropBle() }
+
+    private fun dropBle() { bleClock?.cancel(); bleClock = null; ble.close() }
 
     /** What Bluetooth last read of the DashKit's Wi-Fi (on, address), for the live sheet. */
     val bleStatus: DashKitStatus get() = ble.status
@@ -82,9 +84,16 @@ class TxState(context: Context, private val store: FrameStore, private val scope
      * Bluetooth: connecting first if needed. The firmware keeps them.
      */
     fun setUpWifi(ssid: String?, password: String) = scope.launch {
+        // a link opened for this alone goes when done: the DashKit restores the phone's CAN stream subscription
+        // (DashPilot's, on the same pairing) to any link from it, and that stream takes the radio from the Wi-Fi one
+        val opened = !ble.connected
+        try { wifiSetUp(ssid, password) } finally { if (opened && !ble.armed) dropBle() }
+    }
+
+    private suspend fun wifiSetUp(ssid: String?, password: String) {
         if (!ble.connected) connectBle()
         for (wait in 0 until 30) { if (ble.connected) break; delay(500) }
-        if (!ble.connected) return@launch
+        if (!ble.connected) return
         if (ssid == null) {
             ble.send("W,0")
             bleState = "Asked the DashKit to switch its Wi-Fi off"
@@ -94,11 +103,11 @@ class TxState(context: Context, private val store: FrameStore, private val scope
                 val status = ble.status
                 if (status.wifiSeen && !status.wifiOn) {
                     bleState = "The DashKit's Wi-Fi is off" + (if (status.heapKb >= 0) " · ${status.heapKb} KB free" else "") + (if (status.build.isNotEmpty()) " · firmware built ${status.build}" else "")
-                    return@launch
+                    return
                 }
             }
             bleState = if (ble.connected) "The DashKit didn't confirm its Wi-Fi is off" else "The Bluetooth link to the DashKit ended"
-            return@launch
+            return
         }
         // an empty password field keeps the one the DashKit has (the app doesn't keep it): a resend doesn't wipe it
         ble.send("WS,$ssid"); if (password.isNotEmpty()) ble.send("WP,$password"); ble.send("WK,${live.wifiKey()}"); ble.send("W,1")
