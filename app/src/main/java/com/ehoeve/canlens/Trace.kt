@@ -116,9 +116,10 @@ fun TraceScreen(model: AppModel, selected: FrameStore.Message?, onSelect: (Frame
 
     val list = rememberLazyListState()
     val shown = rows
-    // an empty table says which term of the filter is to blame
-    val why by produceState<String?>(null, filter, shown, trace.fixed) {
-        value = if (!trace.fixed && filter != null && shown != null && shown.size == 0 && store.frameCount > 0) withContext(Dispatchers.Default) { store.whyEmpty(filter) } else null
+    // an empty table says which term of the filter is to blame; worked out once per filter, not on every refresh
+    val empty = shown?.size == 0 && store.frameCount > 0
+    val why by produceState<String?>(null, filter, trace.fixed, empty) {
+        value = if (!trace.fixed && filter != null && empty) withContext(Dispatchers.Default) { store.whyEmpty(filter) } else null
     }
     val cursorRow = remember(shown, cursor) { if (shown == null || shown.size == 0) -1 else shown.rowAt(cursor) }
     // the table follows the cursor: bring its row into view when it is not

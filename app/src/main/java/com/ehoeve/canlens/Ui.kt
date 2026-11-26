@@ -46,18 +46,21 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ehoeve.canlens.core.FrameStore
 import com.ehoeve.canlens.core.Signal
+import java.util.Locale
+import kotlin.math.roundToInt
 
 val MONO = FontFamily.Monospace
 
 fun seconds(time: Int) = time / FrameStore.TICKS_PER_SECOND.toFloat()
-fun ticks(seconds: Float) = (seconds * FrameStore.TICKS_PER_SECOND).toInt()
+/** To the nearest tick: a time that went through [seconds] comes back as the same tick. */
+fun ticks(seconds: Float): Int = (seconds * FrameStore.TICKS_PER_SECOND).let { if (it.isNaN()) 0 else it.roundToInt() }
 fun hexId(id: Int) = if (id in 0..0x7FF) "%03X".format(id) else "%08X".format(id)
 fun hexBytes(data: ByteArray) = buildString(data.size * 3) { for (b in data) { append("%02X".format(b.toInt() and 0xFF)).append(' ') } }.trimEnd()
 
 fun format(signal: Signal, raw: Long): String {
     signal.valueNames[raw]?.let { return "$it ($raw)" }
     val value = signal.physical(raw)
-    val number = if (value == Math.rint(value) && Math.abs(value) < 1e15) value.toLong().toString() else "%.4f".format(value).trimEnd('0').trimEnd('.')
+    val number = if (value == Math.rint(value) && Math.abs(value) < 1e15) value.toLong().toString() else "%.4f".format(Locale.ROOT, value).trimEnd('0').trimEnd('.')
     return if (signal.unit.isEmpty()) number else "$number ${signal.unit}"
 }
 
