@@ -381,7 +381,7 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
                 else model.tx.setUpWifi(name, password)
             }
             OutlinedTextField(ssid, { ssid = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot name") })
-            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") },
+            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") }, supportingText = { Text("Leave empty to keep the one the DashKit has") },
                 visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(enabled = wifiSettingsValid(ssid.trim(), password), onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
