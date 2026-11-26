@@ -96,7 +96,11 @@ class TxState(context: Context, private val store: FrameStore, private val scope
                 !ble.connected -> "The Bluetooth link to the DashKit ended"
                 !status.wifiSeen -> "The DashKit's status says nothing of Wi-Fi: it isn't running the wifi-stream firmware. It sent: " +
                     (ble.lastRead?.replace('\n', ' ') ?: "no status yet") + if (ble.lastRefusal != 0) " · a write was refused (${ble.lastRefusal})" else ""
-                status.wifiReason != 0 -> "The DashKit can't join $ssid: " + DashKitStatus.wifiProblem(status.wifiReason)
+                status.wifiReason != 0 -> "The DashKit can't join $ssid: " + DashKitStatus.wifiProblem(status.wifiReason) + when {
+                    status.scanSeen < 0 -> ""
+                    status.scanAuth < 0 -> ". Its scan saw ${status.scanSeen} networks, $ssid not among them"
+                    else -> ". Its scan saw $ssid on channel ${status.scanChannel} at ${status.scanRssi} dBm (security ${status.scanAuth})"
+                }
                 !status.wifiOn -> "The DashKit has its Wi-Fi off: it didn't take the settings"
                 status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0" -> "The DashKit is on $ssid at ${status.wifiAddress}"
                 else -> "The DashKit is joining $ssid"

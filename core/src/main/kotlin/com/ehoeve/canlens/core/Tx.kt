@@ -25,6 +25,11 @@ class DashKitStatus {
     /** Why it isn't on the network: the last Wi-Fi disconnect reason, -1 if Wi-Fi didn't start, 0 none. Free heap in KB, -1 unknown. */
     @Volatile var wifiReason = 0
     @Volatile var heapKb = -1
+    /** The DashKit's last Wi-Fi scan: networks it saw (-1 none yet), and ours among them: auth mode (-1 not seen), channel, RSSI. */
+    @Volatile var scanSeen = -1
+    @Volatile var scanAuth = -1
+    @Volatile var scanChannel = 0
+    @Volatile var scanRssi = 0
     /** The firmware log from the Wi-Fi link, the last [LOG_LINES]; [logLines] counts every line ever added. */
     private val log = ArrayDeque<String>()
     @Volatile var logLines = 0L; private set
@@ -45,6 +50,8 @@ class DashKitStatus {
         if (fields[0] == "W" && fields.size >= 3) {
             wifiSeen = true; wifiOn = fields[1] == "1"; wifiAddress = fields[2]
             wifiReason = fields.getOrNull(3)?.toIntOrNull() ?: 0; heapKb = fields.getOrNull(4)?.toIntOrNull() ?: -1
+            scanSeen = fields.getOrNull(5)?.toIntOrNull() ?: -1; scanAuth = fields.getOrNull(6)?.toIntOrNull() ?: -1
+            scanChannel = fields.getOrNull(7)?.toIntOrNull() ?: 0; scanRssi = fields.getOrNull(8)?.toIntOrNull() ?: 0
             return
         }
         if (fields[0] == "H" && fields.size >= 5) {
