@@ -155,11 +155,12 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
             // one Cap'n Proto message: segment count - 1, the segment sizes in words, padding to a word, the segments
             val segments = Cereal.int(message, 0) + 1
             if (segments !in 1..512) continue
-            var at = (4 + 4 * segments + 7) / 8 * 8
+            // sizes are unsigned words: summed as a Long, so a garbage size can't wrap around into range
+            var at = (4L + 4 * segments + 7) / 8 * 8
             if (at > size) continue
-            for (s in 0 until segments) { starts[s] = at; at += Cereal.int(message, 4 + 4 * s) * 8 }
-            starts[segments] = at
-            if (at < 0 || at > size) continue
+            for (s in 0 until segments) { starts[s] = at.toInt(); at += (Cereal.int(message, 4 + 4 * s).toLong() and 0xFFFFFFFFL) * 8; if (at > size) break }
+            if (at > size) continue
+            starts[segments] = at.toInt()
             if (!Cereal.canFrames(message, starts, segments, sink)) return
         }
     }

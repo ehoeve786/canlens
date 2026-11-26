@@ -453,6 +453,7 @@ object Analysis {
     /** A value (or a range's start) and its label, how often it occurs, and when it was first seen (seconds; NaN for a range). */
     class Bar(val value: Float, val label: String, val count: Int, val first: Float)
 
+    /** Each value of [series] with its count, when it has up to 16 values; else [bins] equal ranges of them. */
     fun histogram(series: FrameStore.Series, bins: Int = 20): List<Bar> {
         if (series.size == 0) return emptyList()
         val counts = HashMap<Float, Int>()

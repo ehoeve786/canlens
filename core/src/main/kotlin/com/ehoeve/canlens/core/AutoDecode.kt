@@ -3,8 +3,10 @@ package com.ehoeve.canlens.core
 import kotlin.math.abs
 import kotlin.math.sqrt
 
-/** A signal the automatic decoder proposes, why, and how sure it is (0..1). Meant to be reviewed, not trusted. */
-/** [messageName]: what to call the message when the DBC doesn't have it yet (NEW_<id> when null). [at]: the store time it is about, for an event. */
+/**
+ * A signal the automatic decoder proposes, why, and how sure it is (0..1). Meant to be reviewed, not trusted.
+ * [messageName]: what to call the message when the DBC doesn't have it yet (NEW_<id> when null). [at]: the store time it is about, for an event.
+ */
 class Suggestion(val message: FrameStore.Message, val signal: Signal, val evidence: String, val confidence: Double, val messageName: String? = null, val at: Int? = null)
 
 /**
@@ -83,8 +85,9 @@ object AutoDecode {
             val wanted = DoubleArray(sorted.size) { sorted[it].second }
             val tolerance = (wanted.max() - wanted.min()) * 0.02
             val clockLike = followsTheClock(sorted, tolerance)
-            val matches = Analysis.findByValue(store, points, tolerance, 3)
-                .filter { match -> known(match.message)?.signals.orEmpty().none { signal -> signal.bits.any { it in match.signal.bits } } }
+            // the best three once the fields a DBC already has are left out (a limit before that could leave none)
+            val matches = Analysis.findByValue(store, points, tolerance, Int.MAX_VALUE)
+                .filter { match -> known(match.message)?.signals.orEmpty().none { signal -> signal.bits.any { it in match.signal.bits } } }.take(3)
             // the fields' raw values at the readings, to check the rounded scale against
             val snapshots = if (matches.isEmpty()) null else store.snapshots(IntArray(sorted.size) { sorted[it].first })
             matches.mapNotNull { match ->
@@ -232,8 +235,22 @@ object AutoDecode {
     private fun diagnostic(message: FrameStore.Message, p: FrameStore.Payloads): Boolean {
         val id = message.id
         if (id !in 0x700..0x7FF && id ushr 16 != 0x18DA && id ushr 16 != 0x18DB) return false
+        // each frame must be one ISO-TP could send: single (a length that fits), first (a length past one frame),
+        // consecutive, or flow control (status 0-2); a field that merely starts low is none of these
         var typed = 0
-        for (k in 0 until p.size) if (p.data[k * p.length].toInt() and 0xF0 <= 0x30) typed++
+        for (k in 0 until p.size) {
+            val at = k * p.length
+            val first = p.data[at].toInt() and 0xFF
+            val low = first and 0x0F
+            val valid = when (first shr 4) {
+                0 -> low in 1 until p.length
+                1 -> p.length > 1 && (low shl 8 or (p.data[at + 1].toInt() and 0xFF)) >= p.length
+                2 -> true
+                3 -> low <= 2
+                else -> false
+            }
+            if (valid) typed++
+        }
         return typed * 20 >= p.size * 19
     }
 
@@ -276,6 +293,8 @@ object AutoDecode {
             // a constant byte can match by accident: all the other bytes constant too
             val first = p.data[at].toInt() and 0xFF
             if ((1 until p.size).none { k -> p.data[k * p.length + at].toInt() and 0xFF != first }) continue
+            // a byte that is another byte repeated ([x, x], or x beside zeros) is that byte's sum and XOR too
+            if ((0 until p.length).any { o -> o != at && (0 until p.size).all { k -> p.data[k * p.length + at] == p.data[k * p.length + o] } }) continue
             var teslaMisses = 0; var plainMisses = 0; var xorMisses = 0
             for (k in 0 until p.size) {
                 val actual = p.data[k * p.length + at].toInt() and 0xFF
@@ -646,10 +665,11 @@ object AutoDecode {
             }
             if (best == null || abs(bestR) < MATCH) continue
             val where = "(bus ${best.message.bus}, ${"%X".format(best.message.id)})"
-            // the very same number at nearly every sampled moment: the signal itself, sent again
-            val same = if (best.how != "") 0 else values(snapshots, suggestion.message.index, field)!!.let { mine -> (0 until GRID).count { best.signal.physical(mine[it].toLong()) == best.raw[it] } }
+            // the very same number at nearly every sampled moment: the signal itself, sent again (read signed when it is)
+            val asReference = Signal(field.name, field.start, field.size, true, best.signal.signed, 1.0, 0.0, "", -1, false)
+            val same = if (best.how != "") 0 else values(snapshots, suggestion.message.index, asReference)!!.let { mine -> (0 until GRID).count { best.signal.physical(mine[it].toLong()) == best.raw[it] } }
             if (same * 100 >= GRID * 99) {
-                val copy = Signal("COPY_${best.signal.name}_${field.start}", field.start, field.size, true, field.signed, best.signal.factor, best.signal.offset, best.signal.unit, -1, false)
+                val copy = Signal("COPY_${best.signal.name}_${field.start}", field.start, field.size, true, best.signal.signed, best.signal.factor, best.signal.offset, best.signal.unit, -1, false)
                 copy.valueNames = best.signal.valueNames
                 suggestions[i] = Suggestion(suggestion.message, copy, "Copy of ${best.signal.name} $where: the same value at $same of $GRID sampled moments", 0.97)
                 continue
@@ -699,7 +719,7 @@ object AutoDecode {
         for ((n, members) in groups.withIndex()) for (i in members) {
             val old = suggestions[i]
             val others = members.filter { it != i }.joinToString { "%X bit %d".format(suggestions[it].message.id, suggestions[it].signal.start) }
-            suggestions[i] = Suggestion(old.message, Signal("G${n + 1}_${old.signal.name}", old.signal.start, old.signal.size, true, old.signal.signed, 1.0, 0.0, "", -1, false),
+            suggestions[i] = Suggestion(old.message, old.signal.renamed("G${n + 1}_${old.signal.name}"),
                 "${old.evidence} · group ${n + 1}: moves with $others", 0.45)
         }
     }
@@ -722,7 +742,7 @@ object AutoDecode {
                 val note = " · event $number at %.1f s: changed together with ".format((at - store.firstTime) / FrameStore.TICKS_PER_SECOND.toDouble()) + if (to - from == 1) "one other field" else "${to - from} other fields"
                 for (k in from..to) {
                     val old = suggestions[moments[k].first]
-                    suggestions[moments[k].first] = Suggestion(old.message, field("E${number}_${old.signal.name}", old.signal.start, old.signal.size), old.evidence + note, 0.45, at = at)
+                    suggestions[moments[k].first] = Suggestion(old.message, old.signal.renamed("E${number}_${old.signal.name}"), old.evidence + note, 0.45, at = at)
                 }
             }
             from = to + 1

@@ -270,34 +270,37 @@ internal object Cereal {
      * end) to [sink]. Events of other kinds and malformed ones are skipped. False once the sink wants no more.
      */
     fun canFrames(m: ByteArray, starts: IntArray, segments: Int, sink: FrameSink): Boolean {
+        // [m] is reused and may be longer than this message: every read is kept below its end, not the array's
+        val end = starts[segments]
+        fun word(at: Int): Long { if (at < 0 || at + 8 > end) throw IndexOutOfBoundsException(); return long(m, at) }
         try {
-            val event = follow(m, starts, segments, starts[0])
-            if (event < 0 || long(m, event) and 3L != 0L) return true
-            val root = long(m, event)
+            val event = follow(m, starts, segments, starts[0], end)
+            if (event < 0 || word(event) and 3L != 0L) return true
+            val root = word(event)
             val dataWords = (root ushr 32 and 0xFFFF).toInt()
             val struct = event + 8 + (root.toInt() shr 2) * 8
             if (dataWords < 2 || root ushr 48 and 0xFFFF == 0L) return true
-            if ((m[struct + EVENT_WHICH_OFFSET].toInt() and 0xFF or (m[struct + EVENT_WHICH_OFFSET + 1].toInt() and 0xFF shl 8)) != EVENT_CAN) return true
-            val time = long(m, struct) / 1000
-            val list = follow(m, starts, segments, struct + dataWords * 8)
+            if ((word(struct + EVENT_WHICH_OFFSET) and 0xFFFF).toInt() != EVENT_CAN) return true
+            val time = word(struct) / 1000
+            val list = follow(m, starts, segments, struct + dataWords * 8, end)
             if (list < 0) return true
-            val pointer = long(m, list)
+            val pointer = word(list)
             if (pointer and 3L != 1L || (pointer ushr 32 and 7).toInt() != 7) return true   // a list of structs
             val tag = list + 8 + (pointer.toInt() shr 2) * 8
-            val count = int(m, tag) ushr 2
-            val elementData = (long(m, tag) ushr 32 and 0xFFFF).toInt() * 8
-            val elementSize = elementData + (long(m, tag) ushr 48 and 0xFFFF).toInt() * 8
+            val count = word(tag).toInt() ushr 2
+            val elementData = (word(tag) ushr 32 and 0xFFFF).toInt() * 8
+            val elementSize = elementData + (word(tag) ushr 48 and 0xFFFF).toInt() * 8
             if (elementData < 8 || elementSize == elementData) return true
             for (i in 0 until count) {
                 val e = tag + 8 + i * elementSize
-                val bytes = follow(m, starts, segments, e + elementData)
+                val bytes = follow(m, starts, segments, e + elementData, end)
                 if (bytes < 0) continue
-                val data = long(m, bytes)
+                val data = word(bytes)
                 if (data and 3L != 1L || (data ushr 32 and 7).toInt() != 2) continue   // a list of bytes
                 val length = (data ushr 35).toInt()
                 val start = bytes + 8 + (data.toInt() shr 2) * 8
-                if (length > FrameStore.MAX_PAYLOAD || start < 0 || start + length > m.size) continue
-                if (!sink.frame(time, m[e + CAN_SRC_OFFSET].toInt() and 0xFF, int(m, e), m, start, length)) return false
+                if (length > FrameStore.MAX_PAYLOAD || start < 0 || start + length > end) continue
+                if (!sink.frame(time, (word(e) ushr (CAN_SRC_OFFSET * 8) and 0xFF).toInt(), word(e).toInt(), m, start, length)) return false
             }
         } catch (e: IndexOutOfBoundsException) {
             // a pointer outside the message: skip it
@@ -306,7 +309,8 @@ internal object Cereal {
     }
 
     /** Offset of the pointer that the pointer at [at] stands for (itself unless it is a far pointer); -1 if null or unsupported. */
-    private fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int): Int {
+    private fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int, end: Int): Int {
+        if (at < 0 || at + 8 > end) throw IndexOutOfBoundsException()
         val p = long(m, at)
         if (p == 0L) return -1
         if (p and 3L != 2L) return at

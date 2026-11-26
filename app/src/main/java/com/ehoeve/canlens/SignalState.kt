@@ -219,7 +219,7 @@ class SignalState(
         if (clean.isEmpty()) return
         autoResults = autoResults.map { s ->
             if (!s.signal.name.startsWith("E${number}_")) s
-            else Suggestion(s.message, Signal("${clean}_${s.signal.start}", s.signal.start, s.signal.size, true, false, 1.0, 0.0, "", -1, false), s.evidence, NAMED, at = s.at)
+            else Suggestion(s.message, s.signal.renamed("${clean}_${s.signal.start}"), s.evidence, NAMED, at = s.at)
         }
     }
 

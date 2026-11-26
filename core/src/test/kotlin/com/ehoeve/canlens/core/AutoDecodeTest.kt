@@ -119,4 +119,57 @@ class AutoDecodeTest {
         assertEquals(groups, small.map { it.single() })
         for (batch in small) same(Analysis.payloads(store, batch.flatten()), batch.flatten())
     }
+
+    @Test fun onlyTrueIsoTpIsSkippedAsDiagnostic() {
+        // 0x7E0 whose first byte runs 0x08..0x0F: a "single frame" too long for 8 bytes, so a field, not ISO-TP
+        val store = FrameStore()
+        for (i in 0 until 2000) store.frame(i * 10_000L, 0, 0x7E0, byteArrayOf((8 + i / 50 % 8).toByte(), 0, 0, 0, 0, 0, 0, 0), 0, 8)
+        // 0x7E8 answering in ISO-TP: single frames "03 41 0D xx"
+        for (i in 0 until 2000) store.frame(i * 10_000L + 5_000, 0, 0x7E8, byteArrayOf(3, 0x41, 0x0D, (i / 20).toByte(), 0, 0, 0, 0), 0, 8)
+        val found = AutoDecode.run(store, { null }, emptyList())
+        assertTrue("the field in 7E0 is decoded", found.any { it.message.id == 0x7E0 })
+        assertTrue("7E8 is diagnostic traffic", found.none { it.message.id == 0x7E8 })
+    }
+
+    @Test fun aByteRepeatedIsNoChecksum() {
+        val store = FrameStore()
+        for (i in 0 until 2000) { val v = (i / 7).toByte(); store.frame(i * 10_000L, 0, 0x321, byteArrayOf(v, v), 0, 2) }
+        assertTrue(AutoDecode.run(store, { null }, emptyList()).none { it.signal.name.startsWith("CHECKSUM_") })
+    }
+
+    @Test fun overlappingMarkerWindowsEachCountTheirFlips() {
+        val store = FrameStore()
+        store.frame(0, 0, 0x100, byteArrayOf(0), 0, 1)
+        store.frame(1_500, 0, 0x100, byteArrayOf(1), 0, 1)   // tick 15: inside both windows below
+        val (total, windows) = store.windowFlips(intArrayOf(0, 10), 30)
+        assertEquals(1, total[0]!![0])
+        assertEquals(1, windows[0]!![0]!![0])
+        assertEquals(1, windows[0]!![1]!![0])
+    }
+
+    @Test fun renamedFieldsKeepTheirSignAndValueNames() {
+        val signal = Signal("STATE_8", 8, 4, true, true, 1.0, 0.0, "", -1, false).also { it.valueNames = mapOf(15L to "SNA") }
+        val renamed = signal.renamed("E1_STATE_8")
+        assertTrue(renamed.signed)
+        assertEquals(mapOf(15L to "SNA"), renamed.valueNames)
+        assertEquals("E1_STATE_8", renamed.name)
+    }
+
+    @Test fun signalLinesTheAppCantReadSurviveARewrite() {
+        val text = "BO_ 256 A: 8 X\n SG_\tTabbed : 0|8@1+ (1,0) [0|0] \"\" X\n SG_ Odd : weird stuff\n\nBO_ 512 B: 1 X\n SG_ b : 0|8@1+ (1,0) [0|0] \"\" X\n"
+        val dbc = Dbc.parse(text, "t")
+        assertEquals(listOf("Tabbed"), dbc.messages[256]!!.signals.map { it.name })
+        assertEquals(listOf("b"), dbc.messages[512]!!.signals.map { it.name })
+        val written = dbc.withSignal(256, "A", 8, Signal("New", 8, 8, true, false, 1.0, 0.0, "", -1, false)).write()
+        assertTrue(written.contains(" SG_ Odd : weird stuff"))
+        assertEquals(listOf("Tabbed", "New"), Dbc.parse(written, "t").messages[256]!!.signals.map { it.name })
+    }
+
+    @Test fun garbageAndCutRlogsReadWithoutCrashing() {
+        val random = java.util.Random(7)
+        for (size in listOf(0, 3, 8, 64, 4096)) {
+            val bytes = ByteArray(size).also(random::nextBytes)
+            runCatching { LogReader.read(bytes.inputStream(), { _, _, _, _, _, _ -> true }) }.exceptionOrNull()?.let { assertTrue("$size: $it", it is java.io.IOException) }
+        }
+    }
 }
