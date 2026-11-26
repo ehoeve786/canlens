@@ -54,8 +54,17 @@ class SessionState(private val model: AppModel, context: Context, private val pr
 
     private fun file(name: String) = File(folder, "$name.json")
 
+    /**
+     * False while the app holds nothing of the session in use: it started without reopening it (the setting is off, or
+     * its logs crashed the app last time). Leaving the app then must not write the empty workspace over the saved one;
+     * once a log is opened or recorded, that is the session again.
+     */
+    private var holding = true
+
     fun save() {
         if (model.busy) return   // half-loaded data is not the session
+        if (!holding && model.logs.isEmpty() && model.live.recorded == null) return
+        holding = true
         val trace = model.trace
         val plot = model.plot
         val json = JSONObject()
@@ -100,16 +109,17 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         load(false)
     }
 
-    /** Whether the app reopens the session's logs when it starts; off, it starts empty (the session's settings stay saved). */
+    /** Whether the app reopens the session's logs when it starts; off, it starts empty and the saved session is left as it is until a log is opened. */
     var reopenAtStart by mutableStateOf(preferences.getBoolean("reopenAtStart", true))
         private set
 
     fun setReopen(on: Boolean) { reopenAtStart = on; preferences.edit().putBoolean("reopenAtStart", on).apply() }
 
     /** At the start of the app: the session it was left in. */
-    fun restore() { if (reopenAtStart) load(true) }
+    fun restore() { if (reopenAtStart) load(true) else holding = false }
 
     private fun use(name: String) {
+        holding = true
         current = name
         preferences.edit().putString("session", name).apply()
     }
@@ -122,6 +132,7 @@ class SessionState(private val model: AppModel, context: Context, private val pr
         // a log that crashed the app while it was reopened at the start is not tried again
         if (starting && preferences.getBoolean(RESTORING, false)) {
             preferences.edit().putBoolean(RESTORING, false).apply()
+            holding = false
             return
         }
         val settle = { apply(json); preferences.edit().putBoolean(RESTORING, false).apply() }
