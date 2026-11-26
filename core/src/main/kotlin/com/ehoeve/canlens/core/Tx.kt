@@ -7,10 +7,13 @@ class DashKitStatus {
     @Volatile var sent = 0L
     @Volatile var refused = 0L
     @Volatile var expired = 0L
-    /** Per bus: transmit and receive error counters, and the controller's state flags ([BUS_OFF], [ERROR_PASSIVE]). -1 until reported. */
-    val transmitErrors = intArrayOf(-1, -1)
-    val receiveErrors = intArrayOf(-1, -1)
-    val flags = intArrayOf(0, 0)
+    /** One CAN controller's error counters and state flags ([BUS_OFF], [ERROR_PASSIVE]). */
+    class BusHealth(val transmitErrors: Int, val receiveErrors: Int, val flags: Int) {
+        val inTrouble: Boolean get() = flags and (BUS_OFF or ERROR_PASSIVE) != 0
+    }
+
+    /** Per bus, the latest report; null until one came. Replaced whole, so a reader never sees half a report. */
+    @Volatile var buses: List<BusHealth?> = listOf(null, null); private set
 
     /** The Wi-Fi link's last "M" line, [METRICS] in order; null until one came. */
     @Volatile var metrics: LongArray? = null
@@ -27,8 +30,8 @@ class DashKitStatus {
     @Volatile var logLines = 0L; private set
     fun log(): List<String> = synchronized(log) { log.toList() }
 
-    /** True when a controller is off the bus or close to it: the moment to stop sending. */
-    val unhealthy: Boolean get() = flags.any { it and (BUS_OFF or ERROR_PASSIVE) != 0 }
+    /** True when a controller is off the bus or close to it, or hasn't reported yet: no sending then. */
+    val unhealthy: Boolean get() = buses.any { it == null || it.inTrouble }
 
     /** Takes an "H", "D", "M", "G" or "W" line of the firmware; other lines are left alone. */
     fun read(line: String) {
@@ -51,10 +54,13 @@ class DashKitStatus {
             expired = fields[4].toLongOrNull() ?: expired
         } else if (fields[0] == "D" && fields.size == 4 && fields[2].toLongOrNull(16) == BUS_ERRORS && fields[3].length >= 6) {
             val bus = fields[1].toIntOrNull() ?: return
-            if (bus !in transmitErrors.indices) return
-            transmitErrors[bus] = fields[3].substring(0, 2).toIntOrNull(16) ?: return
-            receiveErrors[bus] = fields[3].substring(2, 4).toIntOrNull(16) ?: return
-            flags[bus] = fields[3].substring(4, 6).toIntOrNull(16) ?: return
+            if (bus !in buses.indices) return
+            val health = BusHealth(
+                fields[3].substring(0, 2).toIntOrNull(16) ?: return,
+                fields[3].substring(2, 4).toIntOrNull(16) ?: return,
+                fields[3].substring(4, 6).toIntOrNull(16) ?: return,
+            )
+            buses = buses.toMutableList().also { it[bus] = health }
         }
     }
 
@@ -81,27 +87,62 @@ class DashKitStatus {
 
 /** The rules the app keeps before it asks a DashKit to send; the firmware keeps its own for when to put a frame on the bus. */
 object TxGuard {
-    private val CRITICAL = Regex("steer|epas|eac_|sccm|stalk|brake|ibst|esp_|abs_|torque|accel|pedal|^di_|inverter|rcm_|airbag|restraint|park|gear", RegexOption.IGNORE_CASE)
-    private val PARK = Regex("(^|_)P(ARK)?$", RegexOption.IGNORE_CASE)
+    private val CRITICAL = Regex(
+        "steer|epas|eac_|sccm|stalk|brake|ibst|esp_|abs_|torque|accel|pedal|^di_|inverter|rcm_|airbag|restraint|park|gear" +
+            "|das_control|acc_control|cruise|lkas|lka|hca|scc|mdps|tcs|gas_command|acc_0",
+        RegexOption.IGNORE_CASE,
+    )
+    /** Words that turn a Park value name into something else: NOT_PARK, EXIT_PARK, REQ_P. */
+    private val NOT_PARK = setOf("NOT", "NO", "EXIT", "REQ", "REQUEST", "LEAVE", "TO", "FROM")
+    /** The buses a car's own modules talk on (openpilot's buses from 8 on are its own). */
+    val CAR_BUSES = 0..3
+    /** How old a gear frame may be and still say what the gear is now, in [FrameStore] ticks: 500 ms. */
+    val RECENT = (FrameStore.TICKS_PER_SECOND / 2).toInt()
 
-    /** Messages that steer, brake, drive, restrain or carry the stalks, by their DBC name: never changed at random. */
+    /** Messages that steer, brake, drive, restrain, cruise or carry the stalks, by their DBC name: never changed at random. */
     fun critical(messageName: String) = CRITICAL.containsMatchIn(messageName)
 
+    /** Whether a value name means Park: "P", "PARK", "DI_GEAR_P", but not "NOT_PARK", "EXIT_PARK" or "REQ_P". */
+    fun parkName(name: String): Boolean {
+        val words = name.uppercase().split('_', ' ', '-').filter { it.isNotEmpty() }
+        return words.lastOrNull().let { it == "P" || it == "PARK" } && words.none { it in NOT_PARK }
+    }
+
     /**
-     * Whether the car says it is in Park: true or false from a decoded signal with "gear" in its name whose value
-     * has a name, null when the open data has none (then nobody knows, and that is not Park).
+     * Whether the car says it is in Park: every decoded signal with "gear" in its name, on a car bus, from a frame
+     * of the last [RECENT], on its multiplexer page and with a named value, must name Park. Null when none does
+     * (then nobody knows, and that is not Park).
      */
     fun inPark(store: FrameStore, decoder: (FrameStore.Message) -> DbcMessage?): Boolean? {
         var answer: Boolean? = null
+        val now = store.lastTime
         for (message in store.messages) {
+            if (message.bus !in CAR_BUSES || now - message.lastTime > RECENT) continue
+            val dbc = decoder(message) ?: continue
             val data = message.data
-            for (signal in decoder(message)?.signals ?: continue) {
+            val mux = dbc.multiplexor?.takeIf { it.fits(data.size) }?.raw(data)
+            for (signal in dbc.signals) {
                 if (!signal.name.contains("gear", true) || !signal.fits(data.size)) continue
+                if (signal.muxValue >= 0 && mux != signal.muxValue.toLong()) continue
                 val name = signal.valueNames[signal.raw(data)] ?: continue
-                if (PARK.containsMatchIn(name)) return true
-                answer = false
+                if (!parkName(name)) return false
+                answer = true
             }
         }
         return answer
+    }
+
+    /**
+     * Why a message's frames can't be sent by the app on its own (bits walked, a frame repeated, frames replayed);
+     * null when they can: only on the bus the message was seen on, 0 or 1, only a message the DBC names and not a
+     * critical one, only with a live stream and the car in Park.
+     */
+    fun refusal(messageBus: Int, sendBus: Int, name: String?, live: Boolean, park: Boolean?): String? = when {
+        !live -> "Only with a live stream open, so that the gear is the car's gear now."
+        messageBus != sendBus || sendBus !in 0..1 -> "Only on the bus the message was seen on, and that is bus 0 or 1."
+        name == null -> "Only for messages your DBC names: an undecoded message could steer, brake or drive."
+        critical(name) -> "Not offered for messages that steer, brake, drive, cruise, restrain or carry the stalks."
+        park != true -> "Only while the car reports Park, from every recent decoded gear signal."
+        else -> null
     }
 }

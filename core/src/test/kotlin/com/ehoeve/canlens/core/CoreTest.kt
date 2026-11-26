@@ -93,6 +93,8 @@ class CoreTest {
 
     @Test fun dbcSurvivesWritingAndReading() {
         val added = dbc.withSignal(0x123, "NEW_123", 8, Signal("guess", 7, 10, false, false, 0.1, 5.0, "V", -1, false))
+        // the writer's own text, not only what the parser makes of it
+        assertTrue(added.write().contains("BO_ 291 NEW_123: 8 XXX\n SG_ guess : 7|10@0+ (0.1,5) [0|0] \"V\" XXX\n"))
         val again = Dbc.parse(added.write(), "again")
         assertEquals(added.messages.keys, again.messages.keys)
         val d = bytes("FEDCBA9876543210")
@@ -215,9 +217,10 @@ class CoreTest {
         // a log stops at the limit; a live stream drops its oldest chunk instead
         val data = ByteArray(8)
         var accepted = 0
+        val before = store.frameCount
         while (store.frame(1000, 0, 1, data, 0, 8)) accepted++
         assertTrue(store.truncated)
-        assertEquals(FrameStore.CAPACITY - 3, accepted)
+        assertEquals(FrameStore.CAPACITY * store.maxChunks - before, accepted.toLong())
         val live = FrameStore(maxChunks = 2).apply { dropOldest = true }
         for (i in 0 until FrameStore.CAPACITY * 3) live.frame(i * 100L, 0, 1, data, 0, 8)
         assertFalse(live.truncated)
@@ -434,6 +437,7 @@ class CoreTest {
         val store = FrameStore()
         for (i in 0 until 400) store.frame(i * 20_000L, 1, 0x26D, byteArrayOf((i and 3).toByte(), ((i + 2) and 3).toByte()), 0, 2)
         val dbc = Dbc.parse("BO_ 621 UNK_26D: 2 X\n SG_ UNK_26D_counter : 0|2@1+ (1,0) [0|0] \"\" X\n", "d")
+        assertTrue("without the DBC the second counter is found", AutoDecode.run(store, { null }, emptyList()).any { it.signal.name.startsWith("COUNTER") && it.signal.start == 8 })
         assertTrue(AutoDecode.run(store, { dbc.messages[it.id] }, emptyList()).none { "Counter" in it.signal.name || it.signal.name.startsWith("COUNTER") })
     }
 
@@ -446,7 +450,9 @@ class CoreTest {
         assertTrue(found.all { it.confidence < 0.7 && "doesn't fit" in it.evidence })                           // the flag is a counter's bit, so its neighbour is doubted too
         val still = FrameStore()
         for (i in 0 until 200) still.frame(i * 20_000L, 1, 0x25D, byteArrayOf(if (i > 100) 1 else 0, 0), 0, 2)
-        assertTrue(AutoDecode.fromCommunity(still, { null }, listOf("model3dbc" to community)).all { it.confidence >= 0.7 })
+        val fitting = AutoDecode.fromCommunity(still, { null }, listOf("model3dbc" to community))
+        assertEquals(2, fitting.size)
+        assertTrue(fitting.all { it.confidence >= 0.7 })
     }
 
     @Test fun keepsSignalStatusesInTheFile() {
@@ -644,14 +650,20 @@ class CoreTest {
         val status = DashKitStatus()
         status.read("A,0,249,00")
         status.read("H,1,12,3,4,0,0")
-        assertTrue(status.armed && status.sent == 12L && status.refused == 3L && status.expired == 4L && !status.unhealthy)
+        assertTrue(status.armed && status.sent == 12L && status.refused == 3L && status.expired == 4L)
+        assertTrue("no bus reported yet: not healthy", status.unhealthy)
+        status.read("D,0,1da50006,0000000000000000")
+        assertTrue("bus 1 not reported yet", status.unhealthy)
+        status.read("D,1,1da50006,0102000000000000")
+        assertFalse(status.unhealthy)
         status.read("D,1,1da50006,8a7f200102030405")
-        assertEquals(listOf(-1, 0x8A, -1, 0x7F, 0, 0x20), listOf(status.transmitErrors[0], status.transmitErrors[1], status.receiveErrors[0], status.receiveErrors[1], status.flags[0], status.flags[1]))
+        val bus1 = status.buses[1]!!
+        assertEquals(listOf(0x8A, 0x7F, 0x20), listOf(bus1.transmitErrors, bus1.receiveErrors, bus1.flags))
         assertTrue(status.unhealthy)
         status.read("D,1,1da50001,ffffffffffffffff")   // another record: not the error state
         status.read("D,7,1da50006,0000000000000000")
         status.read("H,x")
-        assertEquals(0x8A, status.transmitErrors[1])
+        assertEquals(0x8A, status.buses[1]!!.transmitErrors)
         for (name in listOf("EPAS3P_status", "SCCM_leftStalk", "DI_torque", "ESP_brakeTorque", "RCM_inertial1", "IBST_status", "DI_systemStatus")) assertTrue(name, TxGuard.critical(name))
         for (name in listOf("VCLEFT_doorStatus", "UI_gpsVehicleSpeed", "VCRIGHT_hvacStatus", "BMS_hvBusStatus")) assertFalse(name, TxGuard.critical(name))
         val gears = Dbc.parse("BO_ 280 DI_systemStatus: 3 XXX\n SG_ DI_gear : 21|3@1+ (1,0) [0|0] \"\" XXX\nVAL_ 280 DI_gear 1 \"DI_GEAR_P\" 4 \"DI_GEAR_D\" ;\n", "g")
@@ -666,24 +678,26 @@ class CoreTest {
     }
 
     @Test fun findsTheCommaByItsZeroMqGreeting() {
-        // a publisher on 127.0.0.3, a server that says nothing on .4, one that says something else on .5
-        fun server(last: Int, answer: ByteArray?) = java.net.ServerSocket(0, 8, InetAddress.getByName("127.0.0.$last")).also { server ->
+        // on 127.0.0.1 only (other loopback addresses aren't there on every OS): a publisher, a server that says
+        // nothing, one that says something else, each on its own port
+        val loopback = InetAddress.getByName("127.0.0.1")
+        fun server(answer: ByteArray?) = java.net.ServerSocket(0, 8, loopback).also { server ->
             Thread {
                 while (!server.isClosed) runCatching { server.accept().use { if (answer == null) Thread.sleep(1000) else it.getOutputStream().write(answer) } }
             }.apply { isDaemon = true }.start()
         }
-        val greeting = ByteArray(64).also { it[0] = 0xFF.toByte(); it[9] = 0x7F; it[10] = 3 }
-        val publisher = server(3, greeting)
-        val port = publisher.localPort
-        val silent = java.net.ServerSocket(port, 8, InetAddress.getByName("127.0.0.4"))
-        val other = java.net.ServerSocket(port, 8, InetAddress.getByName("127.0.0.5"))
-        Thread { runCatching { while (true) silent.accept() } }.apply { isDaemon = true }.start()
-        Thread { runCatching { while (true) other.accept().use { it.getOutputStream().write("HTTP/1.1 400\r\n\r\n".toByteArray()) } } }.apply { isDaemon = true }.start()
+        val publisher = server(ByteArray(64).also { it[0] = 0xFF.toByte(); it[9] = 0x7F; it[10] = 3 })
+        val silent = server(null)
+        val other = server("HTTP/1.1 400\r\n\r\n".toByteArray())
         try {
-            val candidates = (1..6).map { InetAddress.getByName("127.0.0.$it") }
-            assertEquals(InetAddress.getByName("127.0.0.3"), CommaFinder.find(candidates, port))
-            assertNull(CommaFinder.find(candidates.filter { it.address[3].toInt() != 3 }, port))
-            assertNull(CommaFinder.find(emptyList(), port))
+            assertTrue(CommaFinder.publishes(loopback, publisher.localPort))
+            assertFalse(CommaFinder.publishes(loopback, silent.localPort))
+            assertFalse(CommaFinder.publishes(loopback, other.localPort))
+            // the search itself, over addresses with a stand-in test: the one that answers, none, nothing to search
+            val candidates = (1..6).map { InetAddress.getByAddress(byteArrayOf(10, 0, 0, it.toByte())) }
+            assertEquals(candidates[2], CommaFinder.find(candidates, 0) { host, _ -> host == candidates[2] })
+            assertNull(CommaFinder.find(candidates, 0) { _, _ -> false })
+            assertNull(CommaFinder.find(emptyList(), 0))
         } finally {
             publisher.close(); silent.close(); other.close()
         }
@@ -706,11 +720,14 @@ class CoreTest {
     }
 
     @Test fun readsCandumpLinesFromTcp() {
-        val server = java.net.ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
-        Thread { server.accept().use { it.getOutputStream().write("(12.000100) can3 239#0102\n(12.010200) can3 5D9#AABBCCDD\nbad line\n".toByteArray()) } }.apply { isDaemon = true }.start()
+        val server = java.net.ServerSocket(0, 1, InetAddress.getByName("127.0.0.1")).apply { soTimeout = 5000 }
         val frames = ArrayList<Frame>()
-        CandumpStream("127.0.0.1", server.localPort).use { stream -> stream.run { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true } }
-        server.close()
+        try {
+            Thread { runCatching { server.accept().use { it.getOutputStream().write("(12.000100) can3 239#0102\n(12.010200) can3 5D9#AABBCCDD\nbad line\n".toByteArray()) } } }.apply { isDaemon = true }.start()
+            CandumpStream("127.0.0.1", server.localPort, silenceMs = 2000).use { stream -> stream.run { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true } }
+        } finally {
+            server.close()
+        }
         assertEquals(listOf(12_000_100L to 0x239, 12_010_200L to 0x5D9), frames.map { it.time to it.id })
         assertTrue(frames.all { it.bus == 3 })
         assertArrayEquals(bytes("AABBCCDD"), frames[1].data)
@@ -760,7 +777,7 @@ class CoreTest {
         assertEquals(10, rows.size)
         assertEquals(1_000, rows.time(1))
         assertEquals(5, rows.rowAt(5_500))
-        assertEquals(0, rows.rowAt(-1))
+        assertEquals(-1, rows.rowAt(-1))
         assertEquals(9, rows.rowAt(Int.MAX_VALUE))
         val third = all.update().position(2)   // 0x118, 0x249, 0x118
         assertEquals(2, third and FrameStore.CAPACITY - 1)
@@ -836,5 +853,118 @@ class CoreTest {
         DashKitLine.parse("A,1,456,05,000003e8", 6_000_000, buffer, sink)       // no clock: the arrival
         assertEquals(listOf(5_000_000L, 5_001_000L, 7_000_000L, 6_000_000L), times)
         assertEquals(listOf("0102", "03", "04", "05"), datas)
+    }
+
+    @Test fun transmitGates() {
+        // A1, A2, A7: the bus it was seen on, 0 or 1; a DBC name, not a critical one; live and in Park
+        assertNull(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", live = true, park = true))
+        assertTrue(TxGuard.refusal(0, 1, "VCLEFT_doorStatus", true, true)!!.contains("bus"))
+        assertTrue(TxGuard.refusal(2, 2, "VCLEFT_doorStatus", true, true)!!.contains("bus"))
+        assertTrue(TxGuard.refusal(0, 0, null, true, true)!!.contains("DBC"))
+        assertTrue(TxGuard.refusal(0, 0, "DAS_control", true, true)!!.contains("steer"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", false, true)!!.contains("live"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", true, null)!!.contains("Park"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", true, false)!!.contains("Park"))
+        for (name in listOf("DAS_control", "ACC_CONTROL", "LKAS11", "MDPS12", "SCC12", "TCS13", "HCA_01", "ACC_06", "GAS_COMMAND", "UI_cruiseState")) assertTrue(name, TxGuard.critical(name))
+        // A4: what Park is
+        for (name in listOf("P", "PARK", "DI_GEAR_P", "Park")) assertTrue(name, TxGuard.parkName(name))
+        for (name in listOf("NOT_PARK", "EXIT_PARK", "REQ_P", "DI_GEAR_D", "PARKING_BRAKE")) assertFalse(name, TxGuard.parkName(name))
+    }
+
+    @Test fun parkNeedsEveryRecentGearSignalOnTheCarBuses() {
+        val dbc = Dbc.parse(
+            "BO_ 280 DI_systemStatus: 3 XXX\n SG_ DI_gear : 21|3@1+ (1,0) [0|0] \"\" XXX\n" +
+                "BO_ 400 GEARBOX: 2 XXX\n SG_ page M : 0|4@1+ (1,0) [0|0] \"\" XXX\n SG_ gearShown m1 : 8|2@1+ (1,0) [0|0] \"\" XXX\n" +
+                "VAL_ 280 DI_gear 1 \"DI_GEAR_P\" 4 \"DI_GEAR_D\" ;\nVAL_ 400 gearShown 0 \"P\" 1 \"D\" ;\n", "g")
+        val decoder: (FrameStore.Message) -> DbcMessage? = { dbc.messages[it.id] }
+        val store = FrameStore()
+        store.frame(0, 0, 0x118, bytes("000020"), 0, 3)           // P
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(1000, 1, 0x190, bytes("0201"), 0, 2)           // page 2: gearShown isn't on it, so its "D" doesn't count
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(2000, 1, 0x190, bytes("0101"), 0, 2)           // page 1, D: the two disagree
+        assertEquals(false, TxGuard.inPark(store, decoder))
+        store.frame(3000, 1, 0x190, bytes("0100"), 0, 2)           // page 1, P
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(4000, 8, 0x118, bytes("000080"), 0, 3)        // openpilot's bus says D: not a car bus
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(900_000, 0, 0x700, bytes("00"), 0, 1)          // 0.9 s later, nothing new on gear: too old to tell
+        assertNull(TxGuard.inPark(store, decoder))
+    }
+
+    @Test fun shortExtendedIdsStayApartFromStandardOnes() {
+        val frames = ArrayList<Pair<Int, Int>>()
+        val sink = FrameSink { _, bus, id, _, _, _ -> frames += bus to id; true }
+        val buffer = ByteArray(64)
+        LogReader.candump("(1.0) can0 123#00", buffer, sink)
+        LogReader.candump("(1.0) can0 00000123#00", buffer, sink)
+        LogReader.candump("(1.0) can0 18DAF110#00", buffer, sink)
+        DashKitLine.parse("A,1,00000123,00", 0, buffer, sink)
+        assertEquals(listOf(0 to 0x123, 0 to (0x123 or CanId.EXTENDED), 0 to 0x18DAF110, 1 to (0x123 or CanId.EXTENDED)), frames)
+        val text = StringBuilder().apply { appendCandump(1_000_000, 0, 0x123 or CanId.EXTENDED, buffer, 0, 1); appendCandump(1_000_000, 0, 0x123, buffer, 0, 1) }.toString()
+        assertEquals("(1.000000) can0 00000123#00\n(1.000000) can0 123#00\n", text)
+        val dbc = Dbc.parse("BO_ 2147483939 SHORT_EXT: 1 X\n SG_ s : 0|8@1+ (1,0) [0|0] \"\" X\n\nBO_ 291 STD: 1 X\n SG_ t : 0|8@1+ (1,0) [0|0] \"\" X\n", "x")
+        assertEquals("SHORT_EXT", dbc.messages[0x123 or CanId.EXTENDED]?.name)
+        assertEquals("STD", dbc.messages[0x123]?.name)
+        assertTrue(dbc.write().contains("BO_ 2147483939 SHORT_EXT"))
+        assertNull(DashKitLine.transmit(0, 0x123 or CanId.EXTENDED, bytes("00")))
+    }
+
+    @Test fun wideSignedAndOneBitSignals() {
+        val d = bytes("FFFFFFFFFFFFFFFF")
+        val wide = Signal("w", 0, 64, true, false, 1.0, 0.0, "", -1, false)
+        assertEquals(-1L, wide.raw(d))
+        assertEquals(1.8446744073709552E19, wide.physical(wide.raw(d)), 1e4)          // read as unsigned
+        val signedBig = Signal("s", 7, 12, false, true, 1.0, 0.0, "", -1, false)     // big-endian: byte 0 and the top half of byte 1
+        assertEquals(-1L, signedBig.raw(bytes("FFF0")))
+        assertEquals(0x7FFL, signedBig.raw(bytes("7FF0")))
+        assertEquals(-2048L, signedBig.raw(bytes("8000")))
+        val bit = Signal("b", 13, 1, true, false, 1.0, 0.0, "", -1, false)
+        assertEquals(1L, bit.raw(bytes("0020")))
+        assertEquals(0L, bit.raw(bytes("FFDF")))
+    }
+
+    @Test fun csvWithQuotesCrlfAndExtendedIds() {
+        val (format, frames) = read("Time Stamp,ID,Extended,Dir,Bus,LEN,D1,D2\r\n\"1000\",\"0x123\",\"true\",Rx,0,2,01,02\r\n2000,456,false,Rx,1,1,FF\r\n")
+        assertEquals("CSV", format)
+        assertEquals(listOf(0x123 or CanId.EXTENDED, 0x456), frames.map { it.id })
+        assertArrayEquals(bytes("0102"), frames[0].data)
+        assertEquals(listOf(1000L, 2000L), frames.map { it.time })
+    }
+
+    @Test fun ascInDecimalAndCanFdLinesSkipped() {
+        val (format, frames) = read("base dec  timestamps absolute\n   0.010000 1  291  Rx   d 2 1 255\n   0.020000 CANFD 1 Rx 123 1 0 8 8 01 02 03 04 05 06 07 08\n")
+        assertEquals("ASC", format)
+        assertEquals(listOf(291), frames.map { it.id })
+        assertArrayEquals(bytes("01FF"), frames[0].data)
+    }
+
+    @Test fun filterEdgeCases() {
+        assertNull(Filter.compile("", emptyArray()) { null })
+        assertNull(Filter.compile("   ", emptyArray()) { null })
+        // each mistake is named, not passed over
+        for ((text, said) in listOf("(id=1" to ")", "id=" to "id=", "id=zz" to "zz", ")" to ")")) {
+            val e = runCatching { Filter.compile(text, emptyArray()) { null } }.exceptionOrNull()
+            assertTrue(text, e is IllegalArgumentException && said in e.message.orEmpty())
+        }
+    }
+
+    @Test fun deviceClockKeepsALateFrameFromBeforeAWrapInItsLap() {
+        val clock = DeviceClock()
+        assertEquals(1_000L, clock.micros(0xFFFFFF00L, 1_000))
+        assertEquals(1_000L + 0x100 + 0x10, clock.micros(0x10L, 2_000))               // wrapped
+        assertEquals(1_000L + 0x80, clock.micros(0xFFFFFF80L, 3_000))                  // late, from before the wrap
+        assertEquals(1_000L + 0x100 + 0x20, clock.micros(0x20L, 4_000))                // and on again
+    }
+
+    @Test fun dashKitLinesWithImpossibleIdsAreSkipped() {
+        val frames = ArrayList<Int>()
+        val sink = FrameSink { _, _, id, _, _, _ -> frames += id; true }
+        val buffer = ByteArray(64)
+        DashKitLine.parse("A,0,FFFFFFFFF,00", 0, buffer, sink)
+        DashKitLine.parse("A,0,3FFFFFFF,00", 0, buffer, sink)
+        DashKitLine.parse("A,0,1FFFFFFF,00", 0, buffer, sink)
+        DashKitLine.parse("A,0,zz,00", 0, buffer, sink)
+        assertEquals(listOf(0x1FFFFFFF), frames)
     }
 }

@@ -155,11 +155,12 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
             // one Cap'n Proto message: segment count - 1, the segment sizes in words, padding to a word, the segments
             val segments = Cereal.int(message, 0) + 1
             if (segments !in 1..512) continue
-            var at = (4 + 4 * segments + 7) / 8 * 8
+            // sizes are unsigned words: summed as a Long, so a garbage size can't wrap around into range
+            var at = (4L + 4 * segments + 7) / 8 * 8
             if (at > size) continue
-            for (s in 0 until segments) { starts[s] = at; at += Cereal.int(message, 4 + 4 * s) * 8 }
-            starts[segments] = at
-            if (at < 0 || at > size) continue
+            for (s in 0 until segments) { starts[s] = at.toInt(); at += (Cereal.int(message, 4 + 4 * s).toLong() and 0xFFFFFFFFL) * 8; if (at > size) break }
+            if (at > size) continue
+            starts[segments] = at.toInt()
             if (!Cereal.canFrames(message, starts, segments, sink)) return
         }
     }
@@ -206,10 +207,10 @@ object DashKitLine {
         if (c2 < 0 || c3 < 0) return true
         val c4 = line.indexOf(',', c3 + 1)
         val bus = line.substring(2, c2).toIntOrNull() ?: return true
-        val id = line.substring(c2 + 1, c3).toLongOrNull(16) ?: return true
+        val id = line.substring(c2 + 1, c3).toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
         val length = LogReader.hex(line, c3 + 1, if (c4 < 0) line.length else c4, buffer)
         val device = if (c4 < 0 || clock == null) null else line.substring(c4 + 1).toLongOrNull(16)
-        return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, id.toInt(), buffer, 0, length)
+        return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, CanId.of(id, c3 - c2 - 1 > 3), buffer, 0, length)
     }
 }
 
@@ -226,6 +227,8 @@ class DeviceClock {
     fun micros(device: Long, arrival: Long): Long {
         if (last < 0) offset = arrival - device
         else if (device < last && last - device > 0x80000000L) wraps += 0x100000000L
+        // a frame from just before the last wrap, arriving after one from just after it: the earlier lap
+        else if (device > last && device - last > 0x80000000L) return device + wraps - 0x100000000L + offset
         last = device
         return device + wraps + offset
     }
@@ -252,7 +255,8 @@ fun StringBuilder.appendMarker(timeMicros: Long, note: String) {
 fun StringBuilder.appendCandump(timeMicros: Long, bus: Int, id: Int, data: ByteArray, offset: Int, length: Int) {
     val hex = "0123456789ABCDEF"
     append('(').appendSeconds(timeMicros).append(") can").append(bus).append(' ')
-    for (shift in (if (id in 0..0x7FF) 8 else 28) downTo 0 step 4) append(hex[id ushr shift and 15])
+    val raw = CanId.raw(id)
+    for (shift in (if (CanId.isExtended(id)) 28 else 8) downTo 0 step 4) append(hex[raw ushr shift and 15])
     append(if (length > 8) "##0" else "#")
     for (i in offset until offset + length) { append(hex[data[i].toInt() ushr 4 and 15]); append(hex[data[i].toInt() and 15]) }
     append('\n')

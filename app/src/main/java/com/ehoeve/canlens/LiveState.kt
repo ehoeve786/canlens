@@ -72,7 +72,7 @@ class LiveState(
     fun startComma(address: String) {
         val typed = address.trim()
         val port = typed.substringAfter(':', "").trim().toIntOrNull() ?: CommaStream.cerealPort("can")
-        start(LiveSource.COMMA, "comma") { sink ->
+        start(LiveSource.COMMA, "comma") { sink, mine ->
             val host = findComma(typed.substringBefore(':'), port)
             // the DashKit's chassis bus, from dashkitd on the comma, as bus 3; a comma without it just has no bus 3.
             // It is connected again while the comma's stream runs: it ends after a quiet spell, and the car's bus may sleep.
@@ -87,7 +87,7 @@ class LiveState(
                     if (!done.get()) runCatching { Thread.sleep(2000) }
                 }
             }
-            try { CommaStream(host, port).also { connection = it }.use { it.run(sink) } } finally { done.set(true); chassis.get()?.close() }
+            try { CommaStream(host, port).held(mine).use { it.run(sink) } } finally { done.set(true); chassis.get()?.close() }
         }
     }
 
@@ -102,13 +102,29 @@ class LiveState(
         return found
     }
 
-    fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink ->
-        DashKitUsb(context).also { connection = it; dashKit = it }.use { it.run(sink) }
+    fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink, mine ->
+        // published as the transmit link only once the port is ours, and taken back when the stream ends
+        DashKitUsb(context).held(mine).use { usb ->
+            try { usb.run(sink) { if (mine == generation) dashKit = usb } } finally { if (dashKit === usb) dashKit = null }
+        }
     }
 
     /** Over the phone's hotspot: at the address it had last time, else looked for there. */
-    fun startDashKitWifi() = start(LiveSource.DASHKIT_WIFI, "DashKit Wi-Fi") { sink ->
-        DashKitWifi(findDashKit()).also { connection = it; dashKitWifi = it }.use { it.run(sink) }
+    fun startDashKitWifi() = start(LiveSource.DASHKIT_WIFI, "DashKit Wi-Fi") { sink, mine ->
+        DashKitWifi(findDashKit()).held(mine).use { wifi ->
+            dashKitWifi = wifi
+            try { wifi.run(sink) } finally { if (dashKitWifi === wifi) dashKitWifi = null }
+        }
+    }
+
+    /**
+     * Makes this the connection of stream [mine], for [stop] to close; when that stream was stopped meanwhile (a
+     * thread of an old stream still connecting), closes it instead and ends that thread.
+     */
+    private fun <T : Closeable> T.held(mine: Int): T {
+        synchronized(this@LiveState) { if (mine == generation) { connection = this; return this } }
+        runCatching { close() }
+        throw IOException("stopped")
     }
 
     private fun findDashKit(): String {
@@ -122,7 +138,7 @@ class LiveState(
         return found
     }
 
-    private fun start(from: LiveSource, name: String, connect: (FrameSink) -> Unit) {
+    private fun start(from: LiveSource, name: String, connect: (FrameSink, Int) -> Unit) {
         stop()
         // under the store's lock, so a frame of the previous stream can't land after the clear
         val mine = synchronized(store) { store.clear(); ++generation }
@@ -154,7 +170,7 @@ class LiveState(
         job = scope.launch {
             launch(Dispatchers.IO) {
                 while (isActive) {
-                    val problem = try { connect(sink); "stream ended" } catch (e: AccessRefused) {
+                    val problem = try { connect(sink, mine); "stream ended" } catch (e: AccessRefused) {
                         // asking again every 2 s would pester the user: a refusal ends the stream
                         withContext(Dispatchers.Main) { if (isActive) { stop(); report("$name: ${e.message}. Stopped") } }
                         break
@@ -178,10 +194,10 @@ class LiveState(
     }
 
     fun stop() {
-        generation++
+        val old = synchronized(this) { generation++; connection.also { connection = null } }
         job?.cancel(); job = null
         sensors?.stop(); sensors = null
-        runCatching { connection?.close() }; connection = null; dashKit = null; dashKitWifi = null
+        runCatching { old?.close() }; dashKit = null; dashKitWifi = null
         setRecording(false)
         if (source != LiveSource.NONE) {
             source = LiveSource.NONE

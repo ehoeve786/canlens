@@ -12,6 +12,8 @@ import android.content.Intent
 import android.content.Context
 import android.Manifest
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.key
 import androidx.compose.material3.Switch
 import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.selection.toggleable
@@ -152,7 +154,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
         },
     ) { padding ->
         if (empty) {
-            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size, session = model.session.current, onSessions = { showSessions = true }, onCancel = if (model.busy) ({ model.cancelling = true }) else null)
+            EmptyState(model.status, Modifier.padding(padding), onOpen = { openLogs.launch(arrayOf("*/*")) }, onLive = { showLive = true }, onDbc = { showDbcs = true }, dbcCount = dbcs.size, session = model.session.current, onSessions = { showSessions = true })
         } else Column(Modifier.padding(padding)) {
             // short labels, so that all of them fit in two rows without scrolling
             FlowRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -232,7 +234,7 @@ fun MessageList(model: AppModel, onFind: () -> Unit, onAuto: () -> Unit, onOpen:
 }
 
 @Composable
-private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit, onCancel: (() -> Unit)? = null) {
+private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, onLive: () -> Unit, onDbc: () -> Unit, dbcCount: Int, session: String, onSessions: () -> Unit) {
     // from the top, not centred: on a tall phone centring leaves a gap under the title
     Column(modifier.fillMaxSize().padding(horizontal = 32.dp).padding(top = 16.dp, bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedLogo(Modifier.size(120.dp))
@@ -243,8 +245,6 @@ private fun EmptyState(status: String, modifier: Modifier, onOpen: () -> Unit, o
         OutlinedButton(onClick = onDbc, modifier = Modifier.fillMaxWidth()) { Text(if (dbcCount == 0) "Add a DBC" else "DBC files · $dbcCount") }
         TextButton(onClick = onSessions) { Text("Session: $session") }
         Hint(status, Modifier.padding(top = 8.dp))
-        // reopening the last session's logs at the start: stop it to start empty
-        if (onCancel != null) TextButton(onClick = onCancel) { Text("Cancel") }
     }
 }
 
@@ -269,7 +269,8 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("DBC files", style = MaterialTheme.typography.titleLarge)
             if (model.dbc.files.isEmpty()) Hint("None yet. Add one for all buses, or one per bus.")
-            model.dbc.files.forEachIndexed { index, loaded ->
+            var deleting by remember { mutableStateOf<String?>(null) }
+            model.dbc.files.forEachIndexed { index, loaded -> key(loaded.dbc.name) {
                 var menu by remember { mutableStateOf(false) }
                 Surface(shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -286,9 +287,18 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
                             }
                         }
                         IconButton(onClick = { exporting = index; export.launch(loaded.dbc.name) }) { Icon(Icons.Default.Share, "Export ${loaded.dbc.name}") }
-                        IconButton(onClick = { model.dbc.remove(index) }) { Icon(Icons.Default.Delete, "Remove ${loaded.dbc.name}") }
+                        IconButton(onClick = { deleting = loaded.dbc.name }) { Icon(Icons.Default.Delete, "Remove ${loaded.dbc.name}") }
                     }
                 }
+            } }
+            deleting?.let { name ->
+                AlertDialog(
+                    onDismissRequest = { deleting = null },
+                    title = { Text("Remove $name?") },
+                    text = { Text("The app's copy goes, and Undo can't bring it back. The file it was opened from, and the copies in Download/CANLens/dbc/, stay.") },
+                    confirmButton = { TextButton(onClick = { model.dbc.files.indexOfFirst { it.dbc.name == name }.takeIf { it >= 0 }?.let(model.dbc::remove); deleting = null }) { Text("Remove") } },
+                    dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+                )
             }
             Button(onClick = { open.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(8.dp)); Text("Add DBC") }
         }
@@ -370,7 +380,7 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") },
                 visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = ssid.isNotBlank() && ssid.length <= 32 && password.length <= 63, onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
+                OutlinedButton(enabled = wifiSettingsValid(ssid.trim(), password), onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
                 OutlinedButton(onClick = { setUp(null) }, modifier = Modifier.weight(1f)) { Text("Switch its Wi-Fi off") }
             }
             if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
@@ -440,4 +450,14 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)
         }
     }
+}
+
+/**
+ * Whether the DashKit can take this network: a name of 1 to 32 bytes and a password of 8 to 63 (or none), as the
+ * ESP32 counts them (UTF-8), and no control characters, which would end the firmware's line or its string.
+ */
+fun wifiSettingsValid(ssid: String, password: String): Boolean {
+    val name = ssid.toByteArray(Charsets.UTF_8).size
+    val key = password.toByteArray(Charsets.UTF_8).size
+    return name in 1..32 && (key == 0 || key in 8..63) && (ssid + password).none { it.isISOControl() }
 }

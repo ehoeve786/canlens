@@ -213,8 +213,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         export(uri) { out ->
             val named = keys.mapNotNull { key ->
                 val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapNotNull null
-                val decoder = dbc.decoder(key.bus, key.id) ?: return@mapNotNull null
-                val signal = decoder.signals.firstOrNull { it.name == key.signal } ?: return@mapNotNull null
+                // a plotted Decode suggestion isn't in a DBC yet: it goes along as plotted
+                val (decoder, signal) = plot.unsaved[key] ?: dbc.decoder(key.bus, key.id)?.let { d -> d.signals.firstOrNull { it.name == key.signal }?.let { d to it } } ?: return@mapNotNull null
                 "${key.bus}:${hexId(key.id)}:${key.signal}" to store.series(message, decoder, signal)
             }
             Export.signals(named, seconds(from), seconds(to), out)

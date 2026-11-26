@@ -125,12 +125,12 @@ object LogReader {
         var busStart = busEnd
         while (busStart > close + 2 && line[busStart - 1].isDigit()) busStart--
         val bus = if (busStart < busEnd) line.substring(busStart, busEnd).toIntOrNull() ?: 0 else 0
-        val id = line.substring(space + 1, hash).toLongOrNull(16) ?: return true
+        val id = line.substring(space + 1, hash).toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
         var p = hash + 1
         if (p < line.length && line[p] == '#') p += 2
         val length = hex(line, p, line.length, buffer)
         if (time < 0 || length < 0) return true
-        return sink.frame(time, bus, id.toInt(), buffer, 0, length)
+        return sink.frame(time, bus, CanId.of(id, hash - space - 1 > 3), buffer, 0, length)
     }
 
     /** `   0.016728 1  123  Rx   d 8 3E 42 03 00 39 00 03 01`, channels counted from 1, an `x` after extended ids. */
@@ -144,7 +144,7 @@ object LogReader {
         val length = (t[5].toIntOrNull(radix) ?: return true).coerceAtMost(minOf(t.size - 6, buffer.size))
         if (time < 0 || length < 0) return true
         for (i in 0 until length) buffer[i] = (t[6 + i].toIntOrNull(radix) ?: return true).toByte()
-        return sink.frame(time, channel - 1, id.toInt(), buffer, 0, length)
+        return sink.frame(time, channel - 1, CanId.of(id, t[2].endsWith('x', ignoreCase = true)), buffer, 0, length)
     }
 
     /**
@@ -152,7 +152,7 @@ object LogReader {
      * DashPilot's older recordings (`ms,bus,id,data`; a bus of 16 or 17 marks the DashKit firmware's own statistics).
      */
     private class CsvColumns(header: String) {
-        private val names = header.lowercase().split(',').map { it.trim() }
+        private val names = header.lowercase().split(',').map { it.trim().trim('"') }
         private val milliseconds = names.indexOf("ms")
         private val time = if (milliseconds >= 0) milliseconds else names.indexOfFirst { it == "time stamp" || it == "time" || it == "timestamp" }
         private val id = names.indexOfFirst { it == "id" || it == "addr" || it == "address" }
@@ -160,11 +160,13 @@ object LogReader {
         private val data = names.indexOf("data")
         private val length = names.indexOfFirst { it == "len" || it == "dlc" }
         private val firstByte = names.indexOf("d1")
+        private val extended = names.indexOf("extended")
 
         init { if (time < 0 || id < 0 || (data < 0 && firstByte < 0)) throw IOException("Unknown CSV columns: $header") }
 
         fun row(line: String, buffer: ByteArray, sink: FrameSink): Boolean {
-            val c = line.split(',')
+            // quoted cells ("123") are read without their quotes; a comma inside quotes doesn't occur in these exports
+            val c = line.split(',').map { it.trim().trim('"') }
             if (c.size <= maxOf(time, id, data, firstByte)) return true
             val stamp = c[time].trim()
             // a decimal point means seconds; SavvyCAN writes whole microseconds
@@ -175,7 +177,7 @@ object LogReader {
             }
             val frameBus = c.getOrNull(bus)?.trim()?.toIntOrNull() ?: 0
             if (milliseconds >= 0 && frameBus and 0x10 != 0) return true
-            val frameId = c[id].trim().removePrefix("0x").removePrefix("0X").toLongOrNull(16) ?: return true
+            val frameId = c[id].removePrefix("0x").removePrefix("0X").toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
             val n = if (data >= 0) {
                 val text = c[data].trim().removePrefix("0x").removePrefix("0X")
                 hex(text, 0, text.length, buffer)
@@ -186,7 +188,8 @@ object LogReader {
                 if (ok) count else -1
             }
             if (micros < 0 || n < 0) return true
-            return sink.frame(micros, frameBus, frameId.toInt(), buffer, 0, n)
+            val isExtended = c.getOrNull(extended)?.lowercase().let { it == "true" || it == "1" }
+            return sink.frame(micros, frameBus, CanId.of(frameId, isExtended), buffer, 0, n)
         }
     }
 
@@ -270,34 +273,37 @@ internal object Cereal {
      * end) to [sink]. Events of other kinds and malformed ones are skipped. False once the sink wants no more.
      */
     fun canFrames(m: ByteArray, starts: IntArray, segments: Int, sink: FrameSink): Boolean {
+        // [m] is reused and may be longer than this message: every read is kept below its end, not the array's
+        val end = starts[segments]
+        fun word(at: Int): Long { if (at < 0 || at + 8 > end) throw IndexOutOfBoundsException(); return long(m, at) }
         try {
-            val event = follow(m, starts, segments, starts[0])
-            if (event < 0 || long(m, event) and 3L != 0L) return true
-            val root = long(m, event)
+            val event = follow(m, starts, segments, starts[0], end)
+            if (event < 0 || word(event) and 3L != 0L) return true
+            val root = word(event)
             val dataWords = (root ushr 32 and 0xFFFF).toInt()
             val struct = event + 8 + (root.toInt() shr 2) * 8
             if (dataWords < 2 || root ushr 48 and 0xFFFF == 0L) return true
-            if ((m[struct + EVENT_WHICH_OFFSET].toInt() and 0xFF or (m[struct + EVENT_WHICH_OFFSET + 1].toInt() and 0xFF shl 8)) != EVENT_CAN) return true
-            val time = long(m, struct) / 1000
-            val list = follow(m, starts, segments, struct + dataWords * 8)
+            if ((word(struct + EVENT_WHICH_OFFSET) and 0xFFFF).toInt() != EVENT_CAN) return true
+            val time = word(struct) / 1000
+            val list = follow(m, starts, segments, struct + dataWords * 8, end)
             if (list < 0) return true
-            val pointer = long(m, list)
+            val pointer = word(list)
             if (pointer and 3L != 1L || (pointer ushr 32 and 7).toInt() != 7) return true   // a list of structs
             val tag = list + 8 + (pointer.toInt() shr 2) * 8
-            val count = int(m, tag) ushr 2
-            val elementData = (long(m, tag) ushr 32 and 0xFFFF).toInt() * 8
-            val elementSize = elementData + (long(m, tag) ushr 48 and 0xFFFF).toInt() * 8
+            val count = word(tag).toInt() ushr 2
+            val elementData = (word(tag) ushr 32 and 0xFFFF).toInt() * 8
+            val elementSize = elementData + (word(tag) ushr 48 and 0xFFFF).toInt() * 8
             if (elementData < 8 || elementSize == elementData) return true
             for (i in 0 until count) {
                 val e = tag + 8 + i * elementSize
-                val bytes = follow(m, starts, segments, e + elementData)
+                val bytes = follow(m, starts, segments, e + elementData, end)
                 if (bytes < 0) continue
-                val data = long(m, bytes)
+                val data = word(bytes)
                 if (data and 3L != 1L || (data ushr 32 and 7).toInt() != 2) continue   // a list of bytes
                 val length = (data ushr 35).toInt()
                 val start = bytes + 8 + (data.toInt() shr 2) * 8
-                if (length > FrameStore.MAX_PAYLOAD || start < 0 || start + length > m.size) continue
-                if (!sink.frame(time, m[e + CAN_SRC_OFFSET].toInt() and 0xFF, int(m, e), m, start, length)) return false
+                if (length > FrameStore.MAX_PAYLOAD || start < 0 || start + length > end) continue
+                if (!sink.frame(time, (word(e) ushr (CAN_SRC_OFFSET * 8) and 0xFF).toInt(), word(e).toInt(), m, start, length)) return false
             }
         } catch (e: IndexOutOfBoundsException) {
             // a pointer outside the message: skip it
@@ -306,7 +312,8 @@ internal object Cereal {
     }
 
     /** Offset of the pointer that the pointer at [at] stands for (itself unless it is a far pointer); -1 if null or unsupported. */
-    private fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int): Int {
+    private fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int, end: Int): Int {
+        if (at < 0 || at + 8 > end) throw IndexOutOfBoundsException()
         val p = long(m, at)
         if (p == 0L) return -1
         if (p and 3L != 2L) return at

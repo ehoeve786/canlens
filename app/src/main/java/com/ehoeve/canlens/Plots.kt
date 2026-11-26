@@ -35,6 +35,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -133,7 +134,9 @@ fun PlotsScreen(model: AppModel) {
     val view = model.plot.view
     val live = model.live.source != LiveSource.NONE
     val following = model.trace.followLive && live
-    if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
+    // after composition, not during it: the view is state the composition reads
+    val liveEnd = store.lastTime
+    LaunchedEffect(following, liveEnd) { if (following) view.show(maxOf(seconds(liveEnd) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(liveEnd)) }
     val plots = model.plot.keys.toList()
     val dbcs = model.dbc.files.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE

@@ -18,6 +18,9 @@ class Signal(
 
     private val lastByte = if (littleEndian) (start + size - 1) / 8 else start / 8 + (size - (start % 8 + 1) + 7).coerceAtLeast(0) / 8
 
+    /** The same field under another name: sign, scale, unit, page and value names kept. */
+    fun renamed(name: String) = Signal(name, start, size, littleEndian, signed, factor, offset, unit, muxValue, isMultiplexor).also { it.valueNames = valueNames }
+
     /** Whether a payload of [length] bytes holds the whole signal. */
     fun fits(length: Int) = lastByte < length
 
@@ -65,8 +68,11 @@ class Signal(
     }
 }
 
-/** [source] is the message's text in the file it was read from, written back as it was while the message is unchanged. */
-class DbcMessage(val id: Int, val name: String, val length: Int, val signals: List<Signal>, val source: String? = null) {
+/**
+ * [source] is the message's text in the file it was read from, written back as it was while the message is unchanged.
+ * [unread]: its SG_ lines the app couldn't read, written back as they were when the message is changed.
+ */
+class DbcMessage(val id: Int, val name: String, val length: Int, val signals: List<Signal>, val source: String? = null, val unread: List<String> = emptyList()) {
     val multiplexor: Signal? = signals.firstOrNull { it.isMultiplexor }
 }
 
@@ -81,18 +87,18 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
     fun withSignal(id: Int, messageName: String, length: Int, signal: Signal): Dbc {
         val old = messages[id]
         val signals = (old?.signals.orEmpty().filter { it.name != signal.name } + signal).sortedBy { it.bits.min() }
-        return Dbc(name, messages + (id to DbcMessage(id, old?.name ?: messageName, maxOf(old?.length ?: 0, length), signals)), head, tail)
+        return Dbc(name, messages + (id to DbcMessage(id, old?.name ?: messageName, maxOf(old?.length ?: 0, length), signals, unread = old?.unread.orEmpty())), head, tail)
     }
 
     /** A copy with message [id] named [messageName]; a message it doesn't have yet is added, [length] bytes, without signals. */
     fun withMessageName(id: Int, messageName: String, length: Int): Dbc {
         val old = messages[id]
-        return Dbc(name, messages + (id to DbcMessage(id, messageName, old?.length ?: length, old?.signals.orEmpty())), head, tail)
+        return Dbc(name, messages + (id to DbcMessage(id, messageName, old?.length ?: length, old?.signals.orEmpty(), unread = old?.unread.orEmpty())), head, tail)
     }
 
     fun withoutSignal(id: Int, signalName: String): Dbc {
         val old = messages[id] ?: return this
-        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName })), head, tail.filter { !isStatus(it, id, signalName) })
+        return Dbc(name, messages + (id to DbcMessage(id, old.name, old.length, old.signals.filter { it.name != signalName }, unread = old.unread)), head, tail.filter { !isStatus(it, id, signalName) })
     }
 
     /**
@@ -126,6 +132,7 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
                 append(": ").append(s.start).append('|').append(s.size).append('@').append(if (s.littleEndian) '1' else '0').append(if (s.signed) '-' else '+')
                 append(" (").append(number(s.factor)).append(',').append(number(s.offset)).append(") [0|0] \"").append(s.unit).append("\" XXX\n")
             }
+            for (line in m.unread) append(line).append('\n')
             append('\n')
         }
         val changed = messages.values.filter { it.source == null }.mapTo(HashSet()) { it.id }
@@ -143,16 +150,18 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
     private fun number(v: Double) = if (v == Math.rint(v) && Math.abs(v) < 1e15) v.toLong().toString() else v.toString()
     companion object {
         private val MESSAGE = Regex("""^BO_ (\d+) (\w+) *: *(\d+)""")
-        private val SIGNAL = Regex("""^\s*SG_ (\w+) *(M|m\d+M?)? *: *(\d+)\|(\d+)@([01])([+-]) *\(([^,]+),([^)]+)\) *\[[^]]*] *"([^"]*)"""")
+        /** An SG_ line, also with a tab after SG_: it belongs to the message above it. */
+        private val SIGNAL_LINE = Regex("""^\s*SG_\s""")
+        private val SIGNAL = Regex("""^\s*SG_\s+(\w+) *(M|m\d+M?)? *: *(\d+)\|(\d+)@([01])([+-]) *\(([^,]+),([^)]+)\) *\[[^]]*] *"([^"]*)"""")
         private val VALUES = Regex("""^VAL_ (\d+) (\w+) (.*)""")
         private val VALUE = Regex("""(-?\d+) "([^"]*)"""")
         private val STATUS = Regex("""^CM_ SG_ (\d+) (\w+) "(?:CanPilot|CANLens): (\w+)";""")
 
         /** An id as a DBC writes it: bit 31 set for an extended id. */
-        private fun dbcId(id: Int) = if (id > 0x7FF) id.toLong() or 0x80000000L else id.toLong()
+        private fun dbcId(id: Int) = if (CanId.isExtended(id)) CanId.raw(id).toLong() or 0x80000000L else id.toLong()
 
         /** Bits 29-31 of a DBC id are flags (bit 31: extended id). */
-        private fun id(text: String) = (text.toLong() and 0x1FFFFFFF).toInt()
+        private fun id(text: String) = text.toLong().let { CanId.of(it, it and 0x80000000L != 0L) }
 
         fun parse(text: String, name: String): Dbc {
             val messages = LinkedHashMap<Int, DbcMessage>()
@@ -163,10 +172,12 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
             var messageName = ""
             var length = 0
             var signals: ArrayList<Signal>? = null
+            val unread = ArrayList<String>()
             var seenMessage = false
             fun finish() {
-                signals?.let { messages[id] = DbcMessage(id, messageName, length, it, block.append('\n').toString()) }
+                signals?.let { messages[id] = DbcMessage(id, messageName, length, it, block.append('\n').toString(), unread.toList()) }
                 signals = null
+                unread.clear()
                 block.setLength(0)
             }
             for (line in text.replace("\r\n", "\n").lineSequence()) {
@@ -179,9 +190,9 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
                     block.append(line).append('\n')
                 } else if (!seenMessage) {
                     head.append(line).append('\n')
-                } else if (signals != null && line.trimStart().startsWith("SG_ ")) {
+                } else if (signals != null && SIGNAL_LINE.containsMatchIn(line)) {
                     block.append(line).append('\n')
-                    val m = SIGNAL.find(line) ?: continue
+                    val m = SIGNAL.find(line) ?: run { unread += line; null } ?: continue
                     val g = m.groupValues
                     val mux = g[2]
                     signals!! += Signal(

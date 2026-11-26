@@ -47,7 +47,7 @@ fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
                     "Bus 0: ${m[2]}% load, ${m[4]} fps   Bus 1: ${m[3]}% load, ${m[5]} fps\n" +
                     "FIFO overflows ${m[6]} · ${m[7]}   dropped: queue ${m[8]}, USB ${m[9]}, Wi-Fi ${m[10]}\n" +
                     "Transmit: sent ${status.sent}, refused ${status.refused}, no safe moment ${status.expired}" +
-                    (0..1).joinToString("") { if (status.transmitErrors[it] < 0) "" else "\nBus $it errors: transmit ${status.transmitErrors[it]}, receive ${status.receiveErrors[it]}" },
+                    status.buses.withIndex().joinToString("") { (bus, health) -> if (health == null) "" else "\nBus $bus errors: transmit ${health.transmitErrors}, receive ${health.receiveErrors}" },
                 fontFamily = MONO, fontSize = 12.sp, lineHeight = 16.sp,
             )
             Hint("Load counts no stuff bits, so the wire is a little busier. Overflows and drops are totals since the DashKit started.")

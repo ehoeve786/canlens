@@ -9,6 +9,19 @@ fun interface FrameSink {
 }
 
 /**
+ * Frame ids as the app keeps them: a standard id as it is, an extended id as it is when above 0x7FF and with
+ * [EXTENDED] added when not, so a short extended id never shares a message with the standard one. Anything above
+ * 0x7FF is extended: rlogs say no more than that.
+ */
+object CanId {
+    const val EXTENDED = 1 shl 29
+    fun of(id: Long, extended: Boolean): Int = (id and 0x1FFFFFFF).toInt().let { if (extended && it <= 0x7FF) it or EXTENDED else it }
+    fun isExtended(id: Int) = id > 0x7FF
+    /** The id on the wire, without [EXTENDED]. */
+    fun raw(id: Int) = id and 0x1FFFFFFF
+}
+
+/**
  * All frames of the open logs or the live stream, in arrival order, in fixed-size chunks of primitive arrays
  * (about 19 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
  * [chunks] and each chunk's [Chunk.size] once and may read everything below them without locking.
@@ -107,7 +120,8 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         }
         chunk.changed[index] = changed.toByte()
         chunk.size = index + 1
-        message.data = data.copyOfRange(offset, offset + length)
+        // a new copy only when the payload differs: most frames repeat the one before, and readers keep the old array
+        if (changed != 0 || message.count == 0L || length != previous.size) message.data = data.copyOfRange(offset, offset + length)
         message.changed = changed
         message.lastTime = time
         message.count++
@@ -289,6 +303,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
                 val length = chunk.end[i] - start
                 val last = previous[m] ?: ByteArray(MAX_PAYLOAD).also { previous[m] = it; total[m] = IntArray(MAX_PAYLOAD * 8) }
                 val t = chunk.time[i]
+                // the latest window started by now; earlier ones still open overlap it, and count the flip too
                 var w = java.util.Arrays.binarySearch(starts, t).let { if (it < 0) -it - 2 else it }
                 if (w >= 0 && t > starts[w] + span) w = -1
                 for (b in 0 until minOf(length, previousLength[m])) {
@@ -296,7 +311,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
                     while (changed != 0) {
                         val bit = b * 8 + Integer.numberOfTrailingZeros(changed)
                         total[m]!![bit]++
-                        if (w >= 0) (windows[m] ?: arrayOfNulls<IntArray>(starts.size).also { windows[m] = it }).let { it[w] ?: IntArray(MAX_PAYLOAD * 8).also { counts -> it[w] = counts } }[bit]++
+                        var j = w
+                        while (j >= 0 && t <= starts[j] + span) {
+                            (windows[m] ?: arrayOfNulls<IntArray>(starts.size).also { windows[m] = it }).let { it[j] ?: IntArray(MAX_PAYLOAD * 8).also { counts -> it[j] = counts } }[bit]++
+                            j--
+                        }
                         changed = changed and (changed - 1)
                     }
                 }
@@ -434,10 +453,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         fun time(row: Int): Int = position(row).let { chunks[it ushr CHUNK_BITS].time[it and CAPACITY - 1] }
 
         /** The last row at or before [time]; 0 when there is none. */
+        /** The last row at or before [time]; -1 when [time] is before the first row. */
         fun rowAt(time: Int): Int {
             var low = 0
             var high = size - 1
-            var found = 0
+            var found = -1
             while (low <= high) {
                 val middle = (low + high) ushr 1
                 if (time(middle) <= time) { found = middle; low = middle + 1 } else high = middle - 1
@@ -468,8 +488,17 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
                 for (c in all.indices) { starts[c] = total; total += sizes[c] }
                 return Rows(all, starts, null, total)
             }
-            // a fresh array, as rows handed out earlier still read the old one
-            if (all.isEmpty() || scanned.isEmpty() || scanned[0] !== all[0]) { picked = IntArray(1024); count = 0; doneChunk = 0; doneIndex = 0 }
+            // chunks dropped from the front since the last update: their rows go, the rest move down; a clear starts
+            // over. A fresh array either way, as rows handed out earlier still read the old one
+            val dropped = if (all.isEmpty()) -1 else scanned.indexOfFirst { it === all[0] }
+            if (dropped < 0) { picked = IntArray(1024); count = 0; doneChunk = 0; doneIndex = 0 }
+            else if (dropped > 0) {
+                val kept = IntArray(maxOf(1024, count))
+                var n = 0
+                for (r in 0 until count) { val c = picked[r] ushr CHUNK_BITS; if (c >= dropped) kept[n++] = (c - dropped) shl CHUNK_BITS or (picked[r] and (1 shl CHUNK_BITS) - 1) }
+                picked = kept; count = n
+                if (doneChunk >= dropped) doneChunk -= dropped else { doneChunk = 0; doneIndex = 0 }
+            }
             scanned = all
             val known = held.messages
             for (c in doneChunk until all.size) {

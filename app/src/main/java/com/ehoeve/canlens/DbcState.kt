@@ -61,8 +61,13 @@ class DbcState(
     val files = mutableStateListOf<LoadedDbc>()
 
     init {
-        for (file in folder.listFiles().orEmpty().filterNot { it.name.endsWith(PART_FILE) }.sortedBy { it.name }) {
-            runCatching { files += LoadedDbc(Dbc.parse(file.readText(), file.name), preferences.getInt("bus:" + file.name, ALL_BUSES)) }
+        // parsed off the main thread (a big DBC takes a second); in place before anything opened meanwhile
+        scope.launch {
+            val loaded = withContext(Dispatchers.Default) {
+                folder.listFiles().orEmpty().filterNot { it.name.endsWith(PART_FILE) }.sortedBy { it.name }
+                    .mapNotNull { file -> runCatching { LoadedDbc(Dbc.parse(file.readText(), file.name), preferences.getInt("bus:" + file.name, ALL_BUSES)) }.getOrNull() }
+            }
+            files.addAll(0, loaded.filter { old -> files.none { it.dbc.name == old.dbc.name } })
         }
     }
 
@@ -81,12 +86,16 @@ class DbcState(
                 val name = context.displayName(uri).replace('/', '_')
                 val bytes = withContext(Dispatchers.IO) { (context.contentResolver.openInputStream(uri) ?: throw IOException("Can't open $name")).use { it.readBytes() } }
                 val text = bytes.toString(Charsets.ISO_8859_1)
-                val dbc = Dbc.parse(text, name)
+                val dbc = withContext(Dispatchers.Default) { Dbc.parse(text, name) }
                 if (dbc.messages.isEmpty()) throw IOException("$name has no messages")
-                withContext(Dispatchers.IO) { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
-                // changes go back to this file, also after a restart, as long as nothing else changed it
-                runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
-                    .fold({ preferences.edit().putString("uri:$name", uri.toString()).putString("seen:$name", fingerprint(bytes)) }, { preferences.edit().remove("uri:$name").remove("seen:$name") }).apply()
+                withContext(io) { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
+                // changes go back to this file, also after a restart, as long as nothing else changed it; a document
+                // that can only be read is kept readable, and changes go to a copy in Downloads
+                val resolver = context.contentResolver
+                val writable = runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }.isSuccess
+                if (!writable) runCatching { resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                (if (writable) preferences.edit().putString("uri:$name", uri.toString()).putString("seen:$name", fingerprint(bytes)) else preferences.edit().remove("uri:$name").remove("seen:$name")).apply()
+                if (!writable) report("$name can only be read where it is: changes to it go to a copy in Download/CANLens/dbc/")
                 // the app's earlier versions of a file by this name are not this one's
                 forget(name)
                 files.removeAll { it.dbc.name == name }
@@ -113,7 +122,7 @@ class DbcState(
 
     /** Takes [name] out of the history, and backs it up again before its next change. */
     private fun forget(name: String) {
-        history.removeAll { it.first == name }
+        history.removeAll { change -> change.files.any { it.first == name } }
         canUndo = history.isNotEmpty()
         backedUp.remove(name)
     }
@@ -126,10 +135,18 @@ class DbcState(
         }
     }
 
+    /** A new, empty DBC for [message]'s bus, named after it and not after any DBC in [dbcs]. */
+    private fun newDbc(dbcs: List<LoadedDbc>, message: FrameStore.Message): LoadedDbc {
+        val bus = sourceBus(message.bus)
+        val name = generateSequence(1) { it + 1 }.map { if (it == 1) "canlens-bus$bus.dbc" else "canlens-bus$bus-$it.dbc" }.first { n -> dbcs.none { it.dbc.name == n } }
+        return LoadedDbc(Dbc(name, emptyMap()), bus)
+    }
+
     /** Adds or replaces a signal in the DBC that decodes [message], or in a new DBC for its bus if none does. */
     fun saveSignal(message: FrameStore.Message, signal: Signal, replaces: String?) {
         val index = indexFor(files, message)
-        val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canlens-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus))
+        val old = if (index >= 0) files[index] else newDbc(files, message)
+        val plotsBefore = plots.toList()
         var dbc = old.dbc
         // a renamed signal keeps its status
         val status = replaces?.let { dbc.statuses[message.id to it] }
@@ -141,7 +158,7 @@ class DbcState(
             // a plot keeps one key per signal: if the new name was plotted already, the old one's plot goes
             if (at >= 0) { if (renamed in plots) plots.removeAt(at) else plots[at] = renamed }
         }
-        replace(index, LoadedDbc(dbc, old.bus))
+        replace(listOf(index to LoadedDbc(dbc, old.bus)), plotsBefore.takeIf { it != plots })
     }
 
     /** Names [message] in the DBC that decodes it, or in a new DBC for its bus if none does. A DBC name is letters, digits and _. */
@@ -149,14 +166,15 @@ class DbcState(
         val clean = name.trim().replace(Regex("\\W"), "_")
         if (clean.isEmpty()) return
         val index = indexFor(files, message)
-        val old = if (index >= 0) files[index] else LoadedDbc(Dbc("canlens-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus))
+        val old = if (index >= 0) files[index] else newDbc(files, message)
         replace(index, LoadedDbc(old.dbc.withMessageName(message.id, clean, message.data.size), old.bus))
     }
 
     fun deleteSignal(message: FrameStore.Message, name: String) {
         val index = indexFor(files, message)
+        val plotsBefore = plots.toList()
         plots.remove(PlotKey(message.bus, message.id, name))
-        if (index >= 0) replace(index, LoadedDbc(files[index].dbc.withoutSignal(message.id, name), files[index].bus))
+        if (index >= 0) replace(listOf(index to LoadedDbc(files[index].dbc.withoutSignal(message.id, name), files[index].bus)), plotsBefore.takeIf { it != plots })
     }
 
     /** How sure the decoding of a signal is: guess, plotted or confirmed; null when not said. */
@@ -177,18 +195,18 @@ class DbcState(
         for (suggestion in suggestions) {
             val message = suggestion.message
             var index = indexFor(working, message)
-            if (index < 0) { working += LoadedDbc(Dbc("canlens-bus${sourceBus(message.bus)}.dbc", emptyMap()), sourceBus(message.bus)); index = working.lastIndex }
+            if (index < 0) { working += newDbc(working, message); index = working.lastIndex }
             // a field every repeat of a marker test agreed on is confirmed; anything else Decode found is a guess
             working[index] = LoadedDbc(working[index].dbc.withSignal(message.id, suggestion.messageName ?: "NEW_%X".format(message.id), message.data.size, suggestion.signal)
                 .withStatus(message.id, suggestion.signal.name, if (suggestion.confidence >= 0.95 && suggestion.signal.name.startsWith("EVT_")) "confirmed" else "guess"), working[index].bus)
             changed += index
         }
         val existing = files.size
-        for (index in changed) replace(if (index < existing) index else -1, working[index])
+        replace(changed.map { (if (it < existing) it else -1) to working[it] })   // one Undo for all of them
     }
 
     /** The file a signal of [message] would be saved in: one for all buses covers the same id on each of them. */
-    fun target(message: FrameStore.Message): String = indexFor(files, message).let { if (it >= 0) files[it].dbc.name else "canlens-bus${sourceBus(message.bus)}.dbc" }
+    fun target(message: FrameStore.Message): String = indexFor(files, message).let { if (it >= 0) files[it].dbc.name else newDbc(files, message).dbc.name }
 
     /** The DBC in [dbcs] a signal of [message] belongs in, or -1: one that has the message, else one for its bus, else one for all buses. */
     private fun indexFor(dbcs: List<LoadedDbc>, message: FrameStore.Message): Int {
@@ -200,24 +218,37 @@ class DbcState(
         return dbcs.indexOfFirst { it.bus == bus }.takeIf { it >= 0 } ?: dbcs.indexOfFirst { it.bus == ALL_BUSES }
     }
 
-    /** Earlier versions of the DBCs the app changed, newest last: a file's name and what it was (null: it didn't exist). */
-    private val history = ArrayDeque<Pair<String, LoadedDbc?>>()
+    /**
+     * One change the app made, for Undo: each DBC it touched as it was before (null: it didn't exist), and the plots
+     * before it when it changed them.
+     */
+    private class Change(val files: List<Pair<String, LoadedDbc?>>, val plots: List<PlotKey>?)
+
+    /** The changes, newest last. */
+    private val history = ArrayDeque<Change>()
     var canUndo by mutableStateOf(false); private set
 
-    /** Puts back the DBC as it was before the last change the app made to it. */
+    /** Puts back the DBCs, and the plots, as they were before the last change the app made. */
     fun undo() {
-        val (name, before) = history.removeLastOrNull() ?: return
+        val change = history.removeLastOrNull() ?: return
         canUndo = history.isNotEmpty()
-        val index = files.indexOfFirst { it.dbc.name == name }
-        if (before == null) { if (index >= 0) remove(index) } else write(index, before)
+        for ((name, before) in change.files) {
+            val index = files.indexOfFirst { it.dbc.name == name }
+            if (before == null) { if (index >= 0) remove(index) } else write(index, before)
+        }
+        change.plots?.let { plots.clear(); plots.addAll(it) }
         report("Undone")
     }
 
-    private fun replace(index: Int, value: LoadedDbc) {
-        history.addLast(value.dbc.name to files.firstOrNull { it.dbc.name == value.dbc.name })
+    private fun replace(index: Int, value: LoadedDbc) = replace(listOf(index to value))
+
+    /** Writes each (index in [files] or -1 for a new one, DBC) as one change, Undo-able at once. */
+    private fun replace(changes: List<Pair<Int, LoadedDbc>>, plotsBefore: List<PlotKey>? = null) {
+        if (changes.isEmpty()) return
+        history.addLast(Change(changes.map { (_, value) -> value.dbc.name to files.firstOrNull { it.dbc.name == value.dbc.name } }, plotsBefore))
         if (history.size > 30) history.removeFirst()
         canUndo = true
-        write(index, value)
+        for ((index, value) in changes) write(index, value)
     }
 
     private fun write(index: Int, value: LoadedDbc) {
