@@ -17,10 +17,28 @@ object LogReader {
         val stream = BufferedInputStream(input, 1 shl 16)
         stream.mark(512)
         val head = ByteArray(512)
-        val n = stream.read(head).coerceAtLeast(0)
+        var n = 0
+        while (n < head.size) { val got = stream.read(head, n, head.size - n); if (got < 0) break; n += got }
         stream.reset()
-        val text = (0 until n).all { val c = head[it].toInt(); c in 32..126 || c == 10 || c == 13 || c == 9 }
-        return if (text) readText(stream, sink, onMarker) else readRlog(stream, sink)
+        // a UTF-8 byte order mark, as spreadsheet programs write before a CSV
+        val bom = if (n >= 3 && head[0] == 0xEF.toByte() && head[1] == 0xBB.toByte() && head[2] == 0xBF.toByte()) 3 else 0
+        var skipped = 0L
+        while (skipped < bom) skipped += stream.skip(bom - skipped)
+        return if (looksLikeText(head, bom, n)) readText(stream, sink, onMarker) else readRlog(stream, sink)
+    }
+
+    /**
+     * Text has no NUL byte (an rlog opens with its segment count, a 32-bit word that is mostly zeros) and is mostly
+     * printable ASCII, so a name or unit in UTF-8 is fine. A line break isn't required: a CSV header can be long.
+     */
+    private fun looksLikeText(head: ByteArray, from: Int, to: Int): Boolean {
+        var printable = 0
+        for (i in from until to) {
+            val c = head[i].toInt() and 0xFF
+            if (c == 0) return false
+            if (c in 32..126 || c == 10 || c == 13 || c == 9) printable++
+        }
+        return printable * 10 >= (to - from) * 9
     }
 
     private fun readRlog(stream: InputStream, sink: FrameSink): String {
@@ -57,7 +75,7 @@ object LogReader {
     }
 
     private fun readText(stream: InputStream, sink: FrameSink, onMarker: ((Long, String) -> Unit)?): String {
-        val reader = stream.bufferedReader(Charsets.ISO_8859_1)
+        val reader = LineReader(stream)
         val buffer = ByteArray(FrameStore.MAX_PAYLOAD)
         var format: String? = null
         var csv: CsvColumns? = null
@@ -205,6 +223,35 @@ object LogReader {
 
     private val WHITESPACE = Regex("\\s+")
     private const val MAX_MESSAGE_WORDS = 8L shl 20   // 64 MB
+}
+
+/**
+ * Lines of ISO 8859-1 text, ended by \n or \r (a \r\n gives an empty line between), without holding more than [max]
+ * characters: a longer line, which no log has, is skipped whole.
+ */
+internal class LineReader(private val input: InputStream, private val max: Int = 4096) {
+    private val buffer = ByteArray(1 shl 16)
+    private var at = 0
+    private var end = 0
+    private val line = CharArray(max)
+
+    /** The next line, or null at the end of the input. */
+    fun readLine(): String? {
+        var n = 0
+        var tooLong = false
+        while (true) {
+            if (at == end) {
+                end = input.read(buffer)
+                at = 0
+                if (end <= 0) { end = 0; return if (n > 0 && !tooLong) String(line, 0, n) else null }
+            }
+            val c = buffer[at++].toInt() and 0xFF
+            if (c == 10 || c == 13) {
+                if (!tooLong) return String(line, 0, n)
+                n = 0; tooLong = false
+            } else if (n < max) line[n++] = c.toChar() else tooLong = true
+        }
+    }
 }
 
 /** Just enough Cap'n Proto to take the CAN frames out of an openpilot `Event` (cereal/log.capnp). */
