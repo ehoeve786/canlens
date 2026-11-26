@@ -12,8 +12,9 @@ fun interface FrameSink {
  * All frames of the open logs or the live stream, in arrival order, in fixed-size chunks of primitive arrays
  * (about 19 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
  * [chunks] and each chunk's [Chunk.size] once and may read everything below them without locking.
+ * Readers rely on the frames being in time order: a log is read as written, and a live store keeps it so (see [frame]).
  */
-class FrameStore(private val maxChunks: Int = 40) : FrameSink {
+class FrameStore(val maxChunks: Int = 40) : FrameSink {
 
     class Chunk {
         /** Time since [originMicros] in units of 100 µs. */
@@ -42,8 +43,12 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         val rate: Double get() = if (lastTime > firstTime) (count - 1) * TICKS_PER_SECOND / (lastTime - firstTime) else 0.0
     }
 
-    @Volatile var chunks: Array<Chunk> = emptyArray(); private set
-    @Volatile var messages: Array<Message> = emptyArray(); private set
+    /** [chunks] and [messages] published as one, so a reader never pairs the chunks of a merge with the messages from before it. */
+    private class Held(@JvmField val chunks: Array<Chunk>, @JvmField val messages: Array<Message>)
+
+    @Volatile private var held = Held(emptyArray(), emptyArray())
+    val chunks: Array<Chunk> get() = held.chunks
+    val messages: Array<Message> get() = held.messages
     /** Timestamp of time 0, in the source's own clock. */
     @Volatile var originMicros = Long.MIN_VALUE; private set
     @Volatile var lastTime = 0; private set
@@ -53,26 +58,41 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
     /** Live streams drop their oldest chunk when full; logs stop loading instead. */
     @Volatile var dropOldest = false
 
+    /** Chunks a store may take that is to be [merge]d into this one, so that the merged frames still fit in [maxChunks]: `FrameStore(store.spareChunks)`. */
+    val spareChunks: Int get() = (maxChunks - chunks.size).coerceAtLeast(1)
+
     private val byKey = HashMap<Long, Message>()
 
+    /**
+     * A live store's frames keep their arrival order: two sources write it (the comma's `can` events, one time stamp
+     * per batch of about 10 ms, and dashkitd's candump lines), so a frame can be stamped a little before the one
+     * already held. Such a frame gets the latest time held instead, so it goes back in time by no more than that
+     * reorder, and every reader's in-order scans and binary searches stay right without a window of their own.
+     * A time more than 59 hours from the first frame's ends the store as [truncated].
+     */
     @Synchronized
     override fun frame(timeMicros: Long, bus: Int, id: Int, data: ByteArray, offset: Int, length: Int): Boolean {
         if (truncated || length < 0 || length > MAX_PAYLOAD) return !truncated
         if (originMicros == Long.MIN_VALUE) originMicros = timeMicros
-        val time = ((timeMicros - originMicros) / MICROS_PER_TICK).coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
+        var ticks = (timeMicros - originMicros) / MICROS_PER_TICK
+        if (ticks !in Int.MIN_VALUE..Int.MAX_VALUE) { truncated = true; return false }
+        if (dropOldest && frameCount > 0 && ticks < lastTime) ticks = lastTime.toLong()
+        val time = ticks.toInt()
         val key = bus.toLong() shl 32 or (id.toLong() and 0xFFFFFFFFL)
         val message = byKey[key] ?: run {
-            if (messages.size >= 65536) return true
-            Message(bus, id, messages.size, time).also { byKey[key] = it; messages += it }
+            val known = held.messages
+            if (known.size >= 65536) return true
+            Message(bus, id, known.size, time).also { byKey[key] = it; held = Held(held.chunks, known + it) }
         }
-        var chunk = chunks.lastOrNull()
+        var chunk = held.chunks.lastOrNull()
         if (chunk == null || chunk.size == CAPACITY || chunk.start(chunk.size) + length > chunk.blob.size) {
-            if (chunks.size >= maxChunks) {
+            var kept = held.chunks
+            if (kept.size >= maxChunks) {
                 if (!dropOldest) { truncated = true; return false }
-                chunks = chunks.copyOfRange(1, chunks.size)
+                kept = kept.copyOfRange(1, kept.size)
             }
             chunk = Chunk()
-            chunks += chunk
+            held = Held(kept + chunk, held.messages)
         }
         val index = chunk.size
         val start = chunk.start(index)
@@ -100,6 +120,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
      * Puts the frames of [other] on this store's timeline, in time order with its own: [shiftMicros] is added to their
      * time stamps and [busOffset] to their bus numbers, which keeps the two recordings apart. Time 0 moves when
      * [other] starts earlier; the return value is how many ticks to add to times taken before the merge.
+     * Both stores and the merged frames are held at once until it returns, so size [other] with [spareChunks];
+     * frames past [maxChunks] are left out and the store is marked [truncated].
      */
     @Synchronized
     fun merge(other: FrameStore, shiftMicros: Long, busOffset: Int): Int {
@@ -111,16 +133,17 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
             val next = if (mine.micros <= theirs.micros) mine else theirs
             if (!next.moveInto(merged)) break
         }
-        chunks = merged.chunks; messages = merged.messages
+        held = merged.held
         byKey.clear(); byKey.putAll(merged.byKey)
-        originMicros = merged.originMicros; lastTime = merged.lastTime; frameCount = merged.frameCount; truncated = merged.truncated
+        originMicros = merged.originMicros; lastTime = merged.lastTime; frameCount = merged.frameCount; truncated = truncated || merged.truncated
         return if (oldOrigin == Long.MIN_VALUE || originMicros == Long.MIN_VALUE) 0 else ((oldOrigin - originMicros) / MICROS_PER_TICK).toInt()
     }
 
     /** Walks a store's frames in order; [micros] is the current frame's shifted time, Long.MAX_VALUE after the last. */
     private class Cursor(private val store: FrameStore, private val shiftMicros: Long, private val busOffset: Int) {
-        private val chunks = store.chunks
-        private val known = store.messages
+        private val held = store.held
+        private val chunks = held.chunks
+        private val known = held.messages
         private var chunk = 0
         private var index = 0
         var micros = Long.MAX_VALUE; private set
@@ -149,7 +172,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
 
     @Synchronized
     fun clear() {
-        chunks = emptyArray(); messages = emptyArray(); byKey.clear()
+        held = Held(emptyArray(), emptyArray()); byKey.clear()
         originMicros = Long.MIN_VALUE; lastTime = 0; frameCount = 0; truncated = false
     }
 
@@ -213,12 +236,13 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
      * Index = byte * 8 + bit. Indexed like [messages]; null for a message that didn't occur.
      */
     fun bitActivity(fromTime: Int = Int.MIN_VALUE, toTime: Int = Int.MAX_VALUE, only: Message? = null): Array<BitActivity?> {
-        val known = messages
+        val held = held
+        val known = held.messages
         val result = arrayOfNulls<BitActivity>(known.size)
         val previous = arrayOfNulls<ByteArray>(known.size)
         val previousLength = IntArray(known.size)
         val wanted = only?.index ?: -1
-        for (chunk in chunks) {
+        for (chunk in held.chunks) {
             val size = chunk.size
             for (i in 0 until size) {
                 val m = chunk.message[i].toInt() and 0xFFFF
@@ -251,12 +275,13 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
      * no flips in window w. Index = byte * 8 + bit, as in [bitActivity].
      */
     fun windowFlips(starts: IntArray, span: Int): Pair<Array<IntArray?>, Array<Array<IntArray?>?>> {
-        val known = messages
+        val held = held
+        val known = held.messages
         val total = arrayOfNulls<IntArray>(known.size)
         val windows = arrayOfNulls<Array<IntArray?>>(known.size)
         val previous = arrayOfNulls<ByteArray>(known.size)
         val previousLength = IntArray(known.size)
-        for (chunk in chunks) {
+        for (chunk in held.chunks) {
             for (i in 0 until chunk.size) {
                 val m = chunk.message[i].toInt() and 0xFFFF
                 if (m >= known.size) continue
@@ -284,8 +309,9 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
 
     /** Passes every held frame to [sink] in order, until it returns false. */
     fun replay(sink: FrameSink) {
-        val known = messages
-        for (chunk in chunks) {
+        val held = held
+        val known = held.messages
+        for (chunk in held.chunks) {
             for (i in 0 until chunk.size) {
                 val m = known.getOrNull(chunk.message[i].toInt() and 0xFFFF) ?: continue
                 val start = chunk.start(i)
@@ -304,7 +330,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
 
     /** One pass over the store; [times] must be ascending. */
     fun snapshots(times: IntArray): Snapshots {
-        val result = Snapshots(times, messages)
+        val held = held
+        val result = Snapshots(times, held.messages)
         val count = result.messages.size
         val lastChunk = arrayOfNulls<Chunk>(count)
         val lastIndex = IntArray(count)
@@ -320,7 +347,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
             }
             k++
         }
-        scan@ for (chunk in chunks) {
+        scan@ for (chunk in held.chunks) {
             for (i in 0 until chunk.size) {
                 val t = chunk.time[i]
                 while (k < times.size && times[k] < t) take()
@@ -362,7 +389,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
      * left out where [filter] rejects that frame. Ordered like [messages].
      */
     fun latest(time: Int?, filter: Filter? = null): List<Latest> {
-        val known = messages
+        val held = held
+        val known = held.messages
         val result = ArrayList<Latest>(known.size)
         fun add(message: Message, at: Int, data: ByteArray, changed: Int, count: Long) {
             if (filter == null || filter.test(message, at, data, 0, data.size, changed)) result += Latest(message, at, data, changed, count)
@@ -371,7 +399,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
             for (message in known) add(message, message.lastTime, message.data, message.changed, message.count)
             return result
         }
-        val all = chunks
+        val all = held.chunks
         val position = IntArray(known.size) { -1 }
         val count = IntArray(known.size)
         scan@ for (c in all.indices) {
@@ -431,7 +459,8 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
 
         @Synchronized
         fun update(): Rows {
-            val all = chunks
+            val held = held
+            val all = held.chunks
             val sizes = IntArray(all.size) { all[it].size }
             if (filter == null) {
                 val starts = IntArray(all.size)
@@ -442,7 +471,7 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
             // a fresh array, as rows handed out earlier still read the old one
             if (all.isEmpty() || scanned.isEmpty() || scanned[0] !== all[0]) { picked = IntArray(1024); count = 0; doneChunk = 0; doneIndex = 0 }
             scanned = all
-            val known = messages
+            val known = held.messages
             for (c in doneChunk until all.size) {
                 val chunk = all[c]
                 for (i in (if (c == doneChunk) doneIndex else 0) until sizes[c]) {
@@ -467,8 +496,9 @@ class FrameStore(private val maxChunks: Int = 40) : FrameSink {
         if (terms.size < 2) return null
         val alone = BooleanArray(terms.size)
         val withEarlier = BooleanArray(terms.size)
-        val known = messages
-        for (chunk in chunks) {
+        val held = held
+        val known = held.messages
+        for (chunk in held.chunks) {
             for (i in 0 until chunk.size) {
                 val m = chunk.message[i].toInt() and 0xFFFF
                 if (m >= known.size) continue

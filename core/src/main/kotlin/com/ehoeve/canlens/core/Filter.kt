@@ -26,14 +26,22 @@ class Filter private constructor(private val parts: Array<Node>, /** The text of
         fun test(message: FrameStore.Message, time: Int, data: ByteArray, start: Int, length: Int, changed: Int): Boolean
     }
 
-    /** A comparison with a number or a range; kept as a class so that testing a frame allocates nothing. */
-    private class Check(operator: String, private val low: Double, private val high: Double) {
+    /**
+     * A comparison with a number or a range; kept as a class so that testing a frame allocates nothing. A scaled
+     * signal's values lie [step] (its factor) apart and miss the decimal written by a hair (raw 3 × 0.1 is
+     * 0.30000000000000004): one number is equal to the value within half a step, and other bounds are given a
+     * millionth of a step.
+     */
+    private class Check(operator: String, low: Double, high: Double, step: Double = 0.0) {
         private val kind = COMPARISONS.indexOf(operator)   // -1 for the ways of writing "equals"
+        private val slack = if (low == high && kind <= 0) step / 2 else step * 1e-6
+        private val low = low - slack
+        private val high = high + slack
         fun test(value: Double) = when (kind) {
             0 -> value < low || value > high
             1 -> value < low
-            2 -> value <= low
-            3 -> value > low
+            2 -> value <= high
+            3 -> value > high
             4 -> value >= low
             else -> value >= low && value <= high
         }
@@ -116,7 +124,7 @@ class Filter private constructor(private val parts: Array<Node>, /** The text of
                 val signal = dbcMessage.signals.firstOrNull { it.name.equals(name, true) } ?: continue
                 found = true
                 val named = signal.valueNames.entries.firstOrNull { it.value.equals(value, true) }?.key
-                val check = if (named != null) check(operator, named.toString(), String::toDoubleOrNull) else check(operator, value, String::toDoubleOrNull)
+                val check = if (named != null) check(operator, named.toString(), String::toDoubleOrNull) else check(operator, value, String::toDoubleOrNull, Math.abs(signal.factor))
                 tests[message.index] = SignalTest(signal, if (signal.muxValue >= 0) dbcMessage.multiplexor else null, check, named != null)
             }
             if (!found) fail("No signal named $name in this data. Fields are bus, id, len, t and d0 to d63.")
@@ -141,12 +149,12 @@ class Filter private constructor(private val parts: Array<Node>, /** The text of
             return Node { message, _, _, _, _, _ -> message.index < matches.size && matches[message.index] }
         }
 
-        private fun check(operator: String, value: String, number: (String) -> Double?): Check {
+        private fun check(operator: String, value: String, number: (String) -> Double?, step: Double = 0.0): Check {
             fun read(text: String) = number(text) ?: fail("Can't read \"$text\" as a number")
             val range = RANGE.matchEntire(value)
             return when {
-                range == null -> read(value).let { Check(operator, it, it) }
-                operator in EQUALS || operator == "!=" -> Check(operator, read(range.groupValues[1]), read(range.groupValues[2]))
+                range == null -> read(value).let { Check(operator, it, it, step) }
+                operator in EQUALS || operator == "!=" -> Check(operator, read(range.groupValues[1]), read(range.groupValues[2]), step)
                 else -> fail("A range needs = or !=")
             }
         }
