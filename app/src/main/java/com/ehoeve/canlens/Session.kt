@@ -76,7 +76,7 @@ class SessionState(private val model: AppModel, context: Context, private val pr
             .put("filter", trace.filter).put("fixed", trace.fixed)
             .put("overlay", plot.overlay).put("sharedScale", plot.sharedScale)
             .put("viewStart", plot.view.start.toDouble()).put("viewEnd", plot.view.end.toDouble())
-        runCatching { file(current).writeText(json.toString()) }
+        runCatching { file(current).writeWhole(json.toString()) }
     }
 
     /** Saves the session in use and opens [name]. */

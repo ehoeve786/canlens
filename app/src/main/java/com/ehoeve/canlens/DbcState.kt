@@ -58,7 +58,7 @@ class DbcState(
     val files = mutableStateListOf<LoadedDbc>()
 
     init {
-        for (file in folder.listFiles().orEmpty().sortedBy { it.name }) {
+        for (file in folder.listFiles().orEmpty().filterNot { it.name.endsWith(PART_FILE) }.sortedBy { it.name }) {
             runCatching { files += LoadedDbc(Dbc.parse(file.readText(), file.name), preferences.getInt("bus:" + file.name, ALL_BUSES)) }
         }
     }
@@ -79,7 +79,7 @@ class DbcState(
                 val text = withContext(Dispatchers.IO) { (context.contentResolver.openInputStream(uri) ?: throw IOException("Can't open $name")).use { it.readBytes().toString(Charsets.ISO_8859_1) } }
                 val dbc = Dbc.parse(text, name)
                 if (dbc.messages.isEmpty()) throw IOException("$name has no messages")
-                withContext(Dispatchers.IO) { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
+                withContext(Dispatchers.IO) { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
                 // changes go back to this file, also after a restart
                 runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
                     .fold({ preferences.edit().putString("uri:$name", uri.toString()) }, { preferences.edit().remove("uri:$name") }).apply()
@@ -212,7 +212,7 @@ class DbcState(
         val name = value.dbc.name
         scope.launch(io) {
             if (backedUp.add(name)) runCatching { backUp(name) }
-            runCatching { File(folder, name).writeText(text, Charsets.ISO_8859_1) }
+            runCatching { File(folder, name).writeWhole(text, Charsets.ISO_8859_1) }
             runCatching { (context.contentResolver.openOutputStream(outside(name), "wt") ?: throw IOException()).use { it.write(text.toByteArray(Charsets.ISO_8859_1)) } }
                 .onFailure { preferences.edit().remove("uri:$name").apply(); withContext(Dispatchers.Main) { report("$name: only saved inside the app this time (${it.message ?: "can't write the file"})") } }
         }

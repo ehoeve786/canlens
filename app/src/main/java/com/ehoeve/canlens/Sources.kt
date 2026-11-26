@@ -28,6 +28,8 @@ import com.github.luben.zstd.ZstdOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import java.io.BufferedInputStream
 import java.io.Closeable
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.Writer
@@ -40,10 +42,29 @@ import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
+import java.nio.charset.Charset
 
 fun Context.displayName(uri: Uri): String =
     contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { if (it.moveToFirst()) it.getString(0) else null }
         ?: uri.lastPathSegment ?: "file"
+
+/** The ending of the file [writeWhole] writes first; one left by a kill mid-write is not a file of the app's. */
+const val PART_FILE = ".part"
+
+/**
+ * Writes [text] to this file whole or not at all: to a file beside it first, flushed to the disk, then renamed over
+ * it. A kill or a flat battery mid-write leaves the old file as it was instead of a cut-off one.
+ */
+fun File.writeWhole(text: String, charset: Charset = Charsets.UTF_8) {
+    val part = File(parentFile, name + PART_FILE)
+    try {
+        FileOutputStream(part).use { it.write(text.toByteArray(charset)); it.fd.sync() }
+        if (!part.renameTo(this)) throw IOException("can't replace $name")
+    } catch (e: IOException) {
+        part.delete()
+        throw e
+    }
+}
 
 /** The file's content, decompressed if it is zstd (rlog.zst), bzip2 (rlog.bz2) or gzip. */
 fun Context.openDecompressed(uri: Uri): InputStream {
