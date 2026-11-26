@@ -77,16 +77,26 @@ class SignalState(
         }
     }
 
-    /** Other data is coming: results found in the old data go. */
+    /** The search and the decode running, if any; [generation] goes up when the data is other, so a late result is dropped. */
+    private var searchJob: Job? = null
+    private var decodeJob: Job? = null
+    private var generation = 0
+
+    /** Other data is coming: results found in the old data go, and so does what is still being worked out on it. */
     fun reset() {
+        generation++
+        searchJob?.cancel(); searchJob = null; searching = false
+        decodeJob?.cancel(); decodeJob = null; decoding = false
         findResults = emptyList(); findPoints.clear(); findStatus = ""; autoResults = emptyList(); autoStatus = ""
         drafts.clear()
     }
 
     fun searchByValue(tolerance: Double) {
-        val points = findPoints.mapNotNull { point -> point.value.trim().toDoubleOrNull()?.let { point.time to it } }
+        // "21,5" is read as 21.5
+        val points = findPoints.mapNotNull { point -> point.value.trim().replace(',', '.').toDoubleOrNull()?.let { point.time to it } }
         if (points.isEmpty()) { findStatus = "Add a point and enter its value"; return }
-        search(false) { Analysis.findByValue(store, points, tolerance) }
+        val skipped = findPoints.size - points.size
+        search(false, if (skipped == 0) "" else " ($skipped of the points have no number and were left out)") { Analysis.findByValue(store, points, tolerance) }
     }
 
     fun searchCorrelated(key: PlotKey) {
@@ -97,15 +107,18 @@ class SignalState(
         search(true) { Analysis.findCorrelated(store, store.series(message, decoder, signal), message) }
     }
 
-    private fun search(correlation: Boolean, find: () -> List<FieldMatch>) {
+    /** [note]: said after the outcome, e.g. which inputs were left out. */
+    private fun search(correlation: Boolean, note: String = "", find: () -> List<FieldMatch>) {
         if (searching) return
         searching = true
         findStatus = "Searching"
-        scope.launch {
+        val started = generation
+        searchJob = scope.launch {
             val result = withContext(Dispatchers.Default) { runCatching(find) }
+            if (started != generation) return@launch
             findByCorrelation = correlation
             findResults = result.getOrDefault(emptyList())
-            findStatus = result.fold({ if (it.isEmpty()) "Nothing found" else "${it.size} candidates, best first. Tap one to check it." }, { "Search failed: ${it.message ?: it.javaClass.simpleName}" })
+            findStatus = result.fold({ if (it.isEmpty()) "Nothing found" else "${it.size} candidates, best first. Tap one to check it." }, { "Search failed: ${it.message ?: it.javaClass.simpleName}" }) + note
             searching = false
         }
     }
@@ -118,13 +131,15 @@ class SignalState(
         val (read, done) = trace.markers.map { it.time to it.note }.partition { AutoDecode.READING.matches(it.second) }
         val readings = read.groupBy({ AutoDecode.READING.find(it.second)!!.groupValues[1].lowercase() }, { it.first to AutoDecode.READING.find(it.second)!!.groupValues[2].toDouble() })
         val named = autoResults.filter { it.confidence >= NAMED }.mapTo(HashSet(), ::key)
-        scope.launch {
+        val started = generation
+        decodeJob = scope.launch {
             val result = withContext(Dispatchers.Default) {
                 runCatching {
                     val known = { message: FrameStore.Message -> dbc.decoder(message.bus, message.id) }
-                    (AutoDecode.fromReadings(store, known, readings) + AutoDecode.run(store, known, done) { step -> launch(Dispatchers.Main) { autoStatus = step } }).filter { key(it) !in rejected }
+                    (AutoDecode.fromReadings(store, known, readings) + AutoDecode.run(store, known, done) { step -> launch(Dispatchers.Main) { if (started == generation) autoStatus = step } }).filter { key(it) !in rejected }
                 }
             }
+            if (started != generation) return@launch
             autoResults = result.getOrDefault(emptyList())
             // decoding by itself during a stream: what is new is said, since nobody may be looking at the list
             val fresh = autoResults.filter { it.confidence >= NAMED && key(it) !in named }
@@ -145,7 +160,8 @@ class SignalState(
         if (decoding || store.frameCount == 0L) return
         decoding = true
         autoStatus = "Downloading the community DBCs"
-        scope.launch {
+        val started = generation
+        decodeJob = scope.launch {
             val result = withContext(Dispatchers.IO) {
                 runCatching {
                     val community = COMMUNITY.map { (name, url) -> name to Dbc.parse(URL(url).openConnection().apply { connectTimeout = 15_000; readTimeout = 30_000 }.getInputStream().use { it.readBytes().toString(Charsets.ISO_8859_1) }, name) }
@@ -153,6 +169,7 @@ class SignalState(
                     AutoDecode.fromCommunity(store, { dbc.decoder(it.bus, it.id) }, community).distinctBy { Triple(dbc.target(it.message), it.message.id, it.signal.name) }.filter { key(it) !in rejected }
                 }
             }
+            if (started != generation) return@launch
             result.onSuccess { found -> autoResults = autoResults.filter { !it.evidence.startsWith("From ") } + found }
             autoStatus = result.fold(
                 { found ->

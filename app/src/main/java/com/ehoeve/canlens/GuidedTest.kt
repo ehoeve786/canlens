@@ -11,6 +11,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
 
 /**
@@ -23,6 +25,7 @@ class GuidedTest(context: Context, private val scope: CoroutineScope, private va
     var running by mutableStateOf<String?>(null); private set
     private var job: Job? = null
     private var ready = false
+    private var spoken = 0
     private val speech = TextToSpeech(context) { ready = it == TextToSpeech.SUCCESS }
 
     /** [pause]: seconds between steps; a cable takes longer to plug in than a switch to flip. */
@@ -48,17 +51,28 @@ class GuidedTest(context: Context, private val scope: CoroutineScope, private va
 
     fun stop() { job?.cancel(); job = null; speech.stop() }
 
-    /** Speaks [text] and returns when it has been said (at once when speech isn't available). */
+    /** For good, when the app goes: the speech engine is let go. */
+    fun close() { stop(); ready = false; speech.shutdown() }
+
+    /** Speaks [text] and returns when it has been said (at once when speech isn't available, after 15 s at most). */
     private suspend fun say(text: String) {
         if (!ready) return
-        suspendCancellableCoroutine { done ->
-            speech.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(utteranceId: String?) = Unit
-                override fun onDone(utteranceId: String?) { if (done.isActive) done.resume(Unit) }
-                @Deprecated("Deprecated in Java") override fun onError(utteranceId: String?) { if (done.isActive) done.resume(Unit) }
-            })
-            speech.speak(text, TextToSpeech.QUEUE_FLUSH, null, "step")
-            done.invokeOnCancellation { speech.stop() }
+        // an engine that drops the utterance without a word doesn't hold the test up
+        withTimeoutOrNull(15_000) {
+            suspendCancellableCoroutine<Unit> { done ->
+                // the callbacks come on the engine's thread: resumed once, and only for this utterance (not one it flushed)
+                val id = "step${++spoken}"
+                val once = AtomicBoolean()
+                val finish: (String?) -> Unit = { of -> if (of == id && once.compareAndSet(false, true) && done.isActive) done.resume(Unit) }
+                speech.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) = Unit
+                    override fun onDone(utteranceId: String?) = finish(utteranceId)
+                    override fun onStop(utteranceId: String?, interrupted: Boolean) = finish(utteranceId)
+                    @Deprecated("Deprecated in Java") override fun onError(utteranceId: String?) = finish(utteranceId)
+                })
+                done.invokeOnCancellation { speech.stop() }
+                if (speech.speak(text, TextToSpeech.QUEUE_FLUSH, null, id) != TextToSpeech.SUCCESS) finish(id)
+            }
         }
     }
 
