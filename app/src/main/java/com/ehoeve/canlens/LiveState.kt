@@ -142,7 +142,8 @@ class LiveState(
                     out.flush()
                     // the log and metrics come on the same connection: the answer is the "O" line among them
                     val reader = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
-                    generateSequence { reader.readLine() }.firstOrNull { it.startsWith("O,") }
+                    val until = System.currentTimeMillis() + 30_000   // its metrics come every second: a time limit, not a silence one
+                    generateSequence { if (System.currentTimeMillis() < until) reader.readLine() else null }.firstOrNull { it.startsWith("O,") }
                         ?: throw IOException("this DashKit's firmware can't install over Wi-Fi yet: install the wifi-stream build with DashPilot once")
                 }
             }
