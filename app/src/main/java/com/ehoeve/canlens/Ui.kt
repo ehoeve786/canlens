@@ -32,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -98,7 +99,8 @@ fun App(model: AppModel = viewModel()) {
                     when (tab) {
                         Tab.MESSAGES -> MessageList(model, onFind = { finding = true }, onAuto = { autoDecoding = true }, onOpen = open)
                         Tab.FRAMES -> TraceScreen(model, message, onSelect = { selected = it.bus to it.id }, onOpen = open)
-                        Tab.MESSAGE -> if (message != null) MessageDetail(model, message, onOpen = open) { tab = Tab.PLOTS }
+                        // keyed by the message: what MessageDetail remembers (the frame at the cursor, the bit activity) is of one message
+                        Tab.MESSAGE -> if (message != null) key(message.bus, message.id) { MessageDetail(model, message, onOpen = open) { tab = Tab.PLOTS } }
                             else Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.Center) { Hint("Pick a message in Messages or Frames to see its bits and signals here.") }
                         Tab.PLOTS -> PlotsScreen(model)
                     }

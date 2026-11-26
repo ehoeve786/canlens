@@ -57,7 +57,8 @@ class SignalState(
      */
     private val rejected = preferences.getStringSet("rejected", emptySet())!!.toHashSet()
     var rejectedCount by mutableIntStateOf(rejected.size); private set
-    private fun key(s: Suggestion) = "${s.message.bus}:${s.message.id}:${s.signal.start}:${s.signal.size}:${s.signal.muxValue}"
+    /** What identifies a suggestion across decodes: its message and its bits. */
+    fun key(s: Suggestion) = "${s.message.bus}:${s.message.id}:${s.signal.start}:${s.signal.size}:${s.signal.muxValue}"
     private fun saveRejected() { rejectedCount = rejected.size; preferences.edit().putStringSet("rejected", rejected.toHashSet()).apply() }
 
     fun restoreRejected() { rejected.clear(); saveRejected(); decodeEverything() }

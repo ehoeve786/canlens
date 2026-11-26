@@ -50,7 +50,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -240,11 +240,14 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
             dismissButton = { TextButton(onClick = { model.plotEvent(events[number]!!); naming = null; onPlots() }) { Text("Plot them") } },
         )
     }
-    // named or verified ones start ticked; plain layout guesses only when ticked by hand
-    val chosen = remember(all) { mutableStateListOf<Suggestion>().apply { addAll(all.filter { it.confidence >= SignalState.NAMED }) } }
+    // named or verified ones start ticked; plain layout guesses only when ticked by hand. What the user changed is kept
+    // by message and bits, so a decode that lands while the list is open (Keep decoding) doesn't undo it.
+    val flipped = remember { mutableStateMapOf<String, Boolean>() }
+    fun isTicked(s: Suggestion) = flipped[model.signals.key(s)] ?: (s.confidence >= SignalState.NAMED)
+    fun tick(s: Suggestion, on: Boolean) { flipped[model.signals.key(s)] = on }
     val plain = all.count { it.confidence < SignalState.NAMED }
     val shown = if (showPlain) all else all.filter { it.confidence >= SignalState.NAMED }
-    val ticked = shown.filter { it in chosen }
+    val ticked = shown.filter { isTicked(it) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -281,7 +284,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (plain > 0) FilterChip(selected = showPlain, onClick = { showPlain = !showPlain }, label = { Text("Show the $plain unnamed fields") })
                     // every listed one ticked: untick them all; otherwise tick them all
-                    if (shown.isNotEmpty()) AssistChip(onClick = { if (ticked.size == shown.size) chosen.removeAll(shown.toSet()) else chosen.addAll(shown - ticked.toSet()) },
+                    if (shown.isNotEmpty()) AssistChip(onClick = { val on = ticked.size != shown.size; shown.forEach { tick(it, on) } },
                         label = { Text(if (ticked.size == shown.size) "Untick all" else "Tick all") })
                 }
                 if (events.isNotEmpty() || model.signals.rejectedCount > 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -295,7 +298,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                 val signal = suggestion.signal
                 Surface(onClick = { suggestion.at?.let { model.trace.cursor = it; model.trace.followLive = false }; onPick(suggestion) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 6.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(suggestion in chosen, onCheckedChange = { if (it) chosen += suggestion else chosen.remove(suggestion) })
+                        Checkbox(isTicked(suggestion), onCheckedChange = { tick(suggestion, it) })
                         BusBadge(suggestion.message.bus)
                         Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
