@@ -33,6 +33,9 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
     override val status = DashKitStatus()
     @Volatile override var armed = false
     @Volatile var connected = false; private set
+    /** The last status read as it came, and the last write the DashKit refused (GATT status), for troubleshooting. */
+    @Volatile var lastRead: String? = null; private set
+    @Volatile var lastRefusal = 0; private set
 
     private var gatt: BluetoothGatt? = null
     private var transmit: BluetoothGattCharacteristic? = null
@@ -79,11 +82,16 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
         @Suppress("DEPRECATION")
         @Deprecated("Deprecated in API 33, and the only one called before it")
         override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, state: Int) {
-            if (state == BluetoothGatt.GATT_SUCCESS) characteristic.value?.toString(Charsets.US_ASCII)?.lines()?.forEach { status.read(it) }
+            val text = if (state == BluetoothGatt.GATT_SUCCESS) characteristic.value?.toString(Charsets.US_ASCII) else null
+            lastRead = text ?: "read failed ($state)"
+            text?.lines()?.forEach { status.read(it) }
             done()
         }
 
-        override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, state: Int) = done()
+        override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, state: Int) {
+            if (state != BluetoothGatt.GATT_SUCCESS) lastRefusal = state
+            done()
+        }
     }
 
     private fun lost() {

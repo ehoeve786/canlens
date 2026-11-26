@@ -92,7 +92,8 @@ class TxState(context: Context, private val store: FrameStore, private val scope
             val status = ble.status
             bleState = when {
                 !ble.connected -> "The Bluetooth link to the DashKit ended"
-                !status.wifiSeen -> "The DashKit's status says nothing of Wi-Fi: it isn't running the wifi-stream firmware"
+                !status.wifiSeen -> "The DashKit's status says nothing of Wi-Fi: it isn't running the wifi-stream firmware. It sent: " +
+                    (ble.lastRead?.replace('\n', ' ') ?: "no status yet") + if (ble.lastRefusal != 0) " · a write was refused (${ble.lastRefusal})" else ""
                 status.wifiReason != 0 -> "The DashKit can't join $ssid: " + DashKitStatus.wifiProblem(status.wifiReason)
                 !status.wifiOn -> "The DashKit has its Wi-Fi off: it didn't take the settings"
                 status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0" -> "The DashKit is on $ssid at ${status.wifiAddress}"
