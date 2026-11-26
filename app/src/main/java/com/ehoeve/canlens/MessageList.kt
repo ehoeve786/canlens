@@ -339,7 +339,8 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
     // the sources fit one screen, a tap each; a source's setup and firmware are a page of their own (its gear)
     var page by remember { mutableStateOf(LivePage.SOURCES) }
     BackHandler(page != LivePage.SOURCES) { page = LivePage.SOURCES }
-    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+    // a setup page scrolls when it's taller than the screen: the sheet itself stays put then (it bounced with the scroll)
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), sheetGesturesEnabled = page == LivePage.SOURCES) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (page != LivePage.SOURCES) Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = { page = LivePage.SOURCES }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -383,13 +384,15 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
                 }
                 LivePage.DASHKIT -> {
                     SectionTitle("Over USB")
-                    OutlinedButton(onClick = { model.live.restartDashKit(); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Restart the DashKit") }
                     val usbFirmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = true); onClose() } }
-                    OutlinedButton(onClick = { usbFirmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over USB") }
-                    Hint("Restart resets it through the cable, whatever its firmware is doing (Bluetooth stuck, Wi-Fi on); it keeps its settings, Wi-Fi included.")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { model.live.restartDashKit(); onClose() }, modifier = Modifier.weight(1f)) { Text("Restart") }
+                        OutlinedButton(onClick = { usbFirmware.launch(arrayOf("*/*")) }, modifier = Modifier.weight(1f)) { Text("Install firmware") }
+                    }
+                    Hint("Restart works whatever its firmware is doing; it keeps its settings.")
                     HorizontalDivider(Modifier.padding(vertical = 6.dp))
                     SectionTitle("Over Wi-Fi")
-                    Hint("Needs the wifi-stream firmware. Set it up once over Bluetooth: the DashKit keeps the network and stays on Wi-Fi until switched off.")
+                    Hint("Set up once over Bluetooth: the DashKit keeps the network until switched off.")
                     var password by remember { mutableStateOf("") }
                     var wifiAsk by remember { mutableStateOf<String?>(null) }
                     val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) model.tx.setUpWifi(wifiAsk, password) }
@@ -409,7 +412,7 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
                     if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
                     val firmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = false); onClose() } }
                     OutlinedButton(onClick = { firmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over Wi-Fi") }
-                    Hint("Pick the .bin. Only from this app: it needs the key sent with the Wi-Fi settings, so send those once after the firmware that has it.")
+                    Hint("Needs the key this app sent with the Wi-Fi settings.")
                 }
             }
         }
