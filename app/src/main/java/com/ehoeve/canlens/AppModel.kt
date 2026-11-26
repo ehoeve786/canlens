@@ -65,7 +65,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     var otherName by mutableStateOf(""); private set
 
     private fun liveStarted() {
-        logs = emptyList(); mergedLogs = emptyList(); nextPart = null
+        logs = emptyList(); mergedLogs = emptyList(); nextPart = null; session.part = null
         reset(0, true, ChartView(0f, LIVE_WINDOW_SECONDS))
     }
 
@@ -80,7 +80,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun openLogs(uris: List<Uri>, from: Long? = null, then: () -> Unit = {}) {
         if (uris.isEmpty() || busy) return
         keepReadable(uris)
-        logs = uris; mergedLogs = emptyList()
+        logs = uris; mergedLogs = emptyList(); session.part = from
         live.stop()
         clearCompare()
         busy = true
@@ -136,7 +136,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         live.stop()
         live.recorded = null
         store.clear()
-        logs = emptyList(); mergedLogs = emptyList(); nextPart = null
+        logs = emptyList(); mergedLogs = emptyList(); nextPart = null; session.part = null
         plot.keys.clear()
         reset(0, false, ChartView(0f, 1f))
         status = "Open a log or start a live stream"
