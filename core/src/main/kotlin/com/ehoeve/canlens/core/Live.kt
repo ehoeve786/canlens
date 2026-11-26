@@ -199,6 +199,34 @@ object DashKitLine {
 
     private const val HEX = "0123456789abcdef"
 
+    /**
+     * A datagram of packed frames from the DashKit's Wi-Fi link (wifi_link.h, can_manager.c) into [sink]: 'B', its
+     * sequence number, the first frame's bus time, then per frame a byte (bit 7 bus, bit 6 extended, bits 0-3
+     * length), the time since the first (µs, u16), the id (u16, or u32 when extended) and the data, all little-endian.
+     * Returns the sequence number, -1 when it isn't such a datagram (or is cut short), -2 when the sink said stop.
+     */
+    fun parsePacked(bytes: ByteArray, length: Int, arrival: Long, sink: FrameSink, clock: DeviceClock): Long {
+        fun u8(at: Int) = bytes[at].toInt() and 0xFF
+        fun u16(at: Int) = u8(at) or (u8(at + 1) shl 8)
+        fun u32(at: Int) = (u16(at).toLong() or (u16(at + 2).toLong() shl 16))
+        if (length < 9 || bytes[0] != 'B'.code.toByte()) return -1
+        val sequence = u32(1)
+        val start = u32(5)
+        var at = 9
+        while (at < length) {
+            val head = u8(at)
+            val extended = head and 0x40 != 0
+            val size = head and 0x0F
+            val data = at + 3 + (if (extended) 4 else 2)
+            if (size > 8 || data + size > length) return -1
+            val id = if (extended) u32(at + 3) else u16(at + 3).toLong()
+            val device = (start + u16(at + 1)) and 0xFFFFFFFFL
+            if (!sink.frame(clock.micros(device, arrival), head shr 7, CanId.of(id, extended), bytes, data, size)) return -2
+            at = data + size
+        }
+        return sequence
+    }
+
     /** An "A" line into [sink], at the time it came off the bus when the line has one ([clock]), else at [timeMicros]. */
     fun parse(line: String, timeMicros: Long, buffer: ByteArray, sink: FrameSink, clock: DeviceClock? = null): Boolean {
         if (!line.startsWith("A,")) return true

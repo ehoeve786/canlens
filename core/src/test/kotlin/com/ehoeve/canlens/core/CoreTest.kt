@@ -970,4 +970,19 @@ class CoreTest {
         DashKitLine.parse("A,0,zz,00", 0, buffer, sink)
         assertEquals(listOf(0x1FFFFFFF), frames)
     }
+
+    @Test fun packedWifiFramesComeOutWhole() {
+        fun le(v: Long, n: Int) = ByteArray(n) { (v shr (8 * it)).toByte() }
+        val datagram = byteArrayOf('B'.code.toByte()) + le(41, 4) + le(0xFFFFFF00, 4) +
+            byteArrayOf(0x02) + le(0, 2) + le(0x123, 2) + bytes("AABB") +                      // bus 0, std, 2 bytes
+            byteArrayOf((0x80 or 0x40 or 0x01).toByte()) + le(0x200, 2) + le(0x18DAF110, 4) + bytes("CC")  // bus 1, ext, after the wrap
+        val frames = ArrayList<Frame>()
+        val sink = FrameSink { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true }
+        assertEquals(41L, DashKitLine.parsePacked(datagram, datagram.size, 5_000_000, sink, DeviceClock()))
+        assertEquals(listOf(0 to 0x123, 1 to 0x18DAF110), frames.map { it.bus to it.id })
+        assertEquals(listOf(5_000_000L, 5_000_512L), frames.map { it.time })
+        assertArrayEquals(bytes("CC"), frames[1].data)
+        assertEquals(-1L, DashKitLine.parsePacked(datagram, datagram.size - 1, 0, sink, DeviceClock()))   // cut short
+        assertEquals(-1L, DashKitLine.parsePacked("Q,1\n".toByteArray(), 4, 0, sink, DeviceClock()))
+    }
 }

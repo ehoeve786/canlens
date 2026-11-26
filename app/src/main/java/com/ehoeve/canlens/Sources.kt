@@ -302,11 +302,10 @@ class DashKitWifi(private val host: String) : Closeable {
         }
     }
 
-    /** The frame batches, each "Q,<sequence>" and its lines, from the DashKit's address only; a skipped sequence is a lost datagram. */
+    /** The packed frame datagrams ([DashKitLine.parsePacked]), from the DashKit's address only; a skipped sequence is a lost datagram. */
     private fun receiveDatagrams(sink: FrameSink, clock: Clock) {
         val buffer = ByteArray(2048)
         val packet = DatagramPacket(buffer, buffer.size)
-        val payload = ByteArray(64)
         val busClock = DeviceClock()
         var expected = -1L
         try {
@@ -314,16 +313,12 @@ class DashKitWifi(private val host: String) : Closeable {
                 packet.length = buffer.size
                 datagrams.receive(packet)
                 if (packet.address != socket.inetAddress) continue
-                val time = clock.micros()
-                for (text in String(buffer, 0, packet.length, Charsets.US_ASCII).split('\n')) when {
-                    text.startsWith("Q,") -> text.substring(2).toLongOrNull()?.let { sequence ->
-                        if (expected >= 0 && sequence > expected) status.datagramsLost += sequence - expected
-                        expected = sequence + 1
-                        status.datagrams++
-                    }
-                    text.startsWith("A,") -> if (!DashKitLine.parse(text, time, payload, sink, busClock)) { close(); return }
-                    text.isNotEmpty() -> status.read(text)
-                }
+                val sequence = DashKitLine.parsePacked(buffer, packet.length, clock.micros(), sink, busClock)
+                if (sequence == -2L) { close(); return }
+                if (sequence < 0) continue
+                if (expected >= 0 && sequence > expected) status.datagramsLost += sequence - expected
+                expected = sequence + 1
+                status.datagrams++
             }
         } catch (e: IOException) {
             close()   // the TCP side sees it and the stream reconnects
