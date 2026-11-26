@@ -68,7 +68,7 @@ class Clock {
     fun micros() = wallMicros + (SystemClock.elapsedRealtimeNanos() - startNanos) / 1000
 }
 
-/** Writes a live stream to `Download/CANLens/can-log-<time>.log` in candump format, stamped with the phone's clock. */
+/** Writes a live stream to `Download/CANLens/can-log-<time>.log.zst` in candump format, zstd-compressed, stamped with the phone's clock. */
 class Recorder(context: Context) : Closeable {
     val name = "can-log-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log.zst"
     private val clock = Clock()
