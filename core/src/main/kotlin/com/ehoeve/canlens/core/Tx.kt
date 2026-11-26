@@ -17,6 +17,9 @@ class DashKitStatus {
     /** What Bluetooth last said of the DashKit's Wi-Fi: on, and its address ("0.0.0.0" until it joined). */
     @Volatile var wifiOn = false
     @Volatile var wifiAddress = ""
+    /** Why it isn't on the network: the last Wi-Fi disconnect reason, -1 if Wi-Fi didn't start, 0 none. Free heap in KB, -1 unknown. */
+    @Volatile var wifiReason = 0
+    @Volatile var heapKb = -1
     /** The firmware log from the Wi-Fi link, the last [LOG_LINES]; [logLines] counts every line ever added. */
     private val log = ArrayDeque<String>()
     @Volatile var logLines = 0L; private set
@@ -34,7 +37,11 @@ class DashKitStatus {
         }
         val fields = line.split(',')
         if (fields[0] == "M" && fields.size > METRICS.size) { metrics = LongArray(METRICS.size) { fields[it + 1].toLongOrNull() ?: 0 }; return }
-        if (fields[0] == "W" && fields.size == 3) { wifiOn = fields[1] == "1"; wifiAddress = fields[2]; return }
+        if (fields[0] == "W" && fields.size >= 3) {
+            wifiOn = fields[1] == "1"; wifiAddress = fields[2]
+            wifiReason = fields.getOrNull(3)?.toIntOrNull() ?: 0; heapKb = fields.getOrNull(4)?.toIntOrNull() ?: -1
+            return
+        }
         if (fields[0] == "H" && fields.size >= 5) {
             armed = fields[1] == "1"
             sent = fields[2].toLongOrNull() ?: sent
@@ -55,6 +62,16 @@ class DashKitStatus {
         const val ERROR_PASSIVE = 0x18
         const val BUS_OFF = 0x20
         const val LOG_LINES = 3000
+
+        /** The ESP32's Wi-Fi disconnect reasons that a hotspot gives, in words. */
+        fun wifiProblem(reason: Int): String = when (reason) {
+            0 -> ""
+            -1 -> "its Wi-Fi didn't start (out of memory?)"
+            2, 15, 202, 204 -> "the password was refused (reason $reason)"
+            201 -> "it can't see the hotspot: is it on, and on 2.4 GHz? (reason 201)"
+            210, 211 -> "the hotspot's security isn't one it can use (reason $reason)"
+            else -> "the hotspot dropped it (reason $reason)"
+        }
         /** The fields of an "M" line (wifi_link.h): totals since boot from FIFO overflows on. */
         val METRICS = listOf("cpu0", "cpu1", "load0", "load1", "fps0", "fps1", "fifo0", "fifo1", "queueDrops", "usbDrops", "wifiDrops", "rssi", "heapKb")
     }

@@ -85,7 +85,20 @@ class TxState(context: Context, private val store: FrameStore, private val scope
         if (!ble.connected) return@launch
         if (ssid == null) { ble.send("W,0"); bleState = "Asked the DashKit to switch its Wi-Fi off"; return@launch }
         ble.send("WS,$ssid"); ble.send("WP,$password"); ble.send("W,1")
-        bleState = "Sent. The DashKit joins $ssid within a few seconds."
+        bleState = "Sent to the DashKit; waiting for it to join $ssid"
+        // the status is read once a second: say what it reports, for a minute or until it is on the network
+        for (second in 0 until 60) {
+            delay(1000)
+            val status = ble.status
+            bleState = when {
+                !ble.connected -> "The Bluetooth link to the DashKit ended"
+                !status.wifiOn -> "The DashKit hasn't switched its Wi-Fi on (does it run the wifi-stream firmware?)"
+                status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0" -> "The DashKit is on $ssid at ${status.wifiAddress}"
+                status.wifiReason != 0 -> "The DashKit can't join $ssid: " + DashKitStatus.wifiProblem(status.wifiReason)
+                else -> "The DashKit is joining $ssid"
+            } + if (status.heapKb >= 0) " · ${status.heapKb} KB free" else ""
+            if (status.wifiAddress.isNotEmpty() && status.wifiAddress != "0.0.0.0") break
+        }
     }
 
     /** What is being sent over time, for the button that stops it; null when nothing is. */
