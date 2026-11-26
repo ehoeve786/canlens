@@ -8,6 +8,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
+import android.os.Build
 import com.ehoeve.canlens.core.DashKitLine
 import com.ehoeve.canlens.core.DashKitStatus
 import java.io.Closeable
@@ -63,7 +64,11 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, state: Int, newState: Int) {
             // a bigger MTU first: the status read (transmit counts, bus errors, Wi-Fi) is longer than the default 20 bytes
-            if (newState == BluetoothProfile.STATE_CONNECTED) { if (!g.requestMtu(185)) g.discoverServices() }
+            // Android keeps a paired device's services from before a firmware update: forget them on every connect
+            if (newState == BluetoothProfile.STATE_CONNECTED) {
+                runCatching { g.javaClass.getMethod("refresh").invoke(g) }
+                if (!g.requestMtu(185)) g.discoverServices()
+            }
             else if (newState == BluetoothProfile.STATE_DISCONNECTED) { lost(); onState("The DashKit's Bluetooth link ended") }
         }
 
@@ -82,16 +87,24 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
         @Suppress("DEPRECATION")
         @Deprecated("Deprecated in API 33, and the only one called before it")
         override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, state: Int) {
-            val text = if (state == BluetoothGatt.GATT_SUCCESS) characteristic.value?.toString(Charsets.US_ASCII) else null
-            lastRead = text ?: "read failed ($state)"
-            text?.lines()?.forEach { status.read(it) }
-            done()
+            if (Build.VERSION.SDK_INT < 33) read(characteristic.value, state)
+        }
+
+        override fun onCharacteristicRead(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, state: Int) {
+            if (Build.VERSION.SDK_INT >= 33) read(value, state)
         }
 
         override fun onCharacteristicWrite(g: BluetoothGatt, characteristic: BluetoothGattCharacteristic, state: Int) {
             if (state != BluetoothGatt.GATT_SUCCESS) lastRefusal = state
             done()
         }
+    }
+
+    private fun read(value: ByteArray?, state: Int) {
+        val text = if (state == BluetoothGatt.GATT_SUCCESS) value?.toString(Charsets.US_ASCII) else null
+        lastRead = text ?: "read failed ($state)"
+        text?.lines()?.forEach { status.read(it) }
+        done()
     }
 
     private fun lost() {
@@ -137,7 +150,7 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
     fun everySecond() {
         if (!connected) return
         if (armed) send(DashKitLine.ARM)
-        queue { val g = gatt; val c = transmit; g != null && c != null && g.readCharacteristic(c) }
+        queue { val g = gatt; val c = transmit; (g != null && c != null && g.readCharacteristic(c)).also { if (!it) lastRead = "the read couldn't start" } }
         if (seconds++ % PING_EVERY == 0) write(control, byteArrayOf(PING, 0), true)
     }
 
