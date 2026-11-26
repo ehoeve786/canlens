@@ -16,6 +16,8 @@ class DashKitStatus {
     @Volatile var metrics: LongArray? = null
     /** What Bluetooth last said of the DashKit's Wi-Fi: on, and its address ("0.0.0.0" until it joined). */
     @Volatile var wifiOn = false
+    /** Whether a status had the Wi-Fi part at all (firmware without it, or a read cut short, has none). */
+    @Volatile var wifiSeen = false
     @Volatile var wifiAddress = ""
     /** Why it isn't on the network: the last Wi-Fi disconnect reason, -1 if Wi-Fi didn't start, 0 none. Free heap in KB, -1 unknown. */
     @Volatile var wifiReason = 0
@@ -38,7 +40,7 @@ class DashKitStatus {
         val fields = line.split(',')
         if (fields[0] == "M" && fields.size > METRICS.size) { metrics = LongArray(METRICS.size) { fields[it + 1].toLongOrNull() ?: 0 }; return }
         if (fields[0] == "W" && fields.size >= 3) {
-            wifiOn = fields[1] == "1"; wifiAddress = fields[2]
+            wifiSeen = true; wifiOn = fields[1] == "1"; wifiAddress = fields[2]
             wifiReason = fields.getOrNull(3)?.toIntOrNull() ?: 0; heapKb = fields.getOrNull(4)?.toIntOrNull() ?: -1
             return
         }

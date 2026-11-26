@@ -59,9 +59,12 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
 
     private val callback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(g: BluetoothGatt, state: Int, newState: Int) {
-            if (newState == BluetoothProfile.STATE_CONNECTED) g.discoverServices()
+            // a bigger MTU first: the status read (transmit counts, bus errors, Wi-Fi) is longer than the default 20 bytes
+            if (newState == BluetoothProfile.STATE_CONNECTED) { if (!g.requestMtu(185)) g.discoverServices() }
             else if (newState == BluetoothProfile.STATE_DISCONNECTED) { lost(); onState("The DashKit's Bluetooth link ended") }
         }
+
+        override fun onMtuChanged(g: BluetoothGatt, mtu: Int, state: Int) { g.discoverServices() }
 
         override fun onServicesDiscovered(g: BluetoothGatt, state: Int) {
             transmit = g.getService(TX_SERVICE)?.getCharacteristic(TX_LINES)
