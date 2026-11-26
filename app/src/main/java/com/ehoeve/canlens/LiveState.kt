@@ -142,7 +142,11 @@ class LiveState(
         job = scope.launch {
             launch(Dispatchers.IO) {
                 while (isActive) {
-                    val problem = try { connect(sink); "stream ended" } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
+                    val problem = try { connect(sink); "stream ended" } catch (e: AccessRefused) {
+                        // asking again every 2 s would pester the user: a refusal ends the stream
+                        withContext(Dispatchers.Main) { if (isActive) { stop(); report("$name: ${e.message}. Stopped") } }
+                        break
+                    } catch (e: Exception) { e.message ?: e.javaClass.simpleName }
                     if (!isActive) break
                     withContext(Dispatchers.Main) { report("$name: $problem. Retrying") }
                     delay(2000)
@@ -182,7 +186,8 @@ class LiveState(
         } else {
             val old = recorder
             recorder = null; recording = null
-            scope.launch(Dispatchers.IO) { runCatching { old?.close() } }
+            // a thread of its own, not [scope]: from onCleared the scope is already cancelled, and the log's end would be lost
+            if (old != null) thread(name = "recorder-close") { runCatching { old.close() } }
         }
     }
 

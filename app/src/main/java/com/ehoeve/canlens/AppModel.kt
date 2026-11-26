@@ -34,7 +34,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences("canlens", Context.MODE_PRIVATE)
 
     /** As many chunks as 40 % of the heap holds: the rest is room for decoding, plotting and merging what is loaded. */
-    val store = FrameStore((Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8))
+    private val maxChunks = (Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8)
+    val store = FrameStore(maxChunks)
     /** Where the open logs stopped loading (source clock), so the next part can be loaded; null when they loaded whole. */
     var nextPart: Long? by mutableStateOf(null); private set
     /** Set by Cancel while logs load: the reading stops, and what was read so far stays. */
@@ -86,29 +87,40 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val problems = ArrayList<String>()
             val notes = ArrayList<Pair<Long, String>>()
+            var stopped = false
             withContext(Dispatchers.IO) {
                 store.clear()
                 store.dropOldest = false
                 // the next part of a log too big to load at once: the frames before [from] are read past; Cancel stops the reading
                 cancelling = false
-                val sink = FrameSink { time, bus, id, data, offset, length -> !cancelling && ((from != null && time < from) || store.frame(time, bus, id, data, offset, length)) }
+                var read = 0L
+                val sink = FrameSink { time, bus, id, data, offset, length -> read++; !cancelling && ((from != null && time < from) || store.frame(time, bus, id, data, offset, length)) }
                 // route segments in order: natural sort puts --2-- before --10--
                 val files = uris.map { context.displayName(it) to it }.sortedWith { a, b -> naturalCompare(a.first, b.first) }
                 for ((index, file) in files.withIndex()) {
+                    if (cancelling) { stopped = true; break }
                     withContext(Dispatchers.Main) { status = "Reading ${file.first} (${index + 1}/${files.size})" }
                     val before = store.frameCount
+                    read = 0L
                     try {
                         context.openDecompressed(file.second).use { LogReader.read(it, sink) { time, note -> if (from == null || time >= from) notes += time to note } }
-                        if (store.frameCount == before) problems += "${file.first}: no CAN frames"
+                        if (cancelling) { stopped = true; break }
+                        // in the next part a file may lie wholly before [from]: it has frames, just none kept
+                        val empty = if (from == null) store.frameCount == before else read == 0L
+                        if (empty) problems += "${file.first}: no CAN frames"
                     } catch (e: Exception) {
-                        problems += "${file.first}: ${e.message ?: e.javaClass.simpleName}"
+                        // a reader stopped by Cancel may throw: that is no fault of the file
+                        if (!cancelling) problems += "${file.first}: ${e.message ?: e.javaClass.simpleName}"
                     } catch (e: OutOfMemoryError) {
                         problems += "${file.first}: out of memory"
                     }
                     if (store.truncated) { problems += "memory limit reached, the rest was not loaded"; break }
                 }
             }
-            nextPart = if (store.truncated) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else null
+            if (stopped && !store.truncated) problems += "cancelled, the rest was not loaded"
+            // after Cancel too the rest can be loaded as the next part: from the last frame kept, or from where this part began
+            val end = if (store.frameCount > 0) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else from
+            nextPart = if (store.truncated || stopped) end else null
             reset(store.firstTime, false, ChartView(seconds(store.firstTime), seconds(store.lastTime)))
             if (store.frameCount > 0) trace.markers += notes.map { Marker(((it.first - store.originMicros) / FrameStore.MICROS_PER_TICK).toInt(), it.second) }.sortedBy { it.time }
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +
@@ -150,10 +162,15 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         status = "Reading the log to merge"
         val busOffset = MERGED_BUS * (mergedLogs.size + 1)
         viewModelScope.launch {
+            var cut = false
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val other = FrameStore()
+                    // only what still fits in the open data's budget: the merge drops the rest anyway
+                    val room = maxChunks - store.chunks.size
+                    if (room <= 0) throw IOException("memory limit reached, no room for it")
+                    val other = FrameStore(room)
                     for (uri in uris) context.openDecompressed(uri).use { LogReader.read(it, other) }
+                    cut = other.truncated
                     if (other.frameCount == 0L) throw IOException("no CAN frames in it")
                     val matched = Align.offsetMicros(store, other)
                     // without frames in common: trust the two clocks if they are within a day, else line up the starts
@@ -172,7 +189,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                 plot.view = ChartView(seconds(store.firstTime), seconds(store.lastTime))
                 status = "$added frames merged as bus $busOffset and up. " +
                     (if (matched != null) "Clocks matched on shared frames: the merged log was moved by %+.3f s.".format(matched / 1e6) else "No shared frames to match the clocks on, so the times are as recorded.") +
-                    if (store.truncated) "\nMemory limit reached: the end is missing." else ""
+                    if (store.truncated || cut) "\nMemory limit reached: the end is missing." else ""
             }.onFailure { status = "Merge: ${it.message ?: it.javaClass.simpleName}" }
             busy = false
             revision++
@@ -268,7 +285,12 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     // ---- markers: in the trace, and in the recording when there is one
 
-    fun beginMarker() = PendingMarker(trace.cursorNow, live.now())
+    /**
+     * [atCursor]: the user's own marker, where the cursor is. Automatic ones (camera readings, guided-test steps) mark
+     * the newest frame while a stream runs, also when the user moved the cursor away from it.
+     */
+    fun beginMarker(atCursor: Boolean = false) =
+        PendingMarker(if (atCursor || live.source == LiveSource.NONE) trace.cursorNow else store.lastTime, live.now())
 
     /** Notes of the last markers, newest first: one tap repeats a step of an in-car test ("passenger in"). */
     var recentNotes by mutableStateOf(preferences.getString("recentNotes", "")!!.split('\n').filter { it.isNotEmpty() })
@@ -311,7 +333,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCompare() { other = null; mine = null; otherName = "" }
 
-    override fun onCleared() { tx.close(); guided.stop(); live.stop() }
+    override fun onCleared() { tx.close(); guided.close(); live.stop() }
 
     init { session.restore() }
 
