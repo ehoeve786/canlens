@@ -644,14 +644,20 @@ class CoreTest {
         val status = DashKitStatus()
         status.read("A,0,249,00")
         status.read("H,1,12,3,4,0,0")
-        assertTrue(status.armed && status.sent == 12L && status.refused == 3L && status.expired == 4L && !status.unhealthy)
+        assertTrue(status.armed && status.sent == 12L && status.refused == 3L && status.expired == 4L)
+        assertTrue("no bus reported yet: not healthy", status.unhealthy)
+        status.read("D,0,1da50006,0000000000000000")
+        assertTrue("bus 1 not reported yet", status.unhealthy)
+        status.read("D,1,1da50006,0102000000000000")
+        assertFalse(status.unhealthy)
         status.read("D,1,1da50006,8a7f200102030405")
-        assertEquals(listOf(-1, 0x8A, -1, 0x7F, 0, 0x20), listOf(status.transmitErrors[0], status.transmitErrors[1], status.receiveErrors[0], status.receiveErrors[1], status.flags[0], status.flags[1]))
+        val bus1 = status.buses[1]!!
+        assertEquals(listOf(0x8A, 0x7F, 0x20), listOf(bus1.transmitErrors, bus1.receiveErrors, bus1.flags))
         assertTrue(status.unhealthy)
         status.read("D,1,1da50001,ffffffffffffffff")   // another record: not the error state
         status.read("D,7,1da50006,0000000000000000")
         status.read("H,x")
-        assertEquals(0x8A, status.transmitErrors[1])
+        assertEquals(0x8A, status.buses[1]!!.transmitErrors)
         for (name in listOf("EPAS3P_status", "SCCM_leftStalk", "DI_torque", "ESP_brakeTorque", "RCM_inertial1", "IBST_status", "DI_systemStatus")) assertTrue(name, TxGuard.critical(name))
         for (name in listOf("VCLEFT_doorStatus", "UI_gpsVehicleSpeed", "VCRIGHT_hvacStatus", "BMS_hvBusStatus")) assertFalse(name, TxGuard.critical(name))
         val gears = Dbc.parse("BO_ 280 DI_systemStatus: 3 XXX\n SG_ DI_gear : 21|3@1+ (1,0) [0|0] \"\" XXX\nVAL_ 280 DI_gear 1 \"DI_GEAR_P\" 4 \"DI_GEAR_D\" ;\n", "g")
@@ -836,5 +842,60 @@ class CoreTest {
         DashKitLine.parse("A,1,456,05,000003e8", 6_000_000, buffer, sink)       // no clock: the arrival
         assertEquals(listOf(5_000_000L, 5_001_000L, 7_000_000L, 6_000_000L), times)
         assertEquals(listOf("0102", "03", "04", "05"), datas)
+    }
+
+    @Test fun transmitGates() {
+        // A1, A2, A7: the bus it was seen on, 0 or 1; a DBC name, not a critical one; live and in Park
+        assertNull(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", live = true, park = true))
+        assertTrue(TxGuard.refusal(0, 1, "VCLEFT_doorStatus", true, true)!!.contains("bus"))
+        assertTrue(TxGuard.refusal(2, 2, "VCLEFT_doorStatus", true, true)!!.contains("bus"))
+        assertTrue(TxGuard.refusal(0, 0, null, true, true)!!.contains("DBC"))
+        assertTrue(TxGuard.refusal(0, 0, "DAS_control", true, true)!!.contains("steer"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", false, true)!!.contains("live"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", true, null)!!.contains("Park"))
+        assertTrue(TxGuard.refusal(0, 0, "VCLEFT_doorStatus", true, false)!!.contains("Park"))
+        for (name in listOf("DAS_control", "ACC_CONTROL", "LKAS11", "MDPS12", "SCC12", "TCS13", "HCA_01", "ACC_06", "GAS_COMMAND", "UI_cruiseState")) assertTrue(name, TxGuard.critical(name))
+        // A4: what Park is
+        for (name in listOf("P", "PARK", "DI_GEAR_P", "Park")) assertTrue(name, TxGuard.parkName(name))
+        for (name in listOf("NOT_PARK", "EXIT_PARK", "REQ_P", "DI_GEAR_D", "PARKING_BRAKE")) assertFalse(name, TxGuard.parkName(name))
+    }
+
+    @Test fun parkNeedsEveryRecentGearSignalOnTheCarBuses() {
+        val dbc = Dbc.parse(
+            "BO_ 280 DI_systemStatus: 3 XXX\n SG_ DI_gear : 21|3@1+ (1,0) [0|0] \"\" XXX\n" +
+                "BO_ 400 GEARBOX: 2 XXX\n SG_ page M : 0|4@1+ (1,0) [0|0] \"\" XXX\n SG_ gearShown m1 : 8|2@1+ (1,0) [0|0] \"\" XXX\n" +
+                "VAL_ 280 DI_gear 1 \"DI_GEAR_P\" 4 \"DI_GEAR_D\" ;\nVAL_ 400 gearShown 0 \"P\" 1 \"D\" ;\n", "g")
+        val decoder: (FrameStore.Message) -> DbcMessage? = { dbc.messages[it.id] }
+        val store = FrameStore()
+        store.frame(0, 0, 0x118, bytes("000020"), 0, 3)           // P
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(1000, 1, 0x190, bytes("0201"), 0, 2)           // page 2: gearShown isn't on it, so its "D" doesn't count
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(2000, 1, 0x190, bytes("0101"), 0, 2)           // page 1, D: the two disagree
+        assertEquals(false, TxGuard.inPark(store, decoder))
+        store.frame(3000, 1, 0x190, bytes("0100"), 0, 2)           // page 1, P
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(4000, 8, 0x118, bytes("000080"), 0, 3)        // openpilot's bus says D: not a car bus
+        assertEquals(true, TxGuard.inPark(store, decoder))
+        store.frame(900_000, 0, 0x700, bytes("00"), 0, 1)          // 0.9 s later, nothing new on gear: too old to tell
+        assertNull(TxGuard.inPark(store, decoder))
+    }
+
+    @Test fun shortExtendedIdsStayApartFromStandardOnes() {
+        val frames = ArrayList<Pair<Int, Int>>()
+        val sink = FrameSink { _, bus, id, _, _, _ -> frames += bus to id; true }
+        val buffer = ByteArray(64)
+        LogReader.candump("(1.0) can0 123#00", buffer, sink)
+        LogReader.candump("(1.0) can0 00000123#00", buffer, sink)
+        LogReader.candump("(1.0) can0 18DAF110#00", buffer, sink)
+        DashKitLine.parse("A,1,00000123,00", 0, buffer, sink)
+        assertEquals(listOf(0 to 0x123, 0 to (0x123 or CanId.EXTENDED), 0 to 0x18DAF110, 1 to (0x123 or CanId.EXTENDED)), frames)
+        val text = StringBuilder().apply { appendCandump(1_000_000, 0, 0x123 or CanId.EXTENDED, buffer, 0, 1); appendCandump(1_000_000, 0, 0x123, buffer, 0, 1) }.toString()
+        assertEquals("(1.000000) can0 00000123#00\n(1.000000) can0 123#00\n", text)
+        val dbc = Dbc.parse("BO_ 2147483939 SHORT_EXT: 1 X\n SG_ s : 0|8@1+ (1,0) [0|0] \"\" X\n\nBO_ 291 STD: 1 X\n SG_ t : 0|8@1+ (1,0) [0|0] \"\" X\n", "x")
+        assertEquals("SHORT_EXT", dbc.messages[0x123 or CanId.EXTENDED]?.name)
+        assertEquals("STD", dbc.messages[0x123]?.name)
+        assertTrue(dbc.write().contains("BO_ 2147483939 SHORT_EXT"))
+        assertNull(DashKitLine.transmit(0, 0x123 or CanId.EXTENDED, bytes("00")))
     }
 }

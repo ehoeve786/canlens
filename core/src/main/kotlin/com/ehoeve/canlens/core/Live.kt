@@ -209,7 +209,7 @@ object DashKitLine {
         val id = line.substring(c2 + 1, c3).toLongOrNull(16) ?: return true
         val length = LogReader.hex(line, c3 + 1, if (c4 < 0) line.length else c4, buffer)
         val device = if (c4 < 0 || clock == null) null else line.substring(c4 + 1).toLongOrNull(16)
-        return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, id.toInt(), buffer, 0, length)
+        return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, CanId.of(id, c3 - c2 - 1 > 3), buffer, 0, length)
     }
 }
 
@@ -252,7 +252,8 @@ fun StringBuilder.appendMarker(timeMicros: Long, note: String) {
 fun StringBuilder.appendCandump(timeMicros: Long, bus: Int, id: Int, data: ByteArray, offset: Int, length: Int) {
     val hex = "0123456789ABCDEF"
     append('(').appendSeconds(timeMicros).append(") can").append(bus).append(' ')
-    for (shift in (if (id in 0..0x7FF) 8 else 28) downTo 0 step 4) append(hex[id ushr shift and 15])
+    val raw = CanId.raw(id)
+    for (shift in (if (CanId.isExtended(id)) 28 else 8) downTo 0 step 4) append(hex[raw ushr shift and 15])
     append(if (length > 8) "##0" else "#")
     for (i in offset until offset + length) { append(hex[data[i].toInt() ushr 4 and 15]); append(hex[data[i].toInt() and 15]) }
     append('\n')

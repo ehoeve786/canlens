@@ -103,7 +103,8 @@ class LiveState(
     }
 
     fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink ->
-        DashKitUsb(context).also { connection = it; dashKit = it }.use { it.run(sink) }
+        // published as the transmit link only once the port is ours, and taken back when the stream ends
+        DashKitUsb(context).also { connection = it }.use { usb -> try { usb.run(sink) { dashKit = usb } } finally { dashKit = null } }
     }
 
     /** Over the phone's hotspot: at the address it had last time, else looked for there. */

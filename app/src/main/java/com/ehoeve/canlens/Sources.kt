@@ -164,8 +164,14 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
     @Volatile override var armed = false
     private val outbox = ConcurrentLinkedQueue<ByteArray>()
 
-    /** Queues a line for the DashKit ([DashKitLine.transmit]); it goes out within a few milliseconds. */
-    override fun send(line: String) { outbox += line.toByteArray(Charsets.US_ASCII) }
+    /**
+     * Queues a line for the DashKit ([DashKitLine.transmit]); it goes out within a few milliseconds. Arming and
+     * disarming go ahead of anything still waiting (dropped), and at most [MAX_WAITING] lines wait.
+     */
+    override fun send(line: String) {
+        if (line == DashKitLine.ARM || line == DashKitLine.DISARM) outbox.clear() else if (outbox.size >= MAX_WAITING) return
+        outbox += line.toByteArray(Charsets.US_ASCII)
+    }
 
     fun find(): UsbDevice? = manager.deviceList.values.firstOrNull { it.vendorId == ESPRESSIF && it.productId == USB_SERIAL_JTAG }
 
@@ -189,8 +195,8 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         return manager.hasPermission(device)
     }
 
-    /** Reads frames into [sink] until [close], the sink returns false, or the cable is pulled (IOException). */
-    fun run(sink: FrameSink) {
+    /** Reads frames into [sink] until [close], the sink returns false, or the cable is pulled (IOException); [ready] once the port is ours. */
+    fun run(sink: FrameSink, ready: () -> Unit = {}) {
         val device = find() ?: throw IOException("No DashKit on USB")
         if (!permitted(device)) throw AccessRefused("USB access to the DashKit was not allowed")
         var input: UsbEndpoint? = null
@@ -205,6 +211,7 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         val connection = manager.openDevice(device) ?: throw IOException("Can't open the DashKit's USB port")
         try {
             if (input == null || !connection.claimInterface(data, true)) throw IOException("Can't claim the DashKit's serial interface")
+            ready()
             val clock = Clock()
             val busClock = DeviceClock()
             val chunk = ByteArray(16384)
@@ -250,6 +257,8 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
     companion object {
         const val ESPRESSIF = 0x303A
         const val USB_SERIAL_JTAG = 0x1001
+        /** Transmit lines waiting for the USB port; more are dropped (the sender is told by the firmware's counts). */
+        const val MAX_WAITING = 64
         private const val ACTION_PERMISSION = "com.ehoeve.canlens.USB_PERMISSION"
     }
 }

@@ -149,10 +149,10 @@ class Dbc(val name: String, val messages: Map<Int, DbcMessage>, val head: String
         private val STATUS = Regex("""^CM_ SG_ (\d+) (\w+) "(?:CanPilot|CANLens): (\w+)";""")
 
         /** An id as a DBC writes it: bit 31 set for an extended id. */
-        private fun dbcId(id: Int) = if (id > 0x7FF) id.toLong() or 0x80000000L else id.toLong()
+        private fun dbcId(id: Int) = if (CanId.isExtended(id)) CanId.raw(id).toLong() or 0x80000000L else id.toLong()
 
         /** Bits 29-31 of a DBC id are flags (bit 31: extended id). */
-        private fun id(text: String) = (text.toLong() and 0x1FFFFFFF).toInt()
+        private fun id(text: String) = text.toLong().let { CanId.of(it, it and 0x80000000L != 0L) }
 
         fun parse(text: String, name: String): Dbc {
             val messages = LinkedHashMap<Int, DbcMessage>()

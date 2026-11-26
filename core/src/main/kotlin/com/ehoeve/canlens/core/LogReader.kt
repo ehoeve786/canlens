@@ -130,7 +130,7 @@ object LogReader {
         if (p < line.length && line[p] == '#') p += 2
         val length = hex(line, p, line.length, buffer)
         if (time < 0 || length < 0) return true
-        return sink.frame(time, bus, id.toInt(), buffer, 0, length)
+        return sink.frame(time, bus, CanId.of(id, hash - space - 1 > 3), buffer, 0, length)
     }
 
     /** `   0.016728 1  123  Rx   d 8 3E 42 03 00 39 00 03 01`, channels counted from 1, an `x` after extended ids. */
@@ -144,7 +144,7 @@ object LogReader {
         val length = (t[5].toIntOrNull(radix) ?: return true).coerceAtMost(minOf(t.size - 6, buffer.size))
         if (time < 0 || length < 0) return true
         for (i in 0 until length) buffer[i] = (t[6 + i].toIntOrNull(radix) ?: return true).toByte()
-        return sink.frame(time, channel - 1, id.toInt(), buffer, 0, length)
+        return sink.frame(time, channel - 1, CanId.of(id, t[2].endsWith('x', ignoreCase = true)), buffer, 0, length)
     }
 
     /**

@@ -62,6 +62,8 @@ class TxState(context: Context, private val store: FrameStore, private val scope
 
     /** The DashKit on USB if that is the live source, else Bluetooth once connected. */
     private val link: TxLink? get() = live.dashKit ?: ble.takeIf { it.connected }
+    /** The link that was armed: a different one (USB started, Bluetooth dropped) is not armed until armed itself. */
+    private var armedLink: TxLink? = null
     val linked: Boolean get() = link != null
     val status: DashKitStatus? get() = link?.status
 
@@ -108,23 +110,33 @@ class TxState(context: Context, private val store: FrameStore, private val scope
     var note by mutableStateOf(""); private set
     private var job: Job? = null
 
-    val armed: Boolean get() = link?.armed == true
+    val armed: Boolean get() = link.let { it != null && it.armed && it === armedLink }
 
+    /** Arms the current link; disarming disarms every link, USB and Bluetooth, whichever was armed. */
     fun arm(on: Boolean) {
+        if (!on) {
+            stop()
+            for (kit in listOfNotNull(live.dashKit, ble.takeIf { it.connected })) { kit.send(DashKitLine.DISARM); kit.armed = false }
+            armedLink = null
+            note = ""
+            return
+        }
         val kit = link ?: return
-        if (!on) { stop(); kit.send(DashKitLine.DISARM) } else kit.send(DashKitLine.ARM)
-        kit.armed = on
-        note = if (on) "Armed. The DashKit watches the bus for two seconds before it sends anything." else ""
+        kit.send(DashKitLine.ARM)
+        kit.armed = true
+        armedLink = kit
+        note = "Armed. The DashKit watches the bus for two seconds before it sends anything."
     }
 
     /** Asks for one frame; false when it can't be asked for (not armed, bus trouble, or not a frame the DashKit sends). */
     fun send(bus: Int, id: Int, data: ByteArray): Boolean {
         val kit = link
+        if (kit != null && kit !== armedLink && armedLink != null) arm(false)  // the link changed under an armed send: disarm everything
         val line = DashKitLine.transmit(bus, id, data)
         val problem = when {
             kit == null -> "The DashKit is not connected"
-            !kit.armed -> "Arm transmitting first"
-            kit.status.unhealthy -> "Stopped: a CAN controller of the DashKit reports bus errors"
+            !armed -> "Arm transmitting first"
+            kit.status.unhealthy -> "Stopped: a CAN controller of the DashKit reports bus errors, or hasn't reported yet"
             line == null -> "Only standard ids with 1 to 8 bytes on bus 0 or 1 can be sent"
             else -> null
         }
@@ -144,9 +156,16 @@ class TxState(context: Context, private val store: FrameStore, private val scope
         }
     }
 
-    /** The same frame every [periodMs]. */
-    fun repeatFrame(bus: Int, id: Int, data: ByteArray, periodMs: Long) = start("Repeating ${hexId(id)}") {
-        while (isActive && send(bus, id, data)) delay(periodMs.coerceAtLeast(10))
+    /** Sends one frame of [message] if [refusal] allows it now; false (with the reason in [note]) when it doesn't. */
+    private fun sendGated(bus: Int, message: FrameStore.Message, data: ByteArray, what: String): Boolean {
+        val refusal = refusal(message, bus)
+        if (refusal != null) { note = "$what $refusal"; return false }
+        return send(bus, message.id, data)
+    }
+
+    /** The same frame every [periodMs], while [refusal] allows it. */
+    fun repeatFrame(bus: Int, message: FrameStore.Message, data: ByteArray, periodMs: Long) = start("Repeating ${hexId(message.id)}") {
+        while (isActive && sendGated(bus, message, data, "Repeating stopped:")) delay(periodMs.coerceAtLeast(10))
     }
 
     /** [message]'s frames between two times again, spaced as they were recorded. */
@@ -158,34 +177,27 @@ class TxState(context: Context, private val store: FrameStore, private val scope
             if (time < fromTime || time > toTime) continue
             if (last >= 0) delay((time - last) / 10L)
             last = time
-            if (!isActive || !send(bus, message.id, frames.data.copyOfRange(i * frames.length, (i + 1) * frames.length))) break
+            if (!isActive || !sendGated(bus, message, frames.data.copyOfRange(i * frames.length, (i + 1) * frames.length), "Replay stopped:")) break
         }
     }
 
-    /** Why [message]'s bits can't be changed at random right now; null when they can. */
-    fun fuzzRefusal(message: FrameStore.Message): String? {
-        val name = dbc.decoder(message.bus, message.id)?.name
-        return when {
-            live.source == LiveSource.NONE -> "Only with a live stream open, so that the gear is the car's gear now."
-            name != null && TxGuard.critical(name) -> "Not offered for messages that steer, brake, drive, restrain or carry the stalks."
-            TxGuard.inPark(store) { dbc.decoder(it.bus, it.id) } != true -> "Only while the car reports Park, from a decoded gear signal."
-            else -> null
-        }
-    }
+    /** Why [message]'s frames can't be walked, repeated or replayed on [bus] right now; null when they can ([TxGuard.refusal]). */
+    fun refusal(message: FrameStore.Message, bus: Int): String? = TxGuard.refusal(
+        message.bus, bus, dbc.decoder(message.bus, message.id)?.name, live.source != LiveSource.NONE,
+        TxGuard.inPark(store) { dbc.decoder(it.bus, it.id) },
+    )
 
     /** Flips one bit of [base] after the other, each for half a second, and ends on [base]. Stops when the car leaves Park. */
     fun walkBits(bus: Int, message: FrameStore.Message, base: ByteArray) = start("Walking the bits of ${hexId(message.id)}") {
         for (bit in 0 until base.size * 8) {
             val changed = base.copyOf().also { it[bit / 8] = (it[bit / 8].toInt() xor (1 shl bit % 8)).toByte() }
             repeat(5) {
-                val refusal = fuzzRefusal(message)
-                if (refusal != null) { note = "Stopped at bit $bit. $refusal"; return@start }
-                if (!isActive || !send(bus, message.id, changed)) return@start
+                if (!isActive || !sendGated(bus, message, changed, "Stopped at bit $bit:")) return@start
                 delay(100)
             }
             note = "Bit $bit of ${base.size * 8} done"
         }
-        send(bus, message.id, base)
+        sendGated(bus, message, base, "The frame as it was not sent back:")
     }
 }
 
@@ -197,14 +209,13 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
     var hex by remember { mutableStateOf(hexBytes(frame ?: message.data)) }
     var period by remember { mutableStateOf("100") }
     var confirming by remember { mutableStateOf<String?>(null) }
-    val data = remember(hex) { hex.filterNot { it.isWhitespace() }.takeIf { it.length % 2 == 0 && it.isNotEmpty() }?.chunked(2)?.map { it.toIntOrNull(16)?.toByte() } }
-        ?.takeIf { bytes -> bytes.none { it == null } }?.map { it!! }?.toByteArray()
+    val data = remember(hex) { hex.filterNot { it.isWhitespace() }.takeIf { HEX_BYTES.matches(it) }?.chunked(2)?.map { it.toInt(16).toByte() }?.toByteArray() }
     // the DashKit reports once a second: look again as often
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) tx.connectBle() }
     val tick by produceState(0) { while (true) { delay(500); value++ } }
     val a = model.trace.markA
     val b = model.trace.markB
-    val refusal = remember(tick, message) { tx.fuzzRefusal(message) }
+    val refusal = remember(tick, message, bus) { tx.refusal(message, bus) }
     ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Send ${hexId(message.id)}", style = MaterialTheme.typography.titleLarge)
@@ -218,8 +229,8 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
             }
             val status = tx.status
             if (status != null && tick >= 0) {
-                Hint("Sent ${status.sent} · refused ${status.refused} · no safe moment ${status.expired}" + (0..1).joinToString("") { index ->
-                    if (status.transmitErrors[index] < 0) "" else "\nBus $index errors: transmit ${status.transmitErrors[index]}, receive ${status.receiveErrors[index]}" + if (status.flags[index] and 0x38 != 0) " · IN TROUBLE" else ""
+                Hint("Sent ${status.sent} · refused ${status.refused} · no safe moment ${status.expired}" + status.buses.withIndex().joinToString("") { (index, health) ->
+                    if (health == null) "\nBus $index: no report yet" else "\nBus $index errors: transmit ${health.transmitErrors}, receive ${health.receiveErrors}" + if (health.inTrouble) " · IN TROUBLE" else ""
                 })
             }
             if (tx.note.isNotEmpty()) Text(tx.note, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.tertiary)
@@ -232,9 +243,9 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Button(enabled = tx.armed && data != null, onClick = { tx.send(bus, message.id, data!!) }) { Text("Send once") }
                 OutlinedTextField(period, { period = it }, Modifier.width(96.dp), singleLine = true, label = { Text("ms") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                OutlinedButton(enabled = tx.armed && data != null && period.toLongOrNull() != null, onClick = { tx.repeatFrame(bus, message.id, data!!, period.toLong()) }) { Text("Repeat") }
+                OutlinedButton(enabled = tx.armed && data != null && period.toLongOrNull() != null && refusal == null, onClick = { tx.repeatFrame(bus, message, data!!, period.toLong()) }) { Text("Repeat") }
             }
-            if (a != null && b != null) OutlinedButton(enabled = tx.armed, onClick = { tx.replay(bus, message, minOf(a, b), maxOf(a, b)) }, modifier = Modifier.fillMaxWidth()) { Text("Replay its frames between A and B") }
+            if (a != null && b != null) OutlinedButton(enabled = tx.armed && refusal == null, onClick = { tx.replay(bus, message, minOf(a, b), maxOf(a, b)) }, modifier = Modifier.fillMaxWidth()) { Text("Replay its frames between A and B") }
             OutlinedButton(enabled = tx.armed && data != null && refusal == null, onClick = { confirming = "walk" }, modifier = Modifier.fillMaxWidth()) { Text("Flip each bit in turn") }
             if (refusal != null) Hint(refusal)
             tx.running?.let { what -> Button(onClick = { tx.stop() }, modifier = Modifier.fillMaxWidth()) { Text("Stop: $what") } }
@@ -253,3 +264,6 @@ fun TxSheet(model: AppModel, message: FrameStore.Message, frame: ByteArray?, onC
         )
     }
 }
+
+/** Whole bytes of hex digits, nothing else ("-1" and "+f" are not bytes). */
+private val HEX_BYTES = Regex("([0-9a-fA-F]{2})+")

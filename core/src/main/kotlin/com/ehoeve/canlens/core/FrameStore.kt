@@ -9,6 +9,19 @@ fun interface FrameSink {
 }
 
 /**
+ * Frame ids as the app keeps them: a standard id as it is, an extended id as it is when above 0x7FF and with
+ * [EXTENDED] added when not, so a short extended id never shares a message with the standard one. Anything above
+ * 0x7FF is extended: rlogs say no more than that.
+ */
+object CanId {
+    const val EXTENDED = 1 shl 29
+    fun of(id: Long, extended: Boolean): Int = (id and 0x1FFFFFFF).toInt().let { if (extended && it <= 0x7FF) it or EXTENDED else it }
+    fun isExtended(id: Int) = id > 0x7FF
+    /** The id on the wire, without [EXTENDED]. */
+    fun raw(id: Int) = id and 0x1FFFFFFF
+}
+
+/**
  * All frames of the open logs or the live stream, in arrival order, in fixed-size chunks of primitive arrays
  * (about 19 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
  * [chunks] and each chunk's [Chunk.size] once and may read everything below them without locking.
