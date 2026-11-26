@@ -362,6 +362,8 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             SectionTitle("DashKit over USB")
             Hint("Plug the DashKit's USB-C port into this phone.")
             FilledTonalButton(onClick = { go { model.live.startDashKit() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit") }
+            OutlinedButton(onClick = { model.live.restartDashKit(); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Restart the DashKit") }
+            Hint("Resets it through the USB cable, whatever its firmware is doing (Bluetooth stuck, Wi-Fi on). It comes back with its settings, Wi-Fi included.")
             HorizontalDivider(Modifier.padding(vertical = 6.dp))
             SectionTitle("DashKit over Wi-Fi")
             Hint("Both buses, the firmware log and its CPU, bus load and drop counts, over this phone's hotspot. Needs the wifi-stream firmware. Set it up once over Bluetooth: the DashKit keeps the network and stays on Wi-Fi until switched off.")

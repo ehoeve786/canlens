@@ -197,6 +197,29 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         return manager.hasPermission(device)
     }
 
+    /**
+     * Restarts the DashKit by the chip's own reset line, whatever its firmware is doing: the ESP32-S3's USB serial
+     * holds the chip in reset while RTS is set, and with DTR clear it starts the firmware, not the bootloader.
+     * Blocks while USB access is asked for. Null when done, else why not.
+     */
+    fun restart(): String? {
+        val device = find() ?: return "No DashKit on USB"
+        if (!permitted(device)) return "USB access to the DashKit was not allowed"
+        val control = (0 until device.interfaceCount).map { device.getInterface(it) }.firstOrNull { it.interfaceClass == UsbConstants.USB_CLASS_COMM }
+            ?: return "The DashKit's USB port has no serial control interface"
+        val connection = manager.openDevice(device) ?: return "Can't open the DashKit's USB port"
+        try {
+            connection.claimInterface(control, true)
+            // CDC SET_CONTROL_LINE_STATE: RTS on (reset), then both off (run); the second may find it already gone
+            if (connection.controlTransfer(0x21, 0x22, RTS, control.id, null, 0, 200) < 0) return "The DashKit didn't take the reset"
+            Thread.sleep(100)
+            connection.controlTransfer(0x21, 0x22, 0, control.id, null, 0, 200)
+        } finally {
+            connection.close()
+        }
+        return null
+    }
+
     /** Reads frames into [sink] until [close], the sink returns false, or the cable is pulled (IOException); [ready] once the port is ours. */
     fun run(sink: FrameSink, ready: () -> Unit = {}) {
         val device = find() ?: throw IOException("No DashKit on USB")
@@ -259,6 +282,8 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
     companion object {
         const val ESPRESSIF = 0x303A
         const val USB_SERIAL_JTAG = 0x1001
+        /** The RTS bit of CDC's control line state: the ESP32-S3's reset line. */
+        private const val RTS = 2
         /** Transmit lines waiting for the USB port; more are dropped (the sender is told by the firmware's counts). */
         const val MAX_WAITING = 64
         private const val ACTION_PERMISSION = "com.ehoeve.canlens.USB_PERMISSION"

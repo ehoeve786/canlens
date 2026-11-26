@@ -109,6 +109,15 @@ class LiveState(
         }
     }
 
+    /** Restarts the DashKit on USB (its reset line), ending a USB stream first: the port is needed for it. */
+    fun restartDashKit() {
+        if (source == LiveSource.DASHKIT) stop()
+        scope.launch(Dispatchers.IO) {
+            val problem = DashKitUsb(context).restart()
+            withContext(Dispatchers.Main) { report(problem?.let { "Restart: $it" } ?: "The DashKit is restarting: it's back in a few seconds") }
+        }
+    }
+
     /** Over the phone's hotspot: at the address it had last time, else looked for there. */
     fun startDashKitWifi() = start(LiveSource.DASHKIT_WIFI, "DashKit Wi-Fi") { sink, mine ->
         DashKitWifi(findDashKit()).held(mine).use { wifi ->
