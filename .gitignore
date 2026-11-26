@@ -10,3 +10,4 @@ captures/
 *.jks
 .cxx/
 .DS_Store
+.claude/worktrees/
