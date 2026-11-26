@@ -179,15 +179,36 @@ object DashKitLine {
 
     private const val HEX = "0123456789abcdef"
 
-    fun parse(line: String, timeMicros: Long, buffer: ByteArray, sink: FrameSink): Boolean {
+    /** An "A" line into [sink], at the time it came off the bus when the line has one ([clock]), else at [timeMicros]. */
+    fun parse(line: String, timeMicros: Long, buffer: ByteArray, sink: FrameSink, clock: DeviceClock? = null): Boolean {
         if (!line.startsWith("A,")) return true
         val c2 = line.indexOf(',', 2)
         val c3 = line.indexOf(',', c2 + 1)
         if (c2 < 0 || c3 < 0) return true
+        val c4 = line.indexOf(',', c3 + 1)
         val bus = line.substring(2, c2).toIntOrNull() ?: return true
         val id = line.substring(c2 + 1, c3).toLongOrNull(16) ?: return true
-        val length = LogReader.hex(line, c3 + 1, line.length, buffer)
-        return length < 0 || sink.frame(timeMicros, bus, id.toInt(), buffer, 0, length)
+        val length = LogReader.hex(line, c3 + 1, if (c4 < 0) line.length else c4, buffer)
+        val device = if (c4 < 0 || clock == null) null else line.substring(c4 + 1).toLongOrNull(16)
+        return length < 0 || sink.frame(if (device == null) timeMicros else clock!!.micros(device, timeMicros), bus, id.toInt(), buffer, 0, length)
+    }
+}
+
+/**
+ * The DashKit's frame times (µs since its boot, 32 bits) on the phone's clock: the first frame of a connection sets
+ * the offset, so frames keep the spacing they had on the bus whatever the link does to them; wraps (every 71.6 min)
+ * are counted. The two clocks drift apart by well under a second an hour.
+ */
+class DeviceClock {
+    private var last = -1L
+    private var wraps = 0L
+    private var offset = 0L
+
+    fun micros(device: Long, arrival: Long): Long {
+        if (last < 0) offset = arrival - device
+        else if (device < last && last - device > 0x80000000L) wraps += 0x100000000L
+        last = device
+        return device + wraps + offset
     }
 }
 

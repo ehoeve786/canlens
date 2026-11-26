@@ -822,4 +822,19 @@ class CoreTest {
         assertTrue(status.wifiOn)
         assertEquals("192.168.43.17", status.wifiAddress)
     }
+
+    @Test fun dashKitFramesKeepTheirBusTimes() {
+        val times = ArrayList<Long>()
+        val datas = ArrayList<String>()
+        val sink = FrameSink { time, _, _, data, offset, length -> times += time; datas += (offset until offset + length).joinToString("") { "%02x".format(data[it]) }; true }
+        val clock = DeviceClock()
+        val buffer = ByteArray(64)
+        // arrive together, came off the bus 1 ms apart; then the 32-bit clock wraps
+        DashKitLine.parse("A,0,123,0102,fffffc18", 5_000_000, buffer, sink, clock)
+        DashKitLine.parse("A,1,123,03,00000000", 5_000_000, buffer, sink, clock)
+        DashKitLine.parse("A,1,456,04", 7_000_000, buffer, sink, clock)        // no time: the arrival
+        DashKitLine.parse("A,1,456,05,000003e8", 6_000_000, buffer, sink)       // no clock: the arrival
+        assertEquals(listOf(5_000_000L, 5_001_000L, 7_000_000L, 6_000_000L), times)
+        assertEquals(listOf("0102", "03", "04", "05"), datas)
+    }
 }

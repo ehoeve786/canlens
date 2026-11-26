@@ -19,6 +19,7 @@ import android.os.SystemClock
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import com.ehoeve.canlens.core.DashKitLine
+import com.ehoeve.canlens.core.DeviceClock
 import com.ehoeve.canlens.core.FrameSink
 import com.ehoeve.canlens.core.appendCandump
 import com.ehoeve.canlens.core.appendMarker
@@ -169,6 +170,7 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         try {
             if (input == null || !connection.claimInterface(data, true)) throw IOException("Can't claim the DashKit's serial interface")
             val clock = Clock()
+            val busClock = DeviceClock()
             val chunk = ByteArray(16384)
             val line = StringBuilder(64)
             val payload = ByteArray(64)
@@ -196,7 +198,7 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
                 for (i in 0 until n) {
                     val c = chunk[i].toInt().toChar()
                     if (c == '\n') {
-                        if (line.startsWith("A,")) { if (!DashKitLine.parse(line.toString(), time, payload, sink)) return } else status.read(line.toString())
+                        if (line.startsWith("A,")) { if (!DashKitLine.parse(line.toString(), time, payload, sink, busClock)) return } else status.read(line.toString())
                         line.setLength(0)
                     } else if (c != '\r' && line.length < 200) line.append(c)
                 }
@@ -234,9 +236,10 @@ class DashKitWifi(private val host: String) : Closeable {
             try { while (!socket.isClosed) { output.write(request); Thread.sleep(1000) } } catch (e: Exception) { }
         }
         val clock = Clock()
+        val busClock = DeviceClock()
         val payload = ByteArray(64)
         socket.getInputStream().bufferedReader(Charsets.US_ASCII).forEachLine { line ->
-            if (line.startsWith("A,")) { if (!DashKitLine.parse(line, clock.micros(), payload, sink)) throw IOException("stopped") } else status.read(line)
+            if (line.startsWith("A,")) { if (!DashKitLine.parse(line, clock.micros(), payload, sink, busClock)) throw IOException("stopped") } else status.read(line)
         }
     }
 
