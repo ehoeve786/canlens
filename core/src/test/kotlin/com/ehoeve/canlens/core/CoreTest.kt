@@ -809,4 +809,17 @@ class CoreTest {
         assertEquals(0, store.latest(-1).size)
         assertEquals(listOf(0x20), store.latest(null, Filter.compile("len=1", store.messages) { null }).map { it.message.id })
     }
+
+    @Test fun theWifiLinkLogMetricsAndBluetoothStatus() {
+        val status = DashKitStatus()
+        status.read("G,I (1234) main: DashKit firmware ready ")
+        status.read("M,12,40,38,27,1830,1200,0,3,1,0,2,-55,118")
+        status.read("W,1,192.168.43.17")
+        status.read("M,1")  // cut short: kept as it was
+        assertEquals(listOf("I (1234) main: DashKit firmware ready"), status.log())
+        assertEquals(1L, status.logLines)
+        assertEquals(listOf(12L, 40, 38, 27, 1830, 1200, 0, 3, 1, 0, 2, -55, 118), status.metrics!!.toList())
+        assertTrue(status.wifiOn)
+        assertEquals("192.168.43.17", status.wifiAddress)
+    }
 }

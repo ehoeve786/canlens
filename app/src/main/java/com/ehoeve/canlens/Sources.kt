@@ -30,6 +30,9 @@ import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
 import java.io.Writer
+import java.net.InetSocketAddress
+import java.net.Socket
+import kotlin.concurrent.thread
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -210,5 +213,36 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
         const val ESPRESSIF = 0x303A
         const val USB_SERIAL_JTAG = 0x1001
         private const val ACTION_PERMISSION = "com.ehoeve.canlens.USB_PERMISSION"
+    }
+}
+
+/**
+ * The DashKit's Wi-Fi link (wifi_link.h in the firmware): every frame of both buses like USB, plus the firmware log and
+ * its metrics, over the phone's hotspot. It doesn't transmit: that stays on USB and Bluetooth.
+ */
+class DashKitWifi(private val host: String) : Closeable {
+    private val socket = Socket()
+    val status = DashKitStatus()
+
+    /** Reads frames into [sink] until [close], the sink returns false, or the connection ends (IOException). */
+    fun run(sink: FrameSink) {
+        socket.connect(InetSocketAddress(host, PORT), 5000)
+        socket.soTimeout = 5000  // metrics come every second: silence this long is a lost link
+        val output = socket.getOutputStream()
+        val request = DashKitLine.STREAM_ALL.toByteArray()
+        thread(isDaemon = true) {
+            try { while (!socket.isClosed) { output.write(request); Thread.sleep(1000) } } catch (e: Exception) { }
+        }
+        val clock = Clock()
+        val payload = ByteArray(64)
+        socket.getInputStream().bufferedReader(Charsets.US_ASCII).forEachLine { line ->
+            if (line.startsWith("A,")) { if (!DashKitLine.parse(line, clock.micros(), payload, sink)) throw IOException("stopped") } else status.read(line)
+        }
+    }
+
+    override fun close() = socket.close()
+
+    companion object {
+        const val PORT = 62402
     }
 }

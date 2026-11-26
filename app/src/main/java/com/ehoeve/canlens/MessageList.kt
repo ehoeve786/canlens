@@ -82,6 +82,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.ehoeve.canlens.core.Dbc
@@ -341,6 +342,29 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             SectionTitle("DashKit over USB")
             Hint("Plug the DashKit's USB-C port into this phone.")
             FilledTonalButton(onClick = { go { model.live.startDashKit() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit") }
+            HorizontalDivider(Modifier.padding(vertical = 6.dp))
+            SectionTitle("DashKit over Wi-Fi")
+            Hint("Both buses, the firmware log and its CPU, bus load and drop counts, over this phone's hotspot. Needs the wifi-stream firmware. Set it up once over Bluetooth: the DashKit keeps the network and stays on Wi-Fi until switched off.")
+            val preferences = remember { context.getSharedPreferences("canlens", Context.MODE_PRIVATE) }
+            var ssid by remember { mutableStateOf(preferences.getString("wifiSsid", "").orEmpty()) }
+            var password by remember { mutableStateOf("") }
+            var wifiAsk by remember { mutableStateOf<String?>(null) }
+            val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) model.tx.setUpWifi(wifiAsk, password) }
+            val setUp = { name: String? ->
+                if (name != null) preferences.edit().putString("wifiSsid", name).apply()
+                wifiAsk = name
+                if (Build.VERSION.SDK_INT >= 31 && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) bluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                else model.tx.setUpWifi(name, password)
+            }
+            OutlinedTextField(ssid, { ssid = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot name") })
+            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") },
+                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(enabled = ssid.isNotBlank() && ssid.length <= 32 && password.length <= 63, onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
+                OutlinedButton(onClick = { setUp(null) }, modifier = Modifier.weight(1f)) { Text("Switch its Wi-Fi off") }
+            }
+            if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
+            FilledTonalButton(onClick = { go { model.live.startDashKitWifi() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit over Wi-Fi") }
         }
     }
 }
@@ -361,6 +385,8 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     var showGuided by remember { mutableStateOf(false) }
     var showCamera by remember { mutableStateOf(false) }
     if (showCamera) CameraReader(model) { showCamera = false }
+    var showFirmware by remember { mutableStateOf(false) }
+    if (showFirmware) FirmwareSheet(model) { showFirmware = false }
     if (showGuided) ModalBottomSheet(onDismissRequest = { showGuided = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Guided test", style = MaterialTheme.typography.titleLarge)
@@ -398,6 +424,7 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                     else AssistChip(onClick = { showGuided = true }, label = { Text("Guided test") })
                     // a number on the car's screen, read by the camera as the stream comes in
                     AssistChip(onClick = { showCamera = true }, label = { Text("Read the screen") })
+                    if (model.live.source == LiveSource.DASHKIT_WIFI) AssistChip(onClick = { showFirmware = true }, label = { Text("Firmware") })
                 }
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)

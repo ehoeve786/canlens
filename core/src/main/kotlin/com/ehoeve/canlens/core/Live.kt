@@ -69,12 +69,19 @@ object CommaFinder {
         return found
     }
 
-    /** The first of [candidates] that [publishes]; all are tried at once, so a /24 takes about a second. Null if none. */
-    fun find(candidates: List<InetAddress>, port: Int): InetAddress? {
+    /** True if [host] takes a connection on [port]: the DashKit's Wi-Fi link has a port of its own, and says nothing until asked. */
+    fun accepts(host: InetAddress, port: Int, timeoutMs: Int = 600): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs); true }
+    } catch (e: IOException) {
+        false
+    }
+
+    /** The first of [candidates] that passes [test]; all are tried at once, so a /24 takes about a second. Null if none. */
+    fun find(candidates: List<InetAddress>, port: Int, test: (InetAddress, Int) -> Boolean = ::publishes): InetAddress? {
         if (candidates.isEmpty()) return null
         val pool = Executors.newFixedThreadPool(minOf(THREADS, candidates.size))
         return try {
-            pool.invokeAny(candidates.map { host -> Callable { if (publishes(host, port)) host else throw IOException("no publisher") } })
+            pool.invokeAny(candidates.map { host -> Callable { if (test(host, port)) host else throw IOException("no publisher") } })
         } catch (e: ExecutionException) {
             null
         } finally {

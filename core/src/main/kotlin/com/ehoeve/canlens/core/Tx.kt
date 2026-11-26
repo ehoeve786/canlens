@@ -12,12 +12,29 @@ class DashKitStatus {
     val receiveErrors = intArrayOf(-1, -1)
     val flags = intArrayOf(0, 0)
 
+    /** The Wi-Fi link's last "M" line, [METRICS] in order; null until one came. */
+    @Volatile var metrics: LongArray? = null
+    /** What Bluetooth last said of the DashKit's Wi-Fi: on, and its address ("0.0.0.0" until it joined). */
+    @Volatile var wifiOn = false
+    @Volatile var wifiAddress = ""
+    /** The firmware log from the Wi-Fi link, the last [LOG_LINES]; [logLines] counts every line ever added. */
+    private val log = ArrayDeque<String>()
+    @Volatile var logLines = 0L; private set
+    fun log(): List<String> = synchronized(log) { log.toList() }
+
     /** True when a controller is off the bus or close to it: the moment to stop sending. */
     val unhealthy: Boolean get() = flags.any { it and (BUS_OFF or ERROR_PASSIVE) != 0 }
 
-    /** Takes an "H" or a "D" line of the firmware; other lines are left alone. */
+    /** Takes an "H", "D", "M", "G" or "W" line of the firmware; other lines are left alone. */
     fun read(line: String) {
+        if (line.startsWith("G,")) {
+            synchronized(log) { log.addLast(line.substring(2).trimEnd()); if (log.size > LOG_LINES) log.removeFirst() }
+            logLines++
+            return
+        }
         val fields = line.split(',')
+        if (fields[0] == "M" && fields.size > METRICS.size) { metrics = LongArray(METRICS.size) { fields[it + 1].toLongOrNull() ?: 0 }; return }
+        if (fields[0] == "W" && fields.size == 3) { wifiOn = fields[1] == "1"; wifiAddress = fields[2]; return }
         if (fields[0] == "H" && fields.size >= 5) {
             armed = fields[1] == "1"
             sent = fields[2].toLongOrNull() ?: sent
@@ -37,6 +54,9 @@ class DashKitStatus {
         const val BUS_ERRORS = 0x1DA50006L
         const val ERROR_PASSIVE = 0x18
         const val BUS_OFF = 0x20
+        const val LOG_LINES = 3000
+        /** The fields of an "M" line (wifi_link.h): totals since boot from FIFO overflows on. */
+        val METRICS = listOf("cpu0", "cpu1", "load0", "load1", "fps0", "fps1", "fifo0", "fifo1", "queueDrops", "usbDrops", "wifiDrops", "rssi", "heapKb")
     }
 }
 

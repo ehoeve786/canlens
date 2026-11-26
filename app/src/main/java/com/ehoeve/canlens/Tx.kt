@@ -72,6 +72,22 @@ class TxState(context: Context, private val store: FrameStore, private val scope
 
     fun close() { stop(); bleClock?.cancel(); bleClock = null; ble.close() }
 
+    /** What Bluetooth last read of the DashKit's Wi-Fi (on, address), for the live sheet. */
+    val bleStatus: DashKitStatus get() = ble.status
+
+    /**
+     * Sends the DashKit its Wi-Fi network and switches its Wi-Fi on, or only switches it off ([ssid] null), over
+     * Bluetooth: connecting first if needed. The firmware keeps them.
+     */
+    fun setUpWifi(ssid: String?, password: String) = scope.launch {
+        if (!ble.connected) connectBle()
+        for (wait in 0 until 30) { if (ble.connected) break; delay(500) }
+        if (!ble.connected) return@launch
+        if (ssid == null) { ble.send("W,0"); bleState = "Asked the DashKit to switch its Wi-Fi off"; return@launch }
+        ble.send("WS,$ssid"); ble.send("WP,$password"); ble.send("W,1")
+        bleState = "Sent. The DashKit joins $ssid within a few seconds."
+    }
+
     /** What is being sent over time, for the button that stops it; null when nothing is. */
     var running by mutableStateOf<String?>(null); private set
     var note by mutableStateOf(""); private set

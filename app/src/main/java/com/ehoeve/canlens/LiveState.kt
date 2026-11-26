@@ -23,7 +23,7 @@ import java.io.IOException
 import java.net.InetAddress
 import kotlin.concurrent.thread
 
-enum class LiveSource { NONE, COMMA, DASHKIT }
+enum class LiveSource { NONE, COMMA, DASHKIT, DASHKIT_WIFI }
 
 /**
  * The live stream into [store] and its recording. [onStart] runs when a stream begins, after the store was emptied;
@@ -52,6 +52,8 @@ class LiveState(
 
     /** The DashKit on USB while that is the live source: the way to ask it to transmit. */
     @Volatile var dashKit: DashKitUsb? = null; private set
+    /** The DashKit on Wi-Fi while that is the live source: its log and metrics. */
+    @Volatile var dashKitWifi: DashKitWifi? = null; private set
 
     private var job: Job? = null
     private var connection: Closeable? = null
@@ -90,6 +92,22 @@ class LiveState(
 
     fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink ->
         DashKitUsb(context).also { connection = it; dashKit = it }.use { it.run(sink) }
+    }
+
+    /** Over the phone's hotspot: at the address it had last time, else looked for there. */
+    fun startDashKitWifi() = start(LiveSource.DASHKIT_WIFI, "DashKit Wi-Fi") { sink ->
+        DashKitWifi(findDashKit()).also { connection = it; dashKitWifi = it }.use { it.run(sink) }
+    }
+
+    private fun findDashKit(): String {
+        val last = preferences.getString("dashKitWifi", "").orEmpty()
+        val known = last.takeIf { it.isNotEmpty() }?.let { runCatching { InetAddress.getByName(it) }.getOrNull() }
+        if (known != null && CommaFinder.accepts(known, DashKitWifi.PORT)) return last
+        scope.launch { report("Looking for the DashKit on this phone's hotspot") }
+        val found = CommaFinder.find(CommaFinder.neighbours(), DashKitWifi.PORT, CommaFinder::accepts)?.hostAddress
+            ?: throw IOException("no DashKit found on this phone's Wi-Fi or hotspot (is its Wi-Fi on?)")
+        preferences.edit().putString("dashKitWifi", found).apply()
+        return found
     }
 
     private fun start(from: LiveSource, name: String, connect: (FrameSink) -> Unit) {
@@ -147,7 +165,7 @@ class LiveState(
         generation++
         job?.cancel(); job = null
         sensors?.stop(); sensors = null
-        runCatching { connection?.close() }; connection = null; dashKit = null
+        runCatching { connection?.close() }; connection = null; dashKit = null; dashKitWifi = null
         setRecording(false)
         if (source != LiveSource.NONE) {
             source = LiveSource.NONE
