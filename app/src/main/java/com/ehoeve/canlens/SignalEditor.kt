@@ -199,7 +199,7 @@ private fun Histogram(histogram: List<Analysis.Bar>, signal: Signal?, onJump: (F
             val label = value.label
             val count = value.count
             Row(Modifier.clickable { onJump(value.first) }, verticalAlignment = Alignment.CenterVertically) {
-                val named = signal?.let { s -> label.replace(',', '.').toDoubleOrNull()?.let { v -> s.valueNames[Math.round((v - s.offset) / s.factor)] } }
+                val named = signal?.valueNames?.get(Math.round((value.value - signal.offset) / signal.factor))
                 Text(if (named != null) "$label $named" else label, Modifier.width(96.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Box(Modifier.weight(1f)) { Box(Modifier.fillMaxWidth(count.toFloat() / most).height(10.dp).clip(CircleShape).background(bar)) }
                 Text(count.toString(), Modifier.width(56.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.End)

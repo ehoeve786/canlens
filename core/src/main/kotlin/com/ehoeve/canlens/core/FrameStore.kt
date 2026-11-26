@@ -447,10 +447,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         fun time(row: Int): Int = position(row).let { chunks[it ushr CHUNK_BITS].time[it and CAPACITY - 1] }
 
         /** The last row at or before [time]; 0 when there is none. */
+        /** The last row at or before [time]; -1 when [time] is before the first row. */
         fun rowAt(time: Int): Int {
             var low = 0
             var high = size - 1
-            var found = 0
+            var found = -1
             while (low <= high) {
                 val middle = (low + high) ushr 1
                 if (time(middle) <= time) { found = middle; low = middle + 1 } else high = middle - 1

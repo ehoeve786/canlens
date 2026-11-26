@@ -766,7 +766,7 @@ class CoreTest {
         assertEquals(10, rows.size)
         assertEquals(1_000, rows.time(1))
         assertEquals(5, rows.rowAt(5_500))
-        assertEquals(0, rows.rowAt(-1))
+        assertEquals(-1, rows.rowAt(-1))
         assertEquals(9, rows.rowAt(Int.MAX_VALUE))
         val third = all.update().position(2)   // 0x118, 0x249, 0x118
         assertEquals(2, third and FrameStore.CAPACITY - 1)

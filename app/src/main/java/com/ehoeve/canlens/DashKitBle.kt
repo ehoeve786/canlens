@@ -69,7 +69,13 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
                 runCatching { g.javaClass.getMethod("refresh").invoke(g) }
                 if (!g.requestMtu(185)) g.discoverServices()
             }
-            else if (newState == BluetoothProfile.STATE_DISCONNECTED) { lost(); onState("The DashKit's Bluetooth link ended") }
+            else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                lost()
+                // a GATT client left open keeps one of Android's few slots, and reconnects on its own
+                runCatching { g.close() }
+                if (gatt === g) { gatt = null; transmit = null; control = null }
+                onState("The DashKit's Bluetooth link ended")
+            }
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, state: Int) { g.discoverServices() }
@@ -143,7 +149,8 @@ class DashKitBle(private val context: Context, private val onState: (String) -> 
 
     /** Frames go without waiting for an answer each; arming and disarming are confirmed. */
     override fun send(line: String) {
-        if (connected) write(transmit, line.trimEnd().toByteArray(Charsets.US_ASCII), !line.startsWith("T,"))
+        // only the line's end goes: a password may end in spaces
+        if (connected) write(transmit, line.removeSuffix("\n").toByteArray(Charsets.UTF_8), !line.startsWith("T,"))
     }
 
     /** Once a second while connected: keeps the firmware armed, reads its status, and now and then says the app is alive. */

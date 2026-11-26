@@ -99,7 +99,9 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
     // Mark A alone is a reference moment: the grid shows which bits differ from then
     val reference = remember(slow, a, b, message) { if (a != null && b == null) store.frameAt(message, a) else null }
     val view = model.plot.view
-    if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
+    // after composition, not during it: the view is state the composition reads
+    val liveEnd = store.lastTime
+    LaunchedEffect(following, liveEnd) { if (following) view.show(maxOf(seconds(liveEnd) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(liveEnd)) }
     val other = model.other
     val mine = model.mine
     val different = remember(other, mine, message, message.data.size) { if (other == null || mine == null) null else mine.differences(other, message.bus, message.id, message.data.size * 8) }
@@ -358,6 +360,8 @@ val STATUS_MARKS = mapOf("guess" to "  ?", "plotted" to "  ~", "confirmed" to " 
 
 /** A signal's place in the bit grid, by its bit number (what the editor's start bit is) and by byte and bit within it. */
 fun bitsLabel(signal: Signal): String {
+    // big-endian bits run across bytes the other way: name the DBC's start bit, not a range that isn't the signal's
+    if (!signal.littleEndian && signal.size > 1) return "start ${signal.start}, ${signal.size} bits, big-endian"
     val low = signal.bits.min()
     val high = signal.bits.max()
     return when {

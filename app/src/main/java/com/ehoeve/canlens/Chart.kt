@@ -1,5 +1,9 @@
 package com.ehoeve.canlens
 
+import androidx.compose.runtime.rememberUpdatedState
+
+import androidx.compose.ui.composed
+
 import android.graphics.Bitmap
 import android.graphics.Paint
 import androidx.compose.foundation.Canvas
@@ -99,7 +103,14 @@ private fun lowerBound(times: IntArray, size: Int, t: Int): Int {
 }
 
 /** Pinch to zoom, drag sideways to pan, tap to move the cursor. Vertical drags are left to the list around it. */
-fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit): Modifier = this
+fun Modifier.timeGestures(view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit): Modifier = composed {
+    // the gestures outlive a recomposition: they call the latest callbacks, not the first ones
+    val cursorTo by rememberUpdatedState(onCursor)
+    val moved by rememberUpdatedState(onMoved)
+    timeGestureHandlers(view, { cursorTo(it) }, { moved() })
+}
+
+private fun Modifier.timeGestureHandlers(view: ChartView, onCursor: (Float) -> Unit, onMoved: () -> Unit): Modifier = this
     .pointerInput(view) { detectTapGestures { onCursor(view.start + it.x / size.width * (view.end - view.start)) } }
     .pointerInput(view) {
         awaitEachGesture {

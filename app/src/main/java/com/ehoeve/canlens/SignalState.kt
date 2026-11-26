@@ -235,7 +235,7 @@ class SignalState(
         autoResults = autoResults - accepted.toSet() - declined.toSet()
         // plain layout guesses are only passed over; a name or a community signal turned down is remembered
         if (rejected.addAll(declined.filter { it.confidence >= NAMED || it.evidence.startsWith("From ") }.map(::key))) saveRejected()
-        report("${accepted.size} signals added. Export the DBC to keep a copy outside the app.")
+        report(if (accepted.isEmpty()) "${declined.size} turned down" else "${accepted.size} signals added. Export the DBC to keep a copy outside the app.")
     }
 
     companion object {

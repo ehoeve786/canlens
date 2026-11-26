@@ -450,8 +450,8 @@ object Analysis {
         return if (n == 0) null else floatArrayOf(low, high, (sum / n).toFloat(), changes.toFloat())
     }
 
-    /** A value (or a range's start), how often it occurs, and when it was first seen (seconds; NaN for a range). */
-    class Bar(val label: String, val count: Int, val first: Float)
+    /** A value (or a range's start) and its label, how often it occurs, and when it was first seen (seconds; NaN for a range). */
+    class Bar(val value: Float, val label: String, val count: Int, val first: Float)
 
     fun histogram(series: FrameStore.Series, bins: Int = 20): List<Bar> {
         if (series.size == 0) return emptyList()
@@ -466,11 +466,11 @@ object Analysis {
             if (v > high) high = v
         }
         fun label(v: Float) = if (v == Math.rint(v.toDouble()).toFloat() && abs(v) < 1e7f) v.toInt().toString() else "%.3g".format(v)
-        if (counts.size <= 16) return counts.entries.sortedBy { it.key }.map { Bar(label(it.key), it.value, first[it.key]!!) }
+        if (counts.size <= 16) return counts.entries.sortedBy { it.key }.map { Bar(it.key, label(it.key), it.value, first[it.key]!!) }
         val binned = IntArray(bins)
         val width = (high - low) / bins
         for (i in 0 until series.size) binned[((series.values[i] - low) / width).toInt().coerceIn(0, bins - 1)]++
-        return List(bins) { Bar(label(low + it * width), binned[it], Float.NaN) }
+        return List(bins) { Bar(low + it * width, label(low + it * width), binned[it], Float.NaN) }
     }
 }
 
