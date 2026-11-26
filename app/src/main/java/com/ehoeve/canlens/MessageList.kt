@@ -45,6 +45,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.activity.compose.BackHandler
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -305,6 +310,7 @@ private fun DbcSheet(model: AppModel, onClose: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
     // A stream keeps going in the background (LiveService): its notification needs permission from Android 13, and
@@ -328,70 +334,100 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
         } else startAndAsk(start)
     }
     var address by remember { mutableStateOf(model.live.commaAddress) }
-    ModalBottomSheet(onDismissRequest = onClose) {
+    val preferences = remember { context.getSharedPreferences("canlens", Context.MODE_PRIVATE) }
+    var ssid by remember { mutableStateOf(preferences.getString("wifiSsid", "").orEmpty()) }
+    // the sources fit one screen, a tap each; a source's setup and firmware are a page of their own (its gear)
+    var page by remember { mutableStateOf(LivePage.SOURCES) }
+    BackHandler(page != LivePage.SOURCES) { page = LivePage.SOURCES }
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.imePadding().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Live stream", style = MaterialTheme.typography.titleLarge)
-            // GPS needs precise location; motion, heading, light and pressure need nothing, so the sensors stay on either way.
-            // Android 12 and up ignore a request for precise location without approximate in it.
-            var gpsNote by remember { mutableStateOf<String?>(null) }
-            val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
-                gpsNote = when {
-                    granted[Manifest.permission.ACCESS_FINE_LOCATION] == true -> null
-                    granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true -> "Approximate location only: no GPS speed. Allow precise location for it."
-                    else -> "No location access: no GPS speed. The other sensors still work."
+            if (page != LivePage.SOURCES) Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { page = LivePage.SOURCES }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                Text(if (page == LivePage.COMMA) "comma" else "DashKit", style = MaterialTheme.typography.titleLarge)
+            }
+            when (page) {
+                LivePage.SOURCES -> {
+                    Text("Live stream", style = MaterialTheme.typography.titleLarge)
+                    // GPS needs precise location; motion, heading, light and pressure need nothing, so the sensors stay on either way.
+                    // Android 12 and up ignore a request for precise location without approximate in it.
+                    var gpsNote by remember { mutableStateOf<String?>(null) }
+                    val location = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+                        gpsNote = when {
+                            granted[Manifest.permission.ACCESS_FINE_LOCATION] == true -> null
+                            granted[Manifest.permission.ACCESS_COARSE_LOCATION] == true -> "Approximate location only: no GPS speed. Allow precise location for it."
+                            else -> "No location access: no GPS speed. The other sensors still work."
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().toggleable(model.live.phoneSensors, role = Role.Switch) {
+                        model.live.phoneSensors = it
+                        if (it && context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                            location.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    }, verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Add the phone's sensors")
+                            Hint("GPS speed, motion, heading, light and pressure as bus 9")
+                        }
+                        Switch(model.live.phoneSensors, null)
+                    }
+                    if (model.live.phoneSensors) gpsNote?.let { Hint(it) }
+                    SourceRow("comma over Wi-Fi", address.trim().ifEmpty { "Found on this phone's Wi-Fi or hotspot" }, { go { model.live.startComma(address) } }) { page = LivePage.COMMA }
+                    SourceRow("DashKit over USB", "Its USB-C port plugged into this phone", { go { model.live.startDashKit() } }) { page = LivePage.DASHKIT }
+                    SourceRow("DashKit over Wi-Fi", "Both buses over this phone's hotspot" + ssid.trim().let { if (it.isEmpty()) "" else " ($it)" },
+                        { go { model.live.startDashKitWifi() } }) { page = LivePage.DASHKIT }
+                }
+                LivePage.COMMA -> {
+                    OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
+                        placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
+                    Hint("Can stay empty: the app finds the comma on this phone's Wi-Fi or hotspot, also after its address changed. The comma must run cereal's bridge. All of its buses are streamed.")
+                    Button(onClick = { go { model.live.startComma(address) } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to comma") }
+                }
+                LivePage.DASHKIT -> {
+                    SectionTitle("Over USB")
+                    OutlinedButton(onClick = { model.live.restartDashKit(); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Restart the DashKit") }
+                    val usbFirmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = true); onClose() } }
+                    OutlinedButton(onClick = { usbFirmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over USB") }
+                    Hint("Restart resets it through the cable, whatever its firmware is doing (Bluetooth stuck, Wi-Fi on); it keeps its settings, Wi-Fi included.")
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    SectionTitle("Over Wi-Fi")
+                    Hint("Needs the wifi-stream firmware. Set it up once over Bluetooth: the DashKit keeps the network and stays on Wi-Fi until switched off.")
+                    var password by remember { mutableStateOf("") }
+                    var wifiAsk by remember { mutableStateOf<String?>(null) }
+                    val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) model.tx.setUpWifi(wifiAsk, password) }
+                    val setUp = { name: String? ->
+                        if (name != null) preferences.edit().putString("wifiSsid", name).apply()
+                        wifiAsk = name
+                        if (Build.VERSION.SDK_INT >= 31 && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) bluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
+                        else model.tx.setUpWifi(name, password)
+                    }
+                    OutlinedTextField(ssid, { ssid = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot name") })
+                    OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") }, supportingText = { Text("Leave empty to keep the one the DashKit has") },
+                        visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(enabled = wifiSettingsValid(ssid.trim(), password), onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
+                        OutlinedButton(onClick = { setUp(null) }, modifier = Modifier.weight(1f)) { Text("Switch its Wi-Fi off") }
+                    }
+                    if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
+                    val firmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = false); onClose() } }
+                    OutlinedButton(onClick = { firmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over Wi-Fi") }
+                    Hint("Pick the .bin. Only from this app: it needs the key sent with the Wi-Fi settings, so send those once after the firmware that has it.")
                 }
             }
-            Row(Modifier.fillMaxWidth().toggleable(model.live.phoneSensors, role = Role.Switch) {
-                model.live.phoneSensors = it
-                if (it && context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-                    location.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            }, verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Add the phone's sensors")
-                    Hint("GPS speed, motion, heading, light and air pressure as bus 9, so Decode can name the car's fields that follow them.")
-                }
-                Switch(model.live.phoneSensors, null)
+        }
+    }
+}
+
+private enum class LivePage { SOURCES, COMMA, DASHKIT }
+
+/** A live source: tap to connect; its gear opens its setup. */
+@Composable
+private fun SourceRow(title: String, detail: String, onConnect: () -> Unit, onSetup: () -> Unit) {
+    Surface(onClick = onConnect, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Hint(detail)
             }
-            if (model.live.phoneSensors) gpsNote?.let { Hint(it) }
-            SectionTitle("comma over Wi-Fi")
-            OutlinedTextField(address, { address = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("IP address") },
-                placeholder = { Text("Found automatically") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri))
-            Hint("Can stay empty: the app finds the comma on this phone's Wi-Fi or hotspot, also after its address changed. The comma must run cereal's bridge. All of its buses are streamed.")
-            Button(onClick = { go { model.live.startComma(address) } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to comma") }
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-            SectionTitle("DashKit over USB")
-            Hint("Plug the DashKit's USB-C port into this phone.")
-            FilledTonalButton(onClick = { go { model.live.startDashKit() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit") }
-            OutlinedButton(onClick = { model.live.restartDashKit(); onClose() }, modifier = Modifier.fillMaxWidth()) { Text("Restart the DashKit") }
-            val usbFirmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = true); onClose() } }
-            OutlinedButton(onClick = { usbFirmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over USB") }
-            Hint("Resets it through the USB cable, whatever its firmware is doing (Bluetooth stuck, Wi-Fi on). It comes back with its settings, Wi-Fi included.")
-            HorizontalDivider(Modifier.padding(vertical = 6.dp))
-            SectionTitle("DashKit over Wi-Fi")
-            Hint("Both buses, the firmware log and its CPU, bus load and drop counts, over this phone's hotspot. Needs the wifi-stream firmware. Set it up once over Bluetooth: the DashKit keeps the network and stays on Wi-Fi until switched off.")
-            val preferences = remember { context.getSharedPreferences("canlens", Context.MODE_PRIVATE) }
-            var ssid by remember { mutableStateOf(preferences.getString("wifiSsid", "").orEmpty()) }
-            var password by remember { mutableStateOf("") }
-            var wifiAsk by remember { mutableStateOf<String?>(null) }
-            val bluetooth = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> if (granted) model.tx.setUpWifi(wifiAsk, password) }
-            val setUp = { name: String? ->
-                if (name != null) preferences.edit().putString("wifiSsid", name).apply()
-                wifiAsk = name
-                if (Build.VERSION.SDK_INT >= 31 && context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) bluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                else model.tx.setUpWifi(name, password)
-            }
-            OutlinedTextField(ssid, { ssid = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot name") })
-            OutlinedTextField(password, { password = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Hotspot password") }, supportingText = { Text("Leave empty to keep the one the DashKit has") },
-                visualTransformation = PasswordVisualTransformation(), keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(enabled = wifiSettingsValid(ssid.trim(), password), onClick = { setUp(ssid.trim()) }, modifier = Modifier.weight(1f)) { Text("Send over Bluetooth") }
-                OutlinedButton(onClick = { setUp(null) }, modifier = Modifier.weight(1f)) { Text("Switch its Wi-Fi off") }
-            }
-            if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
-            FilledTonalButton(onClick = { go { model.live.startDashKitWifi() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit over Wi-Fi") }
-            val firmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flash(it, usb = false); onClose() } }
-            OutlinedButton(onClick = { firmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over Wi-Fi") }
-            Hint("Pick the .bin. Only from this app: it needs the key sent with the Wi-Fi settings, so send those once after the firmware that has it.")
+            IconButton(onClick = onSetup) { Icon(Icons.Default.Settings, "Set up $title") }
         }
     }
 }
