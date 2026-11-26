@@ -122,7 +122,9 @@ class DbcState(
         dbc = dbc.withSignal(message.id, "NEW_%X".format(message.id), message.data.size, signal)
         if (replaces != null && replaces != signal.name) {
             val at = plots.indexOf(PlotKey(message.bus, message.id, replaces))
-            if (at >= 0) plots[at] = PlotKey(message.bus, message.id, signal.name)
+            val renamed = PlotKey(message.bus, message.id, signal.name)
+            // a plot keeps one key per signal: if the new name was plotted already, the old one's plot goes
+            if (at >= 0) { if (renamed in plots) plots.removeAt(at) else plots[at] = renamed }
         }
         replace(index, LoadedDbc(dbc, old.bus))
     }

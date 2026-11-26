@@ -222,7 +222,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
                         if (signals.isNotEmpty()) FilterChip(muteKnown, { muteKnown = !muteKnown }, { Text("Grey out the DBC's bits") }, Modifier.padding(horizontal = 14.dp))
                         BitGrid(frame, activity, a != null && b != null, different, outlined, trends, muteKnown, reference, onLong = { similarTo = it }) { bit ->
                             val owner = signals.firstOrNull { bit in it.bits }
-                            drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", bit, 1, true, false, 1.0, 0.0, "", -1, false))
+                            drafts[draftKey] = if (owner != null) SignalDraft(owner.name, owner) else SignalDraft(null, Signal(freeSignalName(signals), bit, 1, true, false, 1.0, 0.0, "", -1, false))
                         }
                         Hint("History: time runs left to right, one row per bit.", Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp))
                         Box(Modifier.padding(horizontal = 14.dp)) {
@@ -249,7 +249,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
             item {
                 Row(Modifier.padding(start = 4.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("Signals", Modifier.weight(1f))
-                    TextButton(onClick = { drafts[draftKey] = SignalDraft(null, Signal("SIGNAL_${signals.size + 1}", 0, 1, true, false, 1.0, 0.0, "", -1, false)) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
+                    TextButton(onClick = { drafts[draftKey] = SignalDraft(null, Signal(freeSignalName(signals), 0, 1, true, false, 1.0, 0.0, "", -1, false)) }) { Icon(Icons.Default.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text("New signal") }
                 }
                 if (signals.isNotEmpty()) Hint("Tick a signal to plot it. Plots stay up when you open another message.", Modifier.padding(horizontal = 4.dp))
                 if (signals.isEmpty()) Hint("No DBC entry for this message. Tap a bit to define a signal.", Modifier.padding(horizontal = 4.dp))

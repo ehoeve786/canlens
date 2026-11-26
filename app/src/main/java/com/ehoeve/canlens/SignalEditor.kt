@@ -47,6 +47,14 @@ import com.ehoeve.canlens.core.Signal
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+/** The first SIGNAL_<n> that none of [signals] is called: a new signal never takes an existing one's name. */
+fun freeSignalName(signals: List<Signal>): String {
+    val taken = signals.mapTo(HashSet()) { it.name }
+    var number = 1
+    while ("SIGNAL_$number" in taken) number++
+    return "SIGNAL_$number"
+}
+
 /** The fields of the signal editor, as text while they are being typed. [original] is the name of the signal being edited, null for a new one. */
 class SignalDraft(val original: String?, from: Signal) {
     var name by mutableStateOf(from.name)
@@ -90,7 +98,10 @@ class SignalDraft(val original: String?, from: Signal) {
 
 @Composable
 fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Signal?, draft: SignalDraft, frame: ByteArray?, onClose: () -> Unit) {
-    val signal = draft.signal()
+    // saving under the name of another signal of this message would replace that one
+    val others = model.dbc.decoder(message.bus, message.id)?.signals.orEmpty().filter { it.name != draft.original }
+    val clash = others.any { it.name == draft.name }
+    val signal = draft.signal()?.takeUnless { clash }
     val revision = model.revision
     // the whole log decoded with the fields as they are now: change size or byte order and watch the shape
     val preview by produceState<FrameStore.Series?>(null, signal?.start, signal?.size, signal?.littleEndian, signal?.signed, signal?.muxValue, revision) {
@@ -122,7 +133,8 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
             }) { Text("Copy") }
             Button(enabled = signal != null, onClick = { model.dbc.saveSignal(message, signal!!, draft.original); onClose() }) { Text("Save") }
         }
-        OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") })
+        OutlinedTextField(draft.name, { draft.name = it }, Modifier.fillMaxWidth(), singleLine = true, isError = clash,
+            label = { Text(if (clash) "Name: another signal of this message has it" else "Name") })
         // how sure it is, saved at once with the DBC; tapping the chosen one again clears it
         if (draft.original != null) {
             val status = model.dbc.status(message.bus, message.id, draft.original)
@@ -144,6 +156,7 @@ fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Sign
         Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.surfaceContainerHighest) {
             Text(
                 when {
+                    clash -> "Another signal of this message has this name"
                     signal == null -> "Not a valid signal yet"
                     frame == null || !signal.fits(frame.size) -> "Doesn't fit in this frame's ${frame?.size ?: 0} bytes"
                     else -> "At the cursor: " + format(signal, signal.raw(frame))
