@@ -33,6 +33,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.Writer
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetSocketAddress
 import java.net.Socket
 import kotlin.concurrent.thread
@@ -269,6 +271,8 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
  */
 class DashKitWifi(private val host: String) : Closeable {
     private val socket = Socket()
+    /** The frames come here as UDP datagrams (wifi_link.h): TCP would wait for acknowledgements the DashKit's Wi-Fi sleeps through. */
+    private val datagrams = DatagramSocket(0).apply { receiveBufferSize = 1 shl 20 }
     val status = DashKitStatus()
 
     /** Reads frames into [sink] until [close], the sink returns false, or the connection ends (IOException). */
@@ -276,13 +280,14 @@ class DashKitWifi(private val host: String) : Closeable {
         socket.connect(InetSocketAddress(host, PORT), 5000)
         socket.soTimeout = 5000  // metrics come every second: silence this long is a lost link
         val output = socket.getOutputStream()
-        val request = DashKitLine.STREAM_ALL.toByteArray()
+        val request = ("U,${datagrams.localPort}\n" + DashKitLine.STREAM_ALL).toByteArray()
         thread(isDaemon = true) {
             try { while (!socket.isClosed) { output.write(request); Thread.sleep(1000) } } catch (e: Exception) { }
         }
         val clock = Clock()
         val busClock = DeviceClock()
         val payload = ByteArray(64)
+        thread(isDaemon = true) { receiveDatagrams(sink, clock) }
         val input = socket.getInputStream().bufferedReader(Charsets.US_ASCII)
         // read by hand, not by readLine: a link that never sends a newline can't grow a line without end
         val line = StringBuilder(64)
@@ -297,7 +302,35 @@ class DashKitWifi(private val host: String) : Closeable {
         }
     }
 
-    override fun close() = socket.close()
+    /** The frame batches, each "Q,<sequence>" and its lines, from the DashKit's address only; a skipped sequence is a lost datagram. */
+    private fun receiveDatagrams(sink: FrameSink, clock: Clock) {
+        val buffer = ByteArray(2048)
+        val packet = DatagramPacket(buffer, buffer.size)
+        val payload = ByteArray(64)
+        val busClock = DeviceClock()
+        var expected = -1L
+        try {
+            while (!datagrams.isClosed) {
+                packet.length = buffer.size
+                datagrams.receive(packet)
+                if (packet.address != socket.inetAddress) continue
+                val time = clock.micros()
+                for (text in String(buffer, 0, packet.length, Charsets.US_ASCII).split('\n')) when {
+                    text.startsWith("Q,") -> text.substring(2).toLongOrNull()?.let { sequence ->
+                        if (expected >= 0 && sequence > expected) status.datagramsLost += sequence - expected
+                        expected = sequence + 1
+                        status.datagrams++
+                    }
+                    text.startsWith("A,") -> if (!DashKitLine.parse(text, time, payload, sink, busClock)) { close(); return }
+                    text.isNotEmpty() -> status.read(text)
+                }
+            }
+        } catch (e: IOException) {
+            close()   // the TCP side sees it and the stream reconnects
+        }
+    }
+
+    override fun close() { socket.close(); datagrams.close() }
 
     companion object {
         const val PORT = 62402

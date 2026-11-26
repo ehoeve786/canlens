@@ -30,6 +30,9 @@ class DashKitStatus {
     @Volatile var scanAuth = -1
     @Volatile var scanChannel = 0
     @Volatile var scanRssi = 0
+    /** Frame datagrams from the Wi-Fi link, and those that never came (gaps in their sequence numbers). */
+    @Volatile var datagrams = 0L
+    @Volatile var datagramsLost = 0L
     /** The firmware log from the Wi-Fi link, the last [LOG_LINES]; [logLines] counts every line ever added. */
     private val log = ArrayDeque<String>()
     @Volatile var logLines = 0L; private set
@@ -42,6 +45,12 @@ class DashKitStatus {
     fun read(line: String) {
         if (line.startsWith("G,")) {
             synchronized(log) { log.addLast(line.substring(2).trimEnd()); if (log.size > LOG_LINES) log.removeFirst() }
+            logLines++
+            return
+        }
+        // the rest of a line the firmware wrote in pieces
+        if (line.startsWith("g,")) {
+            synchronized(log) { log.addLast((log.removeLastOrNull().orEmpty() + line.substring(2)).trimEnd()) }
             logLines++
             return
         }

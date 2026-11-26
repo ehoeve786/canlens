@@ -833,8 +833,11 @@ class CoreTest {
         status.read("M,12,40,38,27,1830,1200,0,3,1,0,2,-55,118")
         status.read("W,1,192.168.43.17")
         status.read("M,1")  // cut short: kept as it was
-        assertEquals(listOf("I (1234) main: DashKit firmware ready"), status.log())
-        assertEquals(1L, status.logLines)
+        status.read("G,I (2000) wifi:")
+        status.read("g,state: init -> auth (0xb0) ")
+        assertEquals(listOf("I (1234) main: DashKit firmware ready", "I (2000) wifi:state: init -> auth (0xb0)"), status.log())
+        status.log().dropLast(1).let { assertEquals(listOf("I (1234) main: DashKit firmware ready"), it) }
+        assertEquals(3L, status.logLines)
         assertEquals(listOf(12L, 40, 38, 27, 1830, 1200, 0, 3, 1, 0, 2, -55, 118), status.metrics!!.toList())
         assertTrue(status.wifiOn)
         assertEquals("192.168.43.17", status.wifiAddress)
