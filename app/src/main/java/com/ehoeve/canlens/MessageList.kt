@@ -387,6 +387,9 @@ private fun LiveSheet(model: AppModel, onClose: () -> Unit) {
             }
             if (model.tx.bleState.isNotEmpty()) Hint(model.tx.bleState)
             FilledTonalButton(onClick = { go { model.live.startDashKitWifi() } }, modifier = Modifier.fillMaxWidth()) { Text("Connect to DashKit over Wi-Fi") }
+            val firmware = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) { model.live.flashOverWifi(it); onClose() } }
+            OutlinedButton(onClick = { firmware.launch(arrayOf("*/*")) }, modifier = Modifier.fillMaxWidth()) { Text("Install firmware over Wi-Fi") }
+            Hint("Pick the .bin. Only from this app: it needs the key sent with the Wi-Fi settings, so send those once after the firmware that has it.")
         }
     }
 }

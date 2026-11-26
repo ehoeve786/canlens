@@ -109,6 +109,46 @@ class LiveState(
         }
     }
 
+    /** The key that lets this app, and nothing else on the network, install firmware over Wi-Fi; made once, sent with the Wi-Fi settings. */
+    fun wifiKey(): String = preferences.getString("wifiKey", null) ?: ByteArray(16).also { java.security.SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }.also { preferences.edit().putString("wifiKey", it).apply() }
+
+    /**
+     * Installs the firmware in [uri] over the DashKit's Wi-Fi link (its other OTA slot, as DashPilot does over
+     * Bluetooth; it goes back to the old one if the new one doesn't start). Ends a stream first.
+     */
+    fun flashOverWifi(uri: Uri) {
+        stop()
+        scope.launch(Dispatchers.IO) {
+            val result = runCatching {
+                val image = (context.contentResolver.openInputStream(uri) ?: throw IOException("can't read the file")).use { it.readBytes() }
+                // an ESP32 app image starts with 0xE9: anything else is the wrong file (a zip, an APK)
+                if (image.isEmpty() || image[0] != 0xE9.toByte()) throw IOException("that isn't a firmware image (.bin)")
+                val host = findDashKit()
+                java.net.Socket().use { socket ->
+                    socket.connect(java.net.InetSocketAddress(host, DashKitWifi.PORT), 5000)
+                    socket.soTimeout = 30_000
+                    val out = socket.getOutputStream()
+                    out.write("O,${image.size},${wifiKey()}\n".toByteArray())
+                    var sent = 0
+                    var told = 0
+                    while (sent < image.size) {
+                        val n = minOf(16384, image.size - sent)
+                        out.write(image, sent, n)
+                        sent += n
+                        val percent = sent * 100 / image.size
+                        if (percent >= told + 10) { told = percent; withContext(Dispatchers.Main) { report("Installing over Wi-Fi: $percent %") } }
+                    }
+                    out.flush()
+                    socket.getInputStream().bufferedReader().readLine() ?: throw IOException("no answer")
+                }
+            }
+            withContext(Dispatchers.Main) {
+                report(result.fold({ if (it == "O,ok") "Firmware installed over Wi-Fi: the DashKit is restarting" else "Not installed: ${it.removePrefix("O,error ")}" }, { "Not installed: ${it.message}" }))
+            }
+        }
+    }
+
     /** Restarts the DashKit on USB (its reset line), ending a USB stream first: the port is needed for it. */
     fun restartDashKit() {
         if (source == LiveSource.DASHKIT) stop()

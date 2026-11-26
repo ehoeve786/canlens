@@ -86,7 +86,7 @@ class TxState(context: Context, private val store: FrameStore, private val scope
         for (wait in 0 until 30) { if (ble.connected) break; delay(500) }
         if (!ble.connected) return@launch
         if (ssid == null) { ble.send("W,0"); bleState = "Asked the DashKit to switch its Wi-Fi off"; return@launch }
-        ble.send("WS,$ssid"); ble.send("WP,$password"); ble.send("W,1")
+        ble.send("WS,$ssid"); ble.send("WP,$password"); ble.send("WK,${live.wifiKey()}"); ble.send("W,1")
         bleState = "Sent to the DashKit; waiting for it to join $ssid"
         // the status is read once a second: say what it reports, for a minute or until it is on the network
         for (second in 0 until 60) {
