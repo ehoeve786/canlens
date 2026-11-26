@@ -72,8 +72,13 @@ private class PlotData(val key: PlotKey, val signal: Signal, val messageName: St
 
     init {
         val distinct = sortedSetOf<Float>()
-        for (i in 0 until series.size) { distinct += series.values[i]; if (distinct.size > MAX_STATES) break }
-        if (series.size == 0 || distinct.size > MAX_STATES) {
+        var runs = 0
+        for (i in 0 until series.size) {
+            if (i == 0 || series.values[i] != series.values[i - 1]) runs++
+            distinct += series.values[i]; if (distinct.size > MAX_STATES) break
+        }
+        // few values that change nearly every frame (a counter, a checksum) read better as a line
+        if (series.size == 0 || distinct.size > MAX_STATES || runs > maxOf(MAX_STATES, series.size / 4)) {
             stateLabels = null; runStarts = FloatArray(0); runState = IntArray(0)
         } else {
             val values = distinct.toList()
@@ -109,18 +114,32 @@ private class PlotData(val key: PlotKey, val signal: Signal, val messageName: St
 
 private class Change(val time: Float, val plot: PlotData, val from: String, val to: String)
 
+/** The first [MAX_CHANGES] changes in order, and how many there are in all. */
+private class Changes(val first: List<Change>, val total: Int)
+
+/** How many of the sorted [times] are below [t], or at most [t] with [orEqual]. */
+private fun countBelow(times: FloatArray, t: Float, orEqual: Boolean): Int {
+    var low = 0
+    var high = times.size
+    while (low < high) { val mid = (low + high) ushr 1; if (times[mid] < t || orEqual && times[mid] == t) low = mid + 1 else high = mid }
+    return low
+}
+
 /** All plotted signals on one time axis: states as labelled strips, measurements as lines, and the state changes in order. */
 @Composable
 fun PlotsScreen(model: AppModel) {
     val revision = model.revision
     val store = model.store
     val view = model.plot.view
-    val following = model.trace.followLive && model.live.source != LiveSource.NONE
+    val live = model.live.source != LiveSource.NONE
+    val following = model.trace.followLive && live
     if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
     val plots = model.plot.keys.toList()
     val dbcs = model.dbc.files.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE
-    val data by produceState(emptyList<PlotData>(), revision, plots, dbcs, liveFrom) {
+    // following, only the window in view is decoded, at every refresh; otherwise the whole log, every 5 s at most while a stream runs
+    val refresh = if (following || !live) revision else revision / 20
+    val data by produceState(emptyList<PlotData>(), refresh, plots, dbcs, liveFrom) {
         value = withContext(Dispatchers.Default) {
             plots.mapIndexedNotNull { position, key ->
                 val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapIndexedNotNull null
@@ -136,19 +155,25 @@ fun PlotsScreen(model: AppModel) {
     val a = model.trace.markA
     val b = model.trace.markB
     val marked = a != null && b != null
-    val changes = remember(data, a, b) {
-        val from = if (marked) seconds(minOf(a, b)) else -Float.MAX_VALUE
-        val to = if (marked) seconds(maxOf(a, b)) else Float.MAX_VALUE
-        val found = ArrayList<Change>()
-        for (plot in data) {
-            val labels = plot.stateLabels ?: continue
-            for (i in 1 until plot.runStarts.size) {
-                val time = plot.runStarts[i]
-                if (time in from..to) found += Change(time, plot, labels[plot.runState[i - 1]], labels[plot.runState[i]])
+    val changes by produceState(Changes(emptyList(), 0), data, a, b) {
+        val from = if (a != null && b != null) seconds(minOf(a, b)) else -Float.MAX_VALUE
+        val to = if (a != null && b != null) seconds(maxOf(a, b)) else Float.MAX_VALUE
+        val plotted = data
+        value = withContext(Dispatchers.Default) {
+            // of each state only its first MAX_CHANGES in the stretch: together they hold the first MAX_CHANGES of all
+            val found = ArrayList<Change>()
+            var total = 0
+            for (plot in plotted) {
+                val labels = plot.stateLabels ?: continue
+                val first = countBelow(plot.runStarts, from, false).coerceAtLeast(1)
+                val last = countBelow(plot.runStarts, to, true)
+                if (first >= last) continue
+                total += last - first
+                for (i in first until minOf(last, first + MAX_CHANGES)) found += Change(plot.runStarts[i], plot, labels[plot.runState[i - 1]], labels[plot.runState[i]])
             }
+            found.sortBy { it.time }
+            Changes(if (found.size > MAX_CHANGES) found.subList(0, MAX_CHANGES).toList() else found, total)
         }
-        found.sortBy { it.time }
-        found
     }
     val cursor = seconds(model.trace.cursorNow)
     val markers = model.trace.markers.map { seconds(it.time) }
@@ -229,13 +254,13 @@ fun PlotsScreen(model: AppModel) {
                     }
                 }
             }
-            if (changes.isNotEmpty()) item {
+            if (changes.first.isNotEmpty()) item {
                 SectionTitle(if (marked) "Changes between A and B" else "Changes", Modifier.padding(start = 4.dp, top = 10.dp))
-                Hint((if (changes.size > MAX_CHANGES) "The first $MAX_CHANGES of ${changes.size}. " else "") + "In order. Tap one to move the cursor there." +
+                Hint((if (changes.total > MAX_CHANGES) "The first $MAX_CHANGES of ${changes.total}. " else "") + "In order. Tap one to move the cursor there." +
                     if (marked) "" else " Set marks A and B to list only a stretch.", Modifier.padding(horizontal = 4.dp))
             }
-            items(minOf(changes.size, MAX_CHANGES)) { index ->
-                val change = changes[index]
+            items(changes.first.size) { index ->
+                val change = changes.first[index]
                 Surface(onClick = { moveCursor(change.time) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text("%.2f s".format(change.time), Modifier.width(88.dp), fontFamily = MONO, style = MaterialTheme.typography.bodyMedium)
@@ -269,15 +294,19 @@ private fun StateStrip(plot: PlotData, view: ChartView, cursor: Float, markA: Fl
         val baseline = height / 2 + text.textSize / 3
         val canvas = drawContext.canvas.nativeCanvas
         val runs = plot.runStarts.size
+        var drawn = 0f   // right end of the last block: a widened one-frame block isn't painted over by the next
         for (i in 0 until runs) {
             val right = if (i + 1 < runs) x(plot.runStarts[i + 1]) else width
             if (right <= 0f) continue
             val left = x(plot.runStarts[i])
             if (left >= width) break
-            val from = left.coerceAtLeast(0f)
+            val from = maxOf(left, drawn)
             val to = right.coerceAtMost(width)
+            if (from >= width) break
+            if (to <= drawn) continue   // hidden under the widened block before it
             // at least a pixel, so a state held for one frame still shows when zoomed out
             drawRect(STATE_COLORS[plot.runState[i] % STATE_COLORS.size], Offset(from, 0f), Size(maxOf(to - from, 1f), height))
+            drawn = from + maxOf(to - from, 1f)
             val label = labels[plot.runState[i]]
             if (text.measureText(label) + 12f < to - from) canvas.drawText(label, from + 6f, baseline, text)
         }

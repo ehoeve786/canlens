@@ -80,27 +80,30 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
     // a signal picked in the search opens in the editor, to be checked against its plot and saved
     LaunchedEffect(model.signals.pendingSignal) { model.signals.pendingSignal?.let { drafts[draftKey] = SignalDraft(null, it); model.signals.pendingSignal = null } }
     val cursor = model.trace.cursorNow
-    val following = model.trace.followLive && model.live.source != LiveSource.NONE
-    val frame = remember(revision, cursor, following) {
+    val live = model.live.source != LiveSource.NONE
+    val following = model.trace.followLive && live
+    // what scans the whole log runs again every 2 s at most while a stream runs
+    val slow = if (live) revision / 8 else revision
+    val frame = remember(if (following) revision else slow, cursor, following, message) {
         // before the message's first frame: that frame, so its fields can be read anyway
         if (following) message.data else store.frameAt(message, cursor) ?: store.frameAt(message, message.firstTime)
     }
     val a = model.trace.markA
     val b = model.trace.markB
-    val activity by produceState<FrameStore.BitActivity?>(null, revision, a, b, message) {
+    val activity by produceState<FrameStore.BitActivity?>(null, slow, a, b, message) {
         val window = a != null && b != null
         value = withContext(Dispatchers.Default) {
             store.bitActivity(if (window) minOf(a, b) else Int.MIN_VALUE, if (window) maxOf(a, b) else Int.MAX_VALUE, message).getOrNull(message.index)
         }
     }
     // Mark A alone is a reference moment: the grid shows which bits differ from then
-    val reference = remember(revision, a, b, message) { if (a != null && b == null) store.frameAt(message, a) else null }
+    val reference = remember(slow, a, b, message) { if (a != null && b == null) store.frameAt(message, a) else null }
     val view = model.plot.view
     if (following) view.show(maxOf(seconds(store.lastTime) - LIVE_WINDOW_SECONDS, seconds(store.firstTime)), seconds(store.lastTime))
     val other = model.other
     val mine = model.mine
     val different = remember(other, mine, message, message.data.size) { if (other == null || mine == null) null else mine.differences(other, message.bus, message.id, message.data.size * 8) }
-    val payloads by produceState<FrameStore.Payloads?>(null, revision, message) { value = withContext(Dispatchers.Default) { store.payloads(message) } }
+    val payloads by produceState<FrameStore.Payloads?>(null, slow, message) { value = withContext(Dispatchers.Default) { store.payloads(message) } }
     // each page of a multiplexed message: index in [payloads] of its last frame at the cursor, so its signals show a value whichever page is up
     val pageFrames = remember(payloads, cursor, following, decoder) {
         val mux = decoder?.multiplexor
@@ -118,14 +121,18 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
         }
         found
     }
-    val guesses by produceState(emptyList<Signal>(), revision, message, signals) {
-        value = withContext(Dispatchers.Default) { Analysis.guessFields(store, message).filter { guess -> signals.none { known -> known.bits.any { it in guess.bits } } } }
+    // while a stream runs, guessing waits until asked for
+    var guessWanted by remember(message) { mutableStateOf(false) }
+    val guessing = !live || guessWanted
+    val guesses by produceState(emptyList<Signal>(), slow, message, signals, guessing) {
+        value = if (!guessing) emptyList()
+            else withContext(Dispatchers.Default) { Analysis.guessFields(store, message).filter { guess -> signals.none { known -> known.bits.any { it in guess.bits } } } }
     }
     val markerTimes = model.trace.markers.map { seconds(it.time) }
     val plots = model.plot.keys.toList()
     val dbcs = model.dbc.files.toList()
     val liveFrom = if (following) ticks(view.start) else Int.MIN_VALUE
-    val series by produceState<Map<PlotKey, FrameStore.Series>>(emptyMap(), revision, plots, dbcs, liveFrom) {
+    val series by produceState<Map<PlotKey, FrameStore.Series>>(emptyMap(), if (following) revision else slow, plots, dbcs, liveFrom) {
         value = withContext(Dispatchers.Default) {
             plots.mapNotNull { key ->
                 val plotMessage = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return@mapNotNull null
@@ -135,7 +142,7 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
             }.toMap()
         }
     }
-    val trends = remember(payloads) { payloads?.let { Analysis.byteTrends(it) } ?: "" }
+    val trends by produceState("", payloads) { value = payloads?.let { held -> withContext(Dispatchers.Default) { Analysis.byteTrends(held) } } ?: "" }
     var muteKnown by rememberSaveable { mutableStateOf(false) }
     // a held bit: the bits of other messages that flip at the same moments
     var similarTo by remember(message) { mutableStateOf<Int?>(null) }
@@ -282,6 +289,9 @@ fun MessageDetail(model: AppModel, message: FrameStore.Message, onOpen: (FrameSt
                         IconButton(onClick = { drafts[draftKey] = SignalDraft(signal.name, signal) }) { Icon(Icons.Default.Edit, "Edit ${signal.name}", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     }
                 }
+            }
+            if (!guessing) item {
+                TextButton(onClick = { guessWanted = true }, Modifier.padding(top = 6.dp)) { Text("Suggest fields from how the bits flip") }
             }
             if (guesses.isNotEmpty()) item {
                 SectionTitle("Suggested fields", Modifier.padding(start = 4.dp, top = 10.dp))

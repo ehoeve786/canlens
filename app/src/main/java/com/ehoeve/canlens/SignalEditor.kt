@@ -74,33 +74,48 @@ class SignalDraft(val original: String?, from: Signal) {
             if (label.isEmpty()) return null
             names[value] = label
         }
-        val result = Signal(name, start, size, littleEndian, signed, factor.toDoubleOrNull() ?: return null, offset.toDoubleOrNull() ?: return null,
-            unit.replace("\"", ""), mux, isMultiplexor)
+        // a factor of 0 would make every value the offset, and the value names unreadable
+        val scale = number(factor)?.takeIf { it != 0.0 } ?: return null
+        val shift = number(offset) ?: return null
+        val result = Signal(name, start, size, littleEndian, signed, scale, shift, unit.replace("\"", ""), mux, isMultiplexor)
         if (result.bits.any { it !in 0 until FrameStore.MAX_PAYLOAD * 8 }) return null
         result.valueNames = names
         return result
     }
 
     companion object {
+        /** A finite number, with a decimal comma read as a point. */
+        private fun number(text: String): Double? = text.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
+
         /** Six significant digits: a factor found by a search is a division result with noise in its last places. */
         fun tidy(value: Double): String =
             if (value.isNaN() || value.isInfinite()) "0" else java.math.BigDecimal(value).round(java.math.MathContext(6)).stripTrailingZeros().toPlainString()
     }
 }
 
+private class Preview(val series: FrameStore.Series?, val histogram: List<Analysis.Bar>)
+
+/** What decoding depends on, comparable: [Signal] has no equals of its own. */
+private fun fields(s: Signal) = listOf(s.name, s.start, s.size, s.littleEndian, s.signed, s.factor, s.offset, s.muxValue, s.isMultiplexor)
+
 @Composable
 fun SignalEditor(model: AppModel, message: FrameStore.Message, multiplexor: Signal?, draft: SignalDraft, frame: ByteArray?, onClose: () -> Unit) {
     val signal = draft.signal()
-    val revision = model.revision
+    // while a stream runs, the whole log is decoded again every 2 s at most
+    val revision = if (model.live.source != LiveSource.NONE) model.revision / 8 else model.revision
     // the whole log decoded with the fields as they are now: change size or byte order and watch the shape
-    val preview by produceState<FrameStore.Series?>(null, signal?.start, signal?.size, signal?.littleEndian, signal?.signed, signal?.muxValue, revision) {
+    val decoded by produceState(Preview(null, emptyList()), signal?.let { fields(it) }, multiplexor?.let { fields(it) }, revision) {
         value = signal?.let { s ->
             // a multiplexed signal is only read from the frames that carry it
             val selector = multiplexor?.takeIf { s.muxValue >= 0 && it.name != s.name }
-            withContext(Dispatchers.Default) { model.store.series(message, DbcMessage(message.id, "", 0, listOfNotNull(s, selector)), s) }
-        }
+            withContext(Dispatchers.Default) {
+                val series = model.store.series(message, DbcMessage(message.id, "", 0, listOfNotNull(s, selector)), s)
+                Preview(series, Analysis.histogram(series))
+            }
+        } ?: Preview(null, emptyList())
     }
-    val histogram = remember(preview) { preview?.let { Analysis.histogram(it) } ?: emptyList() }
+    val preview = decoded.series
+    val histogram = decoded.histogram
     val view = remember { ChartView(seconds(model.store.firstTime), seconds(model.store.lastTime)) }
     Column(Modifier.padding(horizontal = 14.dp).padding(top = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -171,7 +186,7 @@ private fun Histogram(histogram: List<Analysis.Bar>, signal: Signal?, onJump: (F
             val label = value.label
             val count = value.count
             Row(Modifier.clickable { onJump(value.first) }, verticalAlignment = Alignment.CenterVertically) {
-                val named = signal?.let { s -> label.toDoubleOrNull()?.let { v -> s.valueNames[Math.round((v - s.offset) / s.factor)] } }
+                val named = signal?.let { s -> label.replace(',', '.').toDoubleOrNull()?.let { v -> s.valueNames[Math.round((v - s.offset) / s.factor)] } }
                 Text(if (named != null) "$label $named" else label, Modifier.width(96.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Box(Modifier.weight(1f)) { Box(Modifier.fillMaxWidth(count.toFloat() / most).height(10.dp).clip(CircleShape).background(bar)) }
                 Text(count.toString(), Modifier.width(56.dp), fontFamily = MONO, style = MaterialTheme.typography.bodySmall, textAlign = TextAlign.End)
