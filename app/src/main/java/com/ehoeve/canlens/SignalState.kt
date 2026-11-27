@@ -237,6 +237,11 @@ class SignalState(
         }
     }
 
+    /** Gives [old] another [signal] (a name, value names), as the user or the assistant chose: listed with the named ones. */
+    fun rename(old: Suggestion, signal: Signal) {
+        autoResults = autoResults.map { if (it === old) Suggestion(it.message, signal, it.evidence, maxOf(it.confidence, NAMED), it.messageName, it.at) else it }
+    }
+
     /** Turns down [fields] (an event's) whatever they are, remembered like any rejection. */
     fun reject(fields: List<Suggestion>) {
         autoResults = autoResults - fields.toSet()
