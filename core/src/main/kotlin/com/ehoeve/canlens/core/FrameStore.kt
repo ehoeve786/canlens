@@ -75,6 +75,9 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
     val spareChunks: Int get() = (maxChunks - chunks.size).coerceAtLeast(1)
 
     private val byKey = HashMap<Long, Message>()
+    /** Per bus below 128, the start and end ticks (in pairs) of each stretch over [GAP_TICKS] with no frame: the stream cut off, or the bus asleep. */
+    @Volatile private var gaps = emptyMap<Int, IntArray>()
+    private val busLast = IntArray(128) { Int.MIN_VALUE }
 
     /**
      * A live store's frames keep their arrival order: two sources write it (the comma's `can` events, one time stamp
@@ -91,6 +94,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         if (ticks !in Int.MIN_VALUE..Int.MAX_VALUE) { truncated = true; return false }
         if (dropOldest && frameCount > 0 && ticks < lastTime) ticks = lastTime.toLong()
         val time = ticks.toInt()
+        if (bus in 0..127) {
+            val before = busLast[bus]
+            busLast[bus] = time
+            if (before != Int.MIN_VALUE && time - before > GAP_TICKS) gaps = gaps + (bus to (gaps[bus] ?: IntArray(0)) + intArrayOf(before, time))
+        }
         val key = bus.toLong() shl 32 or (id.toLong() and 0xFFFFFFFFL)
         val message = byKey[key] ?: run {
             val known = held.messages
@@ -149,6 +157,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         }
         held = merged.held
         byKey.clear(); byKey.putAll(merged.byKey)
+        gaps = merged.gaps; merged.busLast.copyInto(busLast)
         originMicros = merged.originMicros; lastTime = merged.lastTime; frameCount = merged.frameCount; truncated = truncated || merged.truncated
         return if (oldOrigin == Long.MIN_VALUE || originMicros == Long.MIN_VALUE) 0 else ((oldOrigin - originMicros) / MICROS_PER_TICK).toInt()
     }
@@ -186,7 +195,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
 
     @Synchronized
     fun clear() {
-        held = Held(emptyArray(), emptyArray()); byKey.clear()
+        held = Held(emptyArray(), emptyArray()); byKey.clear(); gaps = emptyMap(); busLast.fill(Int.MIN_VALUE)
         originMicros = Long.MIN_VALUE; lastTime = 0; frameCount = 0; truncated = false
     }
 
@@ -218,7 +227,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
                 n++
             }
         }
-        return Series(times, values, n)
+        // the gaps of its bus (sent frames, on 128 up, have their bus's) that lie between its first and last sample
+        val all = gaps[if (message.bus in 128..255) message.bus - 128 else message.bus] ?: IntArray(0)
+        val kept = ArrayList<Float>()
+        if (n > 1) for (g in all.indices step 2) if (all[g + 1] / TICKS_PER_SECOND.toFloat() > times[0] && all[g] / TICKS_PER_SECOND.toFloat() < times[n - 1]) { kept += all[g] / TICKS_PER_SECOND.toFloat(); kept += all[g + 1] / TICKS_PER_SECOND.toFloat() }
+        return Series(times, values, n, kept.toFloatArray())
     }
 
     /** Payload of the last frame of [message] at or before [time], or null. */
@@ -545,7 +558,8 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         return if (broken < 0) null else "No frame matches ${terms[broken]} together with ${terms.subList(0, broken).joinToString(" ")}"
     }
 
-    class Series(@JvmField val times: FloatArray, @JvmField val values: FloatArray, @JvmField val size: Int)
+    /** [gaps]: start and end times (in pairs) of the stretches its bus sent nothing, so a plot doesn't draw a value across them. */
+    class Series(@JvmField val times: FloatArray, @JvmField val values: FloatArray, @JvmField val size: Int, @JvmField val gaps: FloatArray = FloatArray(0))
 
     companion object {
         const val CHUNK_BITS = 18
@@ -555,5 +569,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         const val MAX_PAYLOAD = 64
         const val MICROS_PER_TICK = 100L
         const val TICKS_PER_SECOND = 10_000.0
+        /** Ticks with no frame on a bus that count as a gap in its data (2 s; the slowest periodic messages come every second). */
+        const val GAP_TICKS = 20_000
     }
 }

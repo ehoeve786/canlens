@@ -162,10 +162,22 @@ private fun DrawScope.drawSeries(series: FrameStore.Series, color: Color, view: 
     val pad = 14.dp.toPx()
     fun x(t: Float) = (t - start) / span * width
     fun y(v: Float) = height - pad - (v - low) / (high - low) * (height - 2 * pad)
+    // where the bus sent nothing (the stream cut off) the line stops at its last frame and starts again after
+    val gaps = series.gaps
+    var g = 0
+    /** Whether a gap lies between samples i - 1 and i, asked in order of i; then [g] is it. */
+    fun cut(i: Int): Boolean {
+        while (g < gaps.size && gaps[g + 1] <= times[i - 1]) g += 2
+        return g < gaps.size && gaps[g + 1] <= times[i]
+    }
     if (to - from <= width * 2) {
         val path = Path()
         path.moveTo(x(times[from]), y(values[from]))
-        for (i in from + 1 until to) { val px = x(times[i]); path.lineTo(px, y(values[i - 1])); path.lineTo(px, y(values[i])) }
+        for (i in from + 1 until to) {
+            val px = x(times[i])
+            if (cut(i)) { path.lineTo(x(maxOf(gaps[g], times[i - 1])), y(values[i - 1])); path.moveTo(px, y(values[i])) }
+            else { path.lineTo(px, y(values[i - 1])); path.lineTo(px, y(values[i])) }
+        }
         path.lineTo(minOf(width, x(view.end)), y(values[to - 1]))
         drawPath(path, color, style = Stroke(1.5.dp.toPx()))
     } else {
@@ -177,15 +189,17 @@ private fun DrawScope.drawSeries(series: FrameStore.Series, color: Color, view: 
             val c = x(times[i]).toInt()
             val v = values[i]
             if (c != column) {
+                val gap = i > from && cut(i)
                 if (column != Int.MIN_VALUE) {
                     drawLine(color, Offset(column.toFloat(), y(columnLow)), Offset(column.toFloat(), y(columnHigh) - 1f))
-                    // columns without a sample: the value holds until the next one, as in the steps above
-                    if (c > column + 1) drawLine(color, Offset(column.toFloat(), y(values[i - 1])), Offset(c.toFloat(), y(values[i - 1])))
+                    // columns without a sample: the value holds until the next one, as in the steps above, or until a gap
+                    val holdTo = if (gap) minOf(c.toFloat(), x(gaps[g])) else c.toFloat()
+                    if (holdTo > column + 1) drawLine(color, Offset(column.toFloat(), y(values[i - 1])), Offset(holdTo, y(values[i - 1])))
                 }
                 column = c
-                // start from the previous value so neighbouring columns join up
-                columnLow = if (i > from) minOf(v, values[i - 1]) else v
-                columnHigh = if (i > from) maxOf(v, values[i - 1]) else v
+                // start from the previous value so neighbouring columns join up (not across a gap)
+                columnLow = if (i > from && !gap) minOf(v, values[i - 1]) else v
+                columnHigh = if (i > from && !gap) maxOf(v, values[i - 1]) else v
             } else {
                 if (v < columnLow) columnLow = v
                 if (v > columnHigh) columnHigh = v

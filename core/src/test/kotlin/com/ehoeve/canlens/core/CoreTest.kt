@@ -433,6 +433,23 @@ class CoreTest {
         assertEquals(0.0, best.signal.offset, 1e-9)
     }
 
+    @Test fun aStreamCutOffIsAGapInTheSeries() {
+        val store = FrameStore()
+        for (s in listOf(0, 1, 5, 6)) for (k in 0 until 10) {
+            store.frame(s * 1_000_000L + k * 100_000L, 0, 0x100, byteArrayOf(k.toByte()), 0, 1)
+            store.frame(s * 1_000_000L + k * 100_000L, 128, 0x200, byteArrayOf(k.toByte()), 0, 1)
+        }
+        store.frame(8_000_000L, 0, 0x300, byteArrayOf(0), 0, 1)                                                      // after the first message's last frame
+        val signal = Signal("v", 0, 8, true, false, 1.0, 0.0, "", -1, false)
+        val dbc = DbcMessage(0x100, "m", 1, listOf(signal))
+        val series = store.series(store.messages[0], dbc, signal)
+        assertEquals(listOf(1.9f, 5.0f), series.gaps.toList())
+        assertEquals(listOf(1.9f, 5.0f), store.series(store.messages[1], dbc, signal).gaps.toList())        // sent frames: their bus's gaps
+        store.clear()
+        store.frame(0L, 0, 0x100, byteArrayOf(0), 0, 1); store.frame(9_000_000L, 0, 0x100, byteArrayOf(0), 0, 1)
+        assertEquals(2, store.series(store.messages[0], dbc, signal).gaps.size)
+    }
+
     @Test fun noSecondCounterWhereTheDbcHasOne() {
         val store = FrameStore()
         for (i in 0 until 400) store.frame(i * 20_000L, 1, 0x26D, byteArrayOf((i and 3).toByte(), ((i + 2) and 3).toByte()), 0, 2)
