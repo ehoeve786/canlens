@@ -32,6 +32,7 @@ import kotlin.concurrent.thread
  * - /changed?from=&to=: the rarely-changing named signals that changed in that stretch, rarest first
  * - /plot?list=: a plot list (`bus:id:signal`, `@seconds=note`), plotted and marked on the screen
  * - /stats: the comma's and the DashKit's stats and latest log lines, when streaming from them
+ * - /name?event=1&name=DRIVER_OUT: names an event's fields (E1_FLAG_0 becomes DRIVER_OUT_0), as its chip in Decode does
  */
 class LocalApi(private val model: AppModel, private val context: Context, preferences: android.content.SharedPreferences) {
     @Volatile private var server: ServerSocket? = null
@@ -148,12 +149,19 @@ class LocalApi(private val model: AppModel, private val context: Context, prefer
                 runBlocking(Dispatchers.Main) { model.applyPlotList(list) }
                 JSONObject().put("status", model.status)
             }
+            "/name" -> {
+                val number = query["event"]?.toIntOrNull() ?: throw IOException("event=<number> wanted")
+                val count = model.signals.autoResults.count { it.signal.name.startsWith("E${number}_") }
+                if (count == 0) throw IOException("no event E$number among Decode's suggestions")
+                runBlocking(Dispatchers.Main) { model.signals.nameEvent(number, query["name"].orEmpty()) }
+                JSONObject().put("named", count)
+            }
             "/stats" -> JSONObject()
                 .put("comma", model.live.comma?.let { c -> JSONObject().put("device", c.device).put("buses", c.buses).put("processes", c.processes).put("log", JSONArray(c.log().takeLast(LOG_LINES))) } ?: JSONObject.NULL)
                 .put("dashkit", (model.live.commaDashKit ?: model.tx.status)?.let { d ->
                     JSONObject().put("build", d.build).put("metrics", d.metrics?.let { JSONArray(it.toList()) } ?: JSONObject.NULL).put("log", JSONArray(d.log().takeLast(LOG_LINES)))
                 } ?: JSONObject.NULL)
-            else -> throw IOException("unknown path $path: /status /messages /signals /values /changed /plot /stats")
+            else -> throw IOException("unknown path $path: /status /messages /signals /values /changed /plot /stats /name")
         }.toString()
     }
 
