@@ -1039,5 +1039,10 @@ class CoreTest {
         assertEquals("not running: dashkitd (exit -11)", status.processes)
         assertEquals(listOf("ERROR {\"msg\":\"boom\"}"), status.log())
         assertEquals(4, said.size)
+        val info = """{"msg": {"event": "iquploaderd.queue_filled", "queued": 0}, "ctx": {}, "level": "INFO", "levelnum": 20, "name": "swaglog", "filename": "iquploaderd.py", "lineno": 963}"""
+        assertEquals("""INFO iquploaderd: {"event": "iquploaderd.queue_filled", "queued": 0}""", CommaStatus.logLine(info, false))
+        val debug = """{"msg": "\u001b[32mui\u001b[0m", "ctx": {"daemon": "manager"}, "level": "DEBUG", "filename": "manager.py"}"""
+        assertEquals(null, CommaStatus.logLine(debug, false))
+        assertEquals("WARNING manager: ui ok", CommaStatus.logLine(debug.replace("DEBUG", "WARNING").replace("[0m", "[0m ok"), false))
     }
 }

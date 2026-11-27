@@ -31,7 +31,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
     val tick by produceState(0) { while (true) { delay(500); value++ } }
-    val status = model.live.dashKitWifi?.status ?: model.live.dashKit?.status
+    val status = model.live.dashKitWifi?.status ?: model.live.dashKit?.status ?: model.live.commaDashKit
     val lines = remember(tick, status?.logLines) { status?.log().orEmpty() }
     val clipboard = LocalClipboardManager.current
     val list = rememberLazyListState()

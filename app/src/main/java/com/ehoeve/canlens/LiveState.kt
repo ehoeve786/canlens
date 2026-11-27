@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import com.ehoeve.canlens.core.CandumpStream
 import com.ehoeve.canlens.core.CommaFinder
 import com.ehoeve.canlens.core.CommaStatus
+import com.ehoeve.canlens.core.DashKitStatus
 import com.ehoeve.canlens.core.CommaStream
 import com.ehoeve.canlens.core.FrameSink
 import com.ehoeve.canlens.core.FrameStore
@@ -59,6 +60,8 @@ class LiveState(
     @Volatile var dashKitWifi: DashKitWifi? = null; private set
     /** The comma's own stats and log while it is the live source (from its bridge, when that publishes them). */
     @Volatile var comma: CommaStatus? = null; private set
+    /** The DashKit's stats and log while streaming from a comma it is plugged into (dashkitd passes them on). */
+    @Volatile var commaDashKit: DashKitStatus? = null; private set
 
     private var job: Job? = null
     private var connection: Closeable? = null
@@ -81,9 +84,11 @@ class LiveState(
             // It is connected again while the comma's stream runs: it ends after a quiet spell, and the car's bus may sleep.
             val done = AtomicBoolean()
             val chassis = AtomicReference<CandumpStream?>()
+            val dashKitStatus = DashKitStatus().also { s -> s.onLine = { recorder?.note("dashkit", it) } }
+            commaDashKit = dashKitStatus
             thread(isDaemon = true) {
                 while (!done.get()) {
-                    val stream = CandumpStream(host)
+                    val stream = CandumpStream(host, status = dashKitStatus)
                     chassis.set(stream)
                     if (done.get()) { stream.close(); break }
                     runCatching { stream.run(sink) }
@@ -109,6 +114,7 @@ class LiveState(
             try { CommaStream(host, port).held(mine).use { it.run(sink) } } finally {
                 done.set(true); chassis.get()?.close(); services.forEach { it.get()?.close() }
                 if (comma === status) comma = null
+                if (commaDashKit === dashKitStatus) commaDashKit = null
             }
         }
     }

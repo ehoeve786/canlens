@@ -493,7 +493,10 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                     // a number on the car's screen, read by the camera as the stream comes in
                     AssistChip(onClick = { showCamera = true }, label = { Text("Read the screen") })
                     if (model.live.source == LiveSource.DASHKIT_WIFI || model.live.source == LiveSource.DASHKIT) AssistChip(onClick = { showFirmware = true }, label = { Text("Firmware") })
-                    if (model.live.source == LiveSource.COMMA) AssistChip(onClick = { showComma = true }, label = { Text("comma") })
+                    if (model.live.source == LiveSource.COMMA) {
+                        AssistChip(onClick = { showComma = true }, label = { Text("comma") })
+                        if (model.live.commaDashKit?.build?.isNotEmpty() == true) AssistChip(onClick = { showFirmware = true }, label = { Text("DashKit") })
+                    }
                 }
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)

@@ -16,8 +16,9 @@ import java.util.concurrent.Executors
 /**
  * Reads candump lines from a TCP port, as dashkitd on the comma serves the DashKit's chassis bus ([PORT]): the bus the
  * comma's harness doesn't reach, stamped with the comma's monotonic clock like its own `can` events, so the two line up.
+ * It also passes the DashKit's status lines on as "(<time>) diag dashkit <line>": they go to [status].
  */
-class CandumpStream(private val host: String, private val port: Int = PORT, private val silenceMs: Int = SILENCE_MS) : Closeable {
+class CandumpStream(private val host: String, private val port: Int = PORT, private val silenceMs: Int = SILENCE_MS, private val status: DashKitStatus? = null) : Closeable {
     private val socket = Socket()
 
     /** Blocks until [close], the sink says stop, or the connection ends or says nothing for [silenceMs] (IOException). */
@@ -28,7 +29,9 @@ class CandumpStream(private val host: String, private val port: Int = PORT, priv
         val lines = LineReader(socket.getInputStream())
         while (true) {
             val line = try { lines.readLine() } catch (e: SocketTimeoutException) { throw IOException("$host:$port sent nothing for ${silenceMs / 1000.0} s") } ?: return
-            if (!LogReader.candump(line, buffer, sink)) throw IOException("stopped")
+            val note = line.indexOf(DASHKIT_NOTE)
+            if (note > 0) status?.read(line.substring(note + DASHKIT_NOTE.length))
+            else if (!LogReader.candump(line, buffer, sink)) throw IOException("stopped")
         }
     }
 
@@ -36,6 +39,7 @@ class CandumpStream(private val host: String, private val port: Int = PORT, priv
 
     companion object {
         const val PORT = 62401
+        private const val DASHKIT_NOTE = ") diag dashkit "
     }
 }
 
