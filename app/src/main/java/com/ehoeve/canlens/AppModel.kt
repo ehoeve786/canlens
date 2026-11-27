@@ -205,7 +205,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     fun exportFrames(uri: Uri, csv: Boolean, window: Boolean) {
         val filter = runCatching { Filter.compile(trace.filter, store.messages) { dbc.decoder(it.bus, it.id) } }.getOrNull()
         val (from, to) = markWindow(window)
-        export(uri) { out -> "${Export.frames(store, store.RowScan(filter).update(), from, to, csv, out)} frames saved" }
+        // a candump log compressed and with the markers, as a recording is: what Open reads back
+        export(uri, zstd = !csv) { out -> "${Export.frames(store, store.RowScan(filter).update(), from, to, csv, out, trace.markers.map { it.time to it.note })} frames saved" }
     }
 
     /** Writes the plotted signals' decoded values, optionally only between marks A and B. */
@@ -230,10 +231,13 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         return if (only && a != null && b != null) minOf(a, b) to maxOf(a, b) else Int.MIN_VALUE to Int.MAX_VALUE
     }
 
-    private fun export(uri: Uri, write: (Appendable) -> String) {
+    private fun export(uri: Uri, zstd: Boolean = false, write: (Appendable) -> String) {
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) {
-                runCatching { (context.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("can't write there")).bufferedWriter(Charsets.US_ASCII).use(write) }
+                runCatching {
+                    val stream = context.contentResolver.openOutputStream(uri, "wt") ?: throw IOException("can't write there")
+                    (if (zstd) com.github.luben.zstd.ZstdOutputStream(stream) else stream).bufferedWriter(Charsets.US_ASCII).use(write)
+                }
             }
             status = result.getOrElse { "Not saved: ${it.message ?: it.javaClass.simpleName}" }
         }

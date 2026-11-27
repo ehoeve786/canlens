@@ -5,11 +5,22 @@ object Export {
     /**
      * The frames of [rows] between [fromTime] and [toTime]: candump lines stamped with the source's own clock, or with
      * [csv] a `time,addr,bus,data` table (Cabana's layout) in seconds since the start. Returns how many were written.
+     * A candump log also gets [markers] (store time, note; in time order) as notes, read back as markers, as a recording's are.
      */
-    fun frames(store: FrameStore, rows: FrameStore.Rows, fromTime: Int, toTime: Int, csv: Boolean, out: Appendable): Int {
+    fun frames(store: FrameStore, rows: FrameStore.Rows, fromTime: Int, toTime: Int, csv: Boolean, out: Appendable, markers: List<Pair<Int, String>> = emptyList()): Int {
         val messages = store.messages
         val line = StringBuilder(200)
         if (csv) out.append("time,addr,bus,data\n")
+        val notes = if (csv) emptyList() else markers.filter { it.first in fromTime..toTime }
+        var note = 0
+        fun notesUpTo(time: Int) {
+            while (note < notes.size && notes[note].first <= time) {
+                line.setLength(0)
+                line.appendMarker(store.originMicros + notes[note].first * FrameStore.MICROS_PER_TICK, notes[note].second)
+                out.append(line)
+                note++
+            }
+        }
         var written = 0
         for (row in 0 until rows.size) {
             val position = rows.position(row)
@@ -19,6 +30,7 @@ object Export {
             if (time < fromTime || time > toTime) continue
             val message = messages.getOrNull(chunk.message[index].toInt() and 0xFFFF) ?: continue
             val start = chunk.start(index)
+            notesUpTo(time)
             line.setLength(0)
             if (csv) {
                 line.appendSeconds(time * FrameStore.MICROS_PER_TICK).append(",0x").append(Integer.toHexString(message.id)).append(',').append(message.bus).append(",0x")
@@ -28,6 +40,7 @@ object Export {
             out.append(line)
             written++
         }
+        notesUpTo(Int.MAX_VALUE)
         return written
     }
 

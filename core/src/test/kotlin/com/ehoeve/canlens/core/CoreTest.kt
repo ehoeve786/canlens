@@ -137,6 +137,17 @@ class CoreTest {
         assertEquals(listOf(1 to listOf(1234, -150, 50, -123), 2 to listOf(40, 55, 250, 500), 3 to listOf(1 or 4 or 16 or (2 shl 8) or (1 shl 12), 2500, 0, 0)), got)
     }
 
+    @Test fun savedLogKeepsTheMarkers() {
+        val store = FrameStore()
+        for (i in 0 until 5) store.frame(1_000_000L + i * 1_000_000L, 0, 0x100, byteArrayOf(i.toByte()), 0, 1)
+        val out = StringBuilder()
+        assertEquals(5, Export.frames(store, store.RowScan(null).update(), Int.MIN_VALUE, Int.MAX_VALUE, false, out, listOf(15_000 to "door open", 99_999 to "after")))
+        val marks = ArrayList<Pair<Long, String>>()
+        LogReader.read(out.toString().byteInputStream(), { _, _, _, _, _, _ -> true }) { t, note -> marks += t to note }
+        assertEquals(listOf(2_500_000L to "door open", 10_999_900L to "after"), marks)
+        assertTrue(out.indexOf("# marker") > out.indexOf("(2.000000)") && out.indexOf("# marker") < out.indexOf("(3.000000)"))
+    }
+
     @Test fun candumpWithDashPilotDiagnosticsAndCanFd() {
         val (format, frames) = read(
             "(1795462824.051000) can1 103#22B388068E462132\n" +
