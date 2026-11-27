@@ -231,7 +231,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
     var naming by remember { mutableStateOf<Int?>(null) }
     naming?.let { number ->
         val at = events[number]?.first()?.at
-        var name by remember(number) { mutableStateOf(hints[number].orEmpty()) }
+        var name by remember(number) { mutableStateOf("") }
         if (at == null) naming = null else AlertDialog(
             onDismissRequest = { naming = null },
             title = { Text("Event $number at %.1f s".format(seconds(at))) },

@@ -32,7 +32,7 @@ import kotlin.concurrent.thread
  * - /changed?from=&to=: the rarely-changing named signals that changed in that stretch, rarest first
  * - /plot?list=: a plot list (`bus:id:signal`, `@seconds=note`), plotted and marked on the screen
  * - /stats: the comma's and the DashKit's stats and latest log lines, when streaming from them
- * - /name?event=1&name=DRIVER_OUT: names an event's fields (E1_FLAG_0 becomes DRIVER_OUT_0), as its chip in Decode does
+ * - /name?event=1&name=driver out: names an event's fields as the DBCs do (VCFRONT_driverOut), as its chip in Decode does
  */
 class LocalApi(private val model: AppModel, private val context: Context, preferences: android.content.SharedPreferences) {
     @Volatile private var server: ServerSocket? = null

@@ -218,14 +218,22 @@ class SignalState(
     }
 
     /**
-     * Names every field of event [number] after what happened then (PLUG_IN_14), and lists them with the named ones.
+     * Names every field of event [number] after what happened then, as the DBCs name signals: the message's prefix
+     * (UI_, VCFRONT_; none for a message they don't have) and the words in camelCase, so "weather update" in a UI_
+     * message is UI_weatherUpdate; the start bit is added only where the event has two fields in one message.
+     * Lists them with the named ones.
      */
     fun nameEvent(number: Int, name: String) {
-        val clean = name.trim().uppercase().replace(Regex("\\W+"), "_").trim('_')
-        if (clean.isEmpty()) return
+        val words = name.split(Regex("[^A-Za-z0-9]+")).filter { it.isNotEmpty() }.map { if (it == it.uppercase()) it.lowercase() else it }
+        if (words.isEmpty()) return
+        val fields = autoResults.filter { it.signal.name.startsWith("E${number}_") }
         autoResults = autoResults.map { s ->
-            if (!s.signal.name.startsWith("E${number}_")) s
-            else Suggestion(s.message, s.signal.renamed("${clean}_${s.signal.start}"), s.evidence, NAMED, at = s.at)
+            if (s !in fields) return@map s
+            val prefix = dbc.decoder(s.message.bus, s.message.id)?.signals?.firstNotNullOfOrNull { it.name.substringBefore('_', "").ifEmpty { null } }
+            val own = if (prefix != null && words.size > 1 && words[0].equals(prefix, true)) words.drop(1) else words
+            val camel = own[0].replaceFirstChar(Char::lowercaseChar) + own.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
+            val twin = fields.count { it.message === s.message } > 1
+            Suggestion(s.message, s.signal.renamed(prefix?.let { "${it}_" }.orEmpty() + camel + if (twin) s.signal.start.toString() else ""), s.evidence, NAMED, at = s.at)
         }
     }
 
