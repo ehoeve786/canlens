@@ -162,7 +162,11 @@ fun TraceScreen(model: AppModel, selected: FrameStore.Message?, onSelect: (Frame
                 isError = compiled.isFailure,
                 supportingText = {
                     val error = compiled.exceptionOrNull()?.message
-                    if (error != null || !trace.fixed) Text(error ?: why ?: "${shown?.size ?: 0} of ${store.frameCount} frames")
+                    // what memory holds (a long live stream drops its oldest), and with a filter how many of those it lets through
+                    val held = store.chunks.sumOf { it.size.toLong() }
+                    val dropped = store.frameCount - held
+                    if (error != null || !trace.fixed) Text(error ?: why ?: ((if (trace.filter.isBlank()) "%,d frames".format(held) else "%,d of %,d frames".format(shown?.size ?: 0, held)) +
+                        if (dropped > 0) " · the oldest %,d no longer held".format(dropped) else ""))
                     // Fixed has each message as it stood at the cursor: early in a log that is only the few that had sent by then
                     else Row {
                         Text("${latest.size} of ${messages.size} messages" + if (following) "" else ", as they stood at %.2f s".format(seconds(cursor)))
