@@ -35,13 +35,18 @@ import kotlin.concurrent.thread
  */
 class LocalApi(private val model: AppModel, private val context: Context, preferences: android.content.SharedPreferences) {
     @Volatile private var server: ServerSocket? = null
+    @Volatile private var stopped = false
     private val token = preferences.getString("apiToken", null) ?: ByteArray(16).also { SecureRandom().nextBytes(it) }
         .joinToString("") { "%02x".format(it) }.also { preferences.edit().putString("apiToken", it).apply() }
 
     fun start() {
-        val server = runCatching { ServerSocket(PORT, 8, InetAddress.getLoopbackAddress()) }.getOrNull() ?: return
-        this.server = server
         thread(isDaemon = true, name = "canlens-api") {
+            // the screen's model of a reopened app starts before the old one lets the port go: tried again until it does
+            var bound: ServerSocket? = null
+            while (bound == null && !stopped) bound = runCatching { ServerSocket(PORT, 8, InetAddress.getLoopbackAddress()) }.getOrElse { Thread.sleep(1000); null }
+            val server = bound ?: return@thread
+            this.server = server
+            if (stopped) { server.close(); return@thread }
             runCatching { publishToken() }
             while (true) {
                 val socket = try { server.accept() } catch (e: IOException) { return@thread }
@@ -66,7 +71,7 @@ class LocalApi(private val model: AppModel, private val context: Context, prefer
     }
 
     /** Frees the port for the next model (the app reopened). */
-    fun stop() { runCatching { server?.close() }; server = null }
+    fun stop() { stopped = true; runCatching { server?.close() } }
 
     /** Writes the token to `Download/CANLens/api-token.txt`, over the app's own copy when it has one. */
     private fun publishToken() {
