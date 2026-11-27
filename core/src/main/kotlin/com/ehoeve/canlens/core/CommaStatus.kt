@@ -10,9 +10,10 @@ class CommaStatus {
     @Volatile var device = ""; private set
     @Volatile var buses = ""; private set
     @Volatile var processes = ""; private set
-    private val log = ArrayDeque<String>()
+    private class Entry(val line: String, var count: Int)
+    private val log = ArrayDeque<Entry>()
     @Volatile var logLines = 0L; private set
-    fun log(): List<String> = synchronized(log) { log.toList() }
+    fun log(): List<String> = synchronized(log) { log.map { if (it.count > 1) "${it.line} (×${it.count})" else it.line } }
     /** Called with each new summary or log line, as it would be recorded (no newline). */
     @Volatile var onLine: ((String) -> Unit)? = null
 
@@ -22,14 +23,12 @@ class CommaStatus {
         return true
     }
 
-    private var last = ""
-    private var repeats = 0
-
     private fun add(line: String) {
-        // the same line again (iquploaderd says its queue is empty every second) counts up on the line before
+        // a line seen again among the last few (iquploaderd and raylib take turns every second) counts up and moves to the end
         synchronized(log) {
-            if (line == last && log.isNotEmpty()) log[log.size - 1] = "$line (×${++repeats + 1})"
-            else { last = line; repeats = 0; log.addLast(line); while (log.size > LOG_LINES) log.removeFirst() }
+            val i = (log.size - 1 downTo maxOf(0, log.size - RECENT)).firstOrNull { log[it].line == line }
+            log.addLast(i?.let { log.removeAt(it).apply { count++ } } ?: Entry(line, 1))
+            while (log.size > LOG_LINES) log.removeFirst()
         }
         logLines++
         onLine?.invoke("log $line")
@@ -135,6 +134,8 @@ class CommaStatus {
         /** The services, each on its own bridge port ([CommaStream.cerealPort]). */
         val SERVICES = listOf("deviceState", "pandaStates", "managerState", "logMessage", "errorLogMessage")
         const val LOG_LINES = 500
+        /** How many of the latest lines a repeat is looked for among. */
+        private const val RECENT = 4
         private const val DEVICE_STATE = 5
         private const val LOG_MESSAGE = 17
         private const val MANAGER_STATE = 76

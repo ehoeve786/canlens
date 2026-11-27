@@ -1047,6 +1047,9 @@ class CoreTest {
         repeat(3) { status.javaClass.getDeclaredMethod("add", String::class.java).apply { isAccessible = true }.invoke(status, CommaStatus.logLine(again, false)) }
         assertEquals("INFO a: x (×3)", status.log().last())
         assertEquals(2, status.log().size)
+        val add = status.javaClass.getDeclaredMethod("add", String::class.java).apply { isAccessible = true }
+        for (line in listOf("y", "x2", "y", "x2", "y")) add.invoke(status, line)
+        assertEquals(listOf("x2 (×2)", "y (×3)"), status.log().takeLast(2))
         val info = """{"msg": {"event": "iquploaderd.queue_filled", "queued": 0}, "ctx": {}, "level": "INFO", "levelnum": 20, "name": "swaglog", "filename": "iquploaderd.py", "lineno": 963}"""
         assertEquals("""INFO iquploaderd: {"event": "iquploaderd.queue_filled", "queued": 0}""", CommaStatus.logLine(info, false))
         val debug = """{"msg": "\u001b[32mui\u001b[0m", "ctx": {"daemon": "manager"}, "level": "DEBUG", "filename": "manager.py"}"""
