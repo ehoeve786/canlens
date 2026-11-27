@@ -453,6 +453,8 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     if (showCamera) CameraReader(model) { showCamera = false }
     var showFirmware by remember { mutableStateOf(false) }
     if (showFirmware) FirmwareSheet(model) { showFirmware = false }
+    var showComma by remember { mutableStateOf(false) }
+    if (showComma) CommaSheet(model) { showComma = false }
     if (showGuided) ModalBottomSheet(onDismissRequest = { showGuided = false }) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("Guided test", style = MaterialTheme.typography.titleLarge)
@@ -490,7 +492,8 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
                     else AssistChip(onClick = { showGuided = true }, label = { Text("Guided test") })
                     // a number on the car's screen, read by the camera as the stream comes in
                     AssistChip(onClick = { showCamera = true }, label = { Text("Read the screen") })
-                    if (model.live.source == LiveSource.DASHKIT_WIFI) AssistChip(onClick = { showFirmware = true }, label = { Text("Firmware") })
+                    if (model.live.source == LiveSource.DASHKIT_WIFI || model.live.source == LiveSource.DASHKIT) AssistChip(onClick = { showFirmware = true }, label = { Text("Firmware") })
+                    if (model.live.source == LiveSource.COMMA) AssistChip(onClick = { showComma = true }, label = { Text("comma") })
                 }
             }
             Slider(cursor, { model.trace.cursor = ticks(it); model.trace.followLive = false }, valueRange = first..last)

@@ -266,7 +266,7 @@ internal object Cereal {
     fun int(b: ByteArray, o: Int) =
         (b[o].toInt() and 0xFF) or (b[o + 1].toInt() and 0xFF shl 8) or (b[o + 2].toInt() and 0xFF shl 16) or (b[o + 3].toInt() shl 24)
 
-    private fun long(b: ByteArray, o: Int) = (int(b, o).toLong() and 0xFFFFFFFFL) or (int(b, o + 4).toLong() shl 32)
+    fun long(b: ByteArray, o: Int) = (int(b, o).toLong() and 0xFFFFFFFFL) or (int(b, o + 4).toLong() shl 32)
 
     /**
      * Passes the frames of the Event message in [m] (its segments start at [starts], which has one more entry for the
@@ -312,7 +312,7 @@ internal object Cereal {
     }
 
     /** Offset of the pointer that the pointer at [at] stands for (itself unless it is a far pointer); -1 if null or unsupported. */
-    private fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int, end: Int): Int {
+    fun follow(m: ByteArray, starts: IntArray, segments: Int, at: Int, end: Int): Int {
         if (at < 0 || at + 8 > end) throw IndexOutOfBoundsException()
         val p = long(m, at)
         if (p == 0L) return -1

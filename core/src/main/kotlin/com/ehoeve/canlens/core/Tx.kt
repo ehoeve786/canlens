@@ -44,7 +44,11 @@ class DashKitStatus {
     val unhealthy: Boolean get() = buses.any { it == null || it.inTrouble }
 
     /** Takes an "H", "D", "M", "G" or "W" line of the firmware; other lines are left alone. */
+    /** Called with each status line, for a recording of the stream. */
+    @Volatile var onLine: ((String) -> Unit)? = null
+
     fun read(line: String) {
+        onLine?.invoke(line)
         if (line.startsWith("G,")) {
             synchronized(log) { log.addLast(line.substring(2).trimEnd()); if (log.size > LOG_LINES) log.removeFirst() }
             logLines++

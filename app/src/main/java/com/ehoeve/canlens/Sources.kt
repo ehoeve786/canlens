@@ -24,6 +24,7 @@ import com.ehoeve.canlens.core.DeviceClock
 import com.ehoeve.canlens.core.FrameSink
 import com.ehoeve.canlens.core.appendCandump
 import com.ehoeve.canlens.core.appendMarker
+import com.ehoeve.canlens.core.appendNote
 import com.github.luben.zstd.ZstdInputStream
 import com.github.luben.zstd.ZstdOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
@@ -138,6 +139,15 @@ class Recorder(context: Context) : Closeable {
         if (closed) return
         line.setLength(0)
         line.appendMarker(timeMicros, note)
+        try { writer.append(line) } catch (e: IOException) { closed = true }
+    }
+
+    /** What a device said of itself (stats, log lines), at the time it came. */
+    @Synchronized
+    fun note(source: String, text: String) {
+        if (closed) return
+        line.setLength(0)
+        line.appendNote(clock.micros(), source, text)
         try { writer.append(line) } catch (e: IOException) { closed = true }
     }
 

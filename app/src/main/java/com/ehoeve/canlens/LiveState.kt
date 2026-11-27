@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.ehoeve.canlens.core.CandumpStream
 import com.ehoeve.canlens.core.CommaFinder
+import com.ehoeve.canlens.core.CommaStatus
 import com.ehoeve.canlens.core.CommaStream
 import com.ehoeve.canlens.core.FrameSink
 import com.ehoeve.canlens.core.FrameStore
@@ -56,6 +57,8 @@ class LiveState(
     @Volatile var dashKit: DashKitUsb? = null; private set
     /** The DashKit on Wi-Fi while that is the live source: its log and metrics. */
     @Volatile var dashKitWifi: DashKitWifi? = null; private set
+    /** The comma's own stats and log while it is the live source (from its bridge, when that publishes them). */
+    @Volatile var comma: CommaStatus? = null; private set
 
     private var job: Job? = null
     private var connection: Closeable? = null
@@ -87,7 +90,26 @@ class LiveState(
                     if (!done.get()) runCatching { Thread.sleep(2000) }
                 }
             }
-            try { CommaStream(host, port).held(mine).use { it.run(sink) } } finally { done.set(true); chassis.get()?.close() }
+            // its stats and log, a connection per service; a bridge that doesn't publish them just leaves them empty
+            val status = CommaStatus().also { s -> s.onLine = { recorder?.note("comma", it) } }
+            comma = status
+            val services = CommaStatus.SERVICES.map { service ->
+                val current = AtomicReference<CommaStream?>()
+                thread(isDaemon = true) {
+                    while (!done.get()) {
+                        val stream = CommaStream(host, CommaStream.cerealPort(service), 60_000)
+                        current.set(stream)
+                        if (done.get()) { stream.close(); break }
+                        runCatching { stream.run(status::read) }
+                        if (!done.get()) runCatching { Thread.sleep(10_000) }   // a bridge without it: no busy retrying
+                    }
+                }
+                current
+            }
+            try { CommaStream(host, port).held(mine).use { it.run(sink) } } finally {
+                done.set(true); chassis.get()?.close(); services.forEach { it.get()?.close() }
+                if (comma === status) comma = null
+            }
         }
     }
 
@@ -105,6 +127,7 @@ class LiveState(
     fun startDashKit() = start(LiveSource.DASHKIT, "DashKit USB") { sink, mine ->
         // published as the transmit link only once the port is ours, and taken back when the stream ends
         DashKitUsb(context).held(mine).use { usb ->
+            usb.status.onLine = { recorder?.note("dashkit", it) }
             try { usb.run(sink) { if (mine == generation) dashKit = usb } } finally { if (dashKit === usb) dashKit = null }
         }
     }
@@ -168,6 +191,7 @@ class LiveState(
     /** Over the phone's hotspot: at the address it had last time, else looked for there. */
     fun startDashKitWifi() = start(LiveSource.DASHKIT_WIFI, "DashKit Wi-Fi") { sink, mine ->
         DashKitWifi(findDashKit()).held(mine).use { wifi ->
+            wifi.status.onLine = { recorder?.note("dashkit", it) }
             dashKitWifi = wifi
             try { wifi.run(sink) } finally { if (dashKitWifi === wifi) dashKitWifi = null }
         }

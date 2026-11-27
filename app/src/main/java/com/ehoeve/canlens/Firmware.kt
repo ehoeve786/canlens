@@ -26,12 +26,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
-/** The DashKit's own view over Wi-Fi: its metrics, the transmit counts and the firmware log, refreshed twice a second. */
+/** The DashKit's own view over Wi-Fi or USB: its metrics, the transmit counts and the firmware log, refreshed twice a second. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
     val tick by produceState(0) { while (true) { delay(500); value++ } }
-    val status = model.live.dashKitWifi?.status
+    val status = model.live.dashKitWifi?.status ?: model.live.dashKit?.status
     val lines = remember(tick, status?.logLines) { status?.log().orEmpty() }
     val clipboard = LocalClipboardManager.current
     val list = rememberLazyListState()
@@ -42,7 +42,7 @@ fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
             status?.build?.takeIf { it.isNotEmpty() }?.let { Hint("Built $it") }
             val m = status?.metrics
             Text(
-                if (status == null) "Not connected over Wi-Fi"
+                if (status == null) "Not connected"
                 else if (m == null) "Waiting for the first metrics"
                 else "CPU ${m[0]}% · ${m[1]}%   Wi-Fi ${m[11]} dBm   free ${m[12]} KB\n" +
                     "Bus 0: ${m[2]}% load, ${m[4]} fps   Bus 1: ${m[3]}% load, ${m[5]} fps\n" +
@@ -53,6 +53,33 @@ fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
                 fontFamily = MONO, fontSize = 12.sp, lineHeight = 16.sp,
             )
             Hint("Load counts no stuff bits, so the wire is a little busier. Overflows and drops are totals since the DashKit started.")
+            TextButton(onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) }) { Text("Copy the log (${lines.size} lines)") }
+            LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), state = list) {
+                items(lines) { Text(it, fontFamily = MONO, fontSize = 11.sp, lineHeight = 14.sp) }
+            }
+        }
+    }
+}
+
+/** The comma's own view: CPU, temperatures, memory, its CAN health per bus, processes that stopped, and its log. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun CommaSheet(model: AppModel, onClose: () -> Unit) {
+    val tick by produceState(0) { while (true) { delay(500); value++ } }
+    val status = model.live.comma
+    val lines = remember(tick, status?.logLines) { status?.log().orEmpty() }
+    val clipboard = LocalClipboardManager.current
+    val list = rememberLazyListState()
+    LaunchedEffect(lines.size, status?.logLines) { if (lines.isNotEmpty()) list.scrollToItem(lines.size - 1) }
+    ModalBottomSheet(onDismissRequest = onClose, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
+        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("comma", style = MaterialTheme.typography.titleLarge)
+            Text(
+                if (status == null) "Not connected to the comma"
+                else listOf(status.device, status.buses, status.processes).filter { it.isNotEmpty() }.joinToString("\n")
+                    .ifEmpty { "Nothing yet: its bridge has to publish deviceState, pandaStates, managerState and the log" },
+                fontFamily = MONO, fontSize = 12.sp, lineHeight = 16.sp,
+            )
             TextButton(onClick = { clipboard.setText(AnnotatedString(lines.joinToString("\n"))) }) { Text("Copy the log (${lines.size} lines)") }
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 480.dp), state = list) {
                 items(lines) { Text(it, fontFamily = MONO, fontSize = 11.sp, lineHeight = 14.sp) }

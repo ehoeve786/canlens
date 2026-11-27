@@ -106,19 +106,22 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
     private val socket = Socket()
 
     /** Blocks until [close] or an error; throws IOException when the connection fails, ends or says nothing for [silenceMs]. */
-    fun run(sink: FrameSink) {
+    fun run(sink: FrameSink) = run { m, starts, segments -> Cereal.canFrames(m, starts, segments, sink) }
+
+    /** The same for any service: [event] gets each Event message (its segments start at [starts]); false stops. */
+    fun run(event: (ByteArray, IntArray, Int) -> Boolean) {
         socket.connect(InetSocketAddress(host, port), 5000)
         socket.tcpNoDelay = true
         socket.soTimeout = silenceMs
         try {
-            stream(sink)
+            stream(event)
         } catch (e: SocketTimeoutException) {
-            // the `can` service publishes many times a second: a link this quiet is taken as gone
+            // the `can` service publishes many times a second: a link this quiet is taken as gone (the others reconnect)
             throw IOException("$host:$port sent nothing for ${silenceMs / 1000.0} s")
         }
     }
 
-    private fun stream(sink: FrameSink) {
+    private fun stream(event: (ByteArray, IntArray, Int) -> Boolean) {
         val out = socket.getOutputStream()
         val input = DataInputStream(socket.getInputStream().buffered(1 shl 16))
         // greeting: signature, version 3.0, mechanism NULL, not a server
@@ -161,7 +164,7 @@ class CommaStream(private val host: String, private val port: Int = cerealPort("
             for (s in 0 until segments) { starts[s] = at.toInt(); at += (Cereal.int(message, 4 + 4 * s).toLong() and 0xFFFFFFFFL) * 8; if (at > size) break }
             if (at > size) continue
             starts[segments] = at.toInt()
-            if (!Cereal.canFrames(message, starts, segments, sink)) return
+            if (!event(message, starts, segments)) return
         }
     }
 
@@ -309,6 +312,11 @@ const val MARKER_PREFIX = "# marker ("
 
 fun StringBuilder.appendMarker(timeMicros: Long, note: String) {
     append(MARKER_PREFIX).appendSeconds(timeMicros).append(") ").append(note.replace('\n', ' ').replace('\r', ' ')).append('\n')
+}
+
+/** Appends what a device said of itself ([source]: "comma", "dashkit") at [timeMicros]; [LogReader] skips such "diag" lines. */
+fun StringBuilder.appendNote(timeMicros: Long, source: String, text: String) {
+    append('(').appendSeconds(timeMicros).append(") diag ").append(source).append(' ').append(text.replace('\n', ' ').replace('\r', ' ')).append('\n')
 }
 
 /** Appends one frame in candump's log format, the one DashPilot records and [LogReader] reads back; over 8 bytes, CAN FD's `id##<flags><data>`. */
