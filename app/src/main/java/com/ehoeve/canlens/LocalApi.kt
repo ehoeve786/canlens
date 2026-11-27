@@ -19,10 +19,10 @@ import kotlin.concurrent.thread
 
 /**
  * What is open in CANLens, for an assistant working through the owner's own Termux (PocketPilot's termux_run):
- * HTTP on 127.0.0.1:[PORT], nothing reachable from the network, answered only with the token CANLens keeps in
+ * HTTP on the loopback address, which on Android is [::1]:[PORT] (IPv6), nothing reachable from the network, answered only with the token CANLens keeps in
  * `Download/CANLens/api-token.txt` (an app can't reach another's Unix socket, so the token stands in for who asks:
  * apps that may read Downloads could read the logs there anyway). With curl:
- * `curl -s "http://127.0.0.1:62403/status?t=$(cat /sdcard/Download/CANLens/api-token*.txt)"`.
+ * `curl -s "http://[::1]:62403/status?t=$(cat /sdcard/Download/CANLens/api-token.txt)"`.
  * GET only; JSON back; times in seconds of the timeline.
  *
  * - /status: frames, messages, span, source, cursor, markers, what is plotted
