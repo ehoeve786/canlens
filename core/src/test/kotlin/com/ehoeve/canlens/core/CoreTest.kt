@@ -1112,6 +1112,8 @@ class CoreTest {
         val cpp = """{"created": 1.5, "ctx": {"daemon": "loggerd"}, "filename": "iqpilot/system/loggerd/loggerd.cc", "levelnum": 30, "lineno": 56, "msg": "rotated to /data/x \"4\""}"""
         assertEquals("WARNING loggerd: rotated to /data/x \"4\"", CommaStatus.logLine(cpp, false))
         assertEquals(null, CommaStatus.logLine(cpp.replace("\"levelnum\": 30", "\"levelnum\": 10"), false))
+        assertEquals(null, CommaStatus.logLine("""{"msg": "raylib: TEXTURE: [ID 23] Texture loaded successfully", "ctx": {}, "level": "INFO", "filename": "application.py"}""", false))
+        assertEquals("WARNING application: raylib: SHADER failed", CommaStatus.logLine("""{"msg": "raylib: SHADER failed", "ctx": {}, "level": "WARNING", "filename": "application.py"}""", false))
         val slc = """{"msg": "SLC debug: mode=1", "ctx": {}, "level": "INFO", "filename": "slc_vcruise.py"}"""
         assertEquals("INFO slc_vcruise: SLC debug: mode=1", CommaStatus.logLine(slc, false))
     }

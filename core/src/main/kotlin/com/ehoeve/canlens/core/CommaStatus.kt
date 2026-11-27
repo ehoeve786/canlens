@@ -148,6 +148,8 @@ class CommaStatus {
                 ?: if (error) "ERROR" else ""
             if (level == "DEBUG") return null
             val msg = MSG_TEXT.find(line)?.groupValues?.get(1)?.replace("\\\"", "\"") ?: MSG_OBJECT.find(line)?.groupValues?.get(1) ?: line
+            // the UI's graphics library telling of every icon it loads (dozens at each start): left out unless a warning
+            if (level == "INFO" && msg.startsWith("raylib:")) return null
             val file = FILE.find(line)?.groupValues?.get(1)?.substringAfterLast('/')?.substringBeforeLast('.')?.let { "$it:" }.orEmpty()
             return listOf(level, file, msg).filter { it.isNotEmpty() }.joinToString(" ").replace(ANSI, "")
         }
