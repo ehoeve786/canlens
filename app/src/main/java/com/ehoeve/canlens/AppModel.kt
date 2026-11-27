@@ -259,7 +259,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * Plots the fields of an event (Decode's suggestions, not in a DBC yet) in place of what was plotted, around its
-     * moment, with the cursor on it.
+     * moment, with the cursor on it; then the named signals that changed within a second of it (openpilot's bus 8
+     * among them), which say what the event was. Only ones that change rarely: a door or a gear, not a speed or a
+     * counter, which change at any moment. The rarest first, at most [EVENT_NAMED].
      */
     fun plotEvent(fields: List<Suggestion>) {
         val at = fields.firstOrNull()?.at ?: return
@@ -273,6 +275,20 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         trace.cursor = at
         trace.followLive = false
         plot.view.show(seconds(at) - 10, seconds(at) + 10)
+        val second = FrameStore.TICKS_PER_SECOND.toInt()
+        viewModelScope.launch {
+            val named = withContext(Dispatchers.Default) {
+                store.bitActivity(at - second, at + second).filterNotNull().flatMap { a ->
+                    val decoder = if (a.message.bus >= 128) null else dbc.decoder(a.message.bus, a.message.id)
+                    decoder?.signals.orEmpty().mapNotNull { s ->
+                        val changes = s.bits.sumOf { if (it < a.inside.size) a.outside[it] + a.inside[it] else 0 }
+                        val moved = s.bits.any { it < a.inside.size && a.inside[it] > 0 }
+                        if (moved && changes * 20 < a.message.count) PlotKey(a.message.bus, a.message.id, s.name) to changes else null
+                    }
+                }.sortedBy { it.second }.take(EVENT_NAMED).map { it.first }
+            }
+            if (trace.cursor == at) plot.keys += named.filter { it !in plot.keys }
+        }
     }
 
     /** What the number the camera reads off the car's screen is ("range"). */
@@ -340,6 +356,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     companion object {
         /** A merged recording's buses are numbered from here: bus 1 of the first merged log is bus 11. */
         const val MERGED_BUS = 10
+        /** Named signals an event's plot adds next to its fields. */
+        private const val EVENT_NAMED = 12
         private const val DAY_MICROS = 86_400_000_000L
 
         /** Compares names with their numbers as numbers. */
