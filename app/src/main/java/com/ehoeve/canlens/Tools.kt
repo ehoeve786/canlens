@@ -50,6 +50,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -220,16 +223,22 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
     }
     // events: fields that changed together at one moment, by their number, to look at and name as one
     val events = all.filter { it.at != null }.groupBy { EVENT.find(it.signal.name)?.groupValues?.get(1)?.toInt() ?: 0 }.filterKeys { it > 0 }.toSortedMap()
+    // what each event most likely was: the rarest named signal that changed with it (bus 8's gear, doors, belt…)
+    val hints by produceState(emptyMap<Int, String?>(), events.keys.toList(), events.values.map { it[0].at }) {
+        val numbers = events.keys.toList()
+        value = withContext(Dispatchers.Default) { numbers.zip(model.namedAt(numbers.map { events[it]!![0].at!! }.toIntArray())).toMap() }
+    }
     var naming by remember { mutableStateOf<Int?>(null) }
     naming?.let { number ->
         val at = events[number]?.first()?.at
-        var name by remember(number) { mutableStateOf("") }
+        var name by remember(number) { mutableStateOf(hints[number].orEmpty()) }
         if (at == null) naming = null else AlertDialog(
             onDismissRequest = { naming = null },
             title = { Text("Event $number at %.1f s".format(seconds(at))) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Hint("${events[number]!!.size} fields changed here and hardly ever else. Plot them to see what happened; name it and they are all listed under that name, ticked.")
+                    hints[number]?.let { Hint("$it changed within half a second of them, and rarely otherwise: likely what this was. Check it on the plot.") }
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("What happened") }, placeholder = { Text("plug in") })
                     // not something done in the car (a module's log entry, a wake-up): gone, also from later decodes
                     TextButton(onClick = { model.signals.reject(events[number]!!); naming = null }) { Text("Reject this event") }
@@ -288,7 +297,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                         label = { Text(if (ticked.size == shown.size) "Untick all" else "Tick all") })
                 }
                 if (events.isNotEmpty() || model.signals.rejectedCount > 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((number, fields) in events) AssistChip(onClick = { naming = number }, label = { Text("E$number · ${fields.size} fields · %.0f s".format(seconds(fields[0].at!!))) })
+                    for ((number, fields) in events) AssistChip(onClick = { naming = number }, label = { Text("E$number · ${fields.size} fields · %.0f s".format(seconds(fields[0].at!!)) + hints[number]?.let { " · $it" }.orEmpty()) })
                     // turned down before: they stay away until asked back
                     if (model.signals.rejectedCount > 0) AssistChip(enabled = !model.signals.decoding, onClick = { model.signals.restoreRejected() }, label = { Text("Bring back ${model.signals.rejectedCount} rejected") })
                 }

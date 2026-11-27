@@ -294,6 +294,30 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * For each moment in [times] (ascending), the rarest named signal (openpilot's bus 8 among them) that changed within
+     * half a second of it, or null: what an event most likely was. One pass for all of them.
+     */
+    fun namedAt(times: IntArray): List<String?> {
+        val half = FrameStore.TICKS_PER_SECOND.toInt() / 2
+        val (total, windows) = store.windowFlips(IntArray(times.size) { times[it] - half }, 2 * half)
+        val best = arrayOfNulls<Pair<String, Int>>(times.size)
+        for (message in store.messages) {
+            if (message.bus >= 128) continue
+            val inWindows = windows.getOrNull(message.index) ?: continue
+            val all = total.getOrNull(message.index) ?: continue
+            for (s in dbc.decoder(message.bus, message.id)?.signals ?: continue) {
+                val changes = s.bits.sumOf { if (it < all.size) all[it] else 0 }
+                if (changes == 0 || changes * 20 >= message.count) continue
+                for (w in times.indices) {
+                    val counts = inWindows[w] ?: continue
+                    if (s.bits.any { it < counts.size && counts[it] > 0 } && changes < (best[w]?.second ?: Int.MAX_VALUE)) best[w] = s.name to changes
+                }
+            }
+        }
+        return best.map { it?.first }
+    }
+
+    /**
      * The named signals (openpilot's bus 8 among them) that changed between [from] and [to], with how often they
      * changed in the whole log: only rare ones (a door, a gear; not a speed or a counter), the rarest first. One pass.
      */
