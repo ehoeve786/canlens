@@ -33,7 +33,7 @@ import kotlin.concurrent.thread
  * - /plot?list=: a plot list (`bus:id:signal`, `@seconds=note`), plotted and marked on the screen
  * - /stats: the comma's and the DashKit's stats and latest log lines, when streaming from them
  * - /rename?key=bus:id:signal&name=VCSEC_driverPresent[&values=1:IN,0:OUT]: renames one signal, a DBC's or one of
- *   Decode's suggestions, with value names if given
+ *   Decode's suggestions, with value names if given; /rename?message=bus:id&name=UNK_26D renames a message
  * - /name?event=1&name=driver out: names an event's fields as the DBCs do (VCFRONT_driverOut), as its chip in Decode does
  */
 class LocalApi(private val model: AppModel, private val context: Context, preferences: android.content.SharedPreferences) {
@@ -161,6 +161,13 @@ class LocalApi(private val model: AppModel, private val context: Context, prefer
                 JSONObject().put("named", count)
             }
             "/rename" -> {
+                query["message"]?.let { m ->
+                    val name = query["name"].orEmpty()
+                    if (!Regex("[A-Za-z_]\\w*").matches(name)) throw IOException("name: letters, digits and _, not starting with a digit")
+                    val message = store.messages.firstOrNull { "${it.bus}:${hexId(it.id)}".equals(m, true) } ?: throw IOException("$m: message not in the open data")
+                    runBlocking(Dispatchers.Main) { model.dbc.renameMessage(message, name) }
+                    return JSONObject().put("renamed", "$m $name").toString()
+                }
                 val k = model.plotList(query["key"].orEmpty())?.first?.singleOrNull() ?: throw IOException("key=bus:id:signal wanted")
                 val name = query["name"].orEmpty()
                 if (!Regex("[A-Za-z_]\\w*").matches(name)) throw IOException("name: letters, digits and _, not starting with a digit")
