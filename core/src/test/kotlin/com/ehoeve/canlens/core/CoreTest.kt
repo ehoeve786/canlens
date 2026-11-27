@@ -453,6 +453,10 @@ class CoreTest {
         val fitting = AutoDecode.fromCommunity(still, { null }, listOf("model3dbc" to community))
         assertEquals(2, fitting.size)
         assertTrue(fitting.all { it.confidence >= 0.7 })
+        val paged = FrameStore()
+        for (i in 0 until 200) paged.frame(i * 20_000L, 2, 0x757, byteArrayOf(2, i.toByte()), 0, 2)
+        val debug = Dbc.parse("BO_ 1879 DIF_debug: 2 X\n SG_ sel M : 0|8@1+ (1,0) [0|0] \"\" X\n SG_ seen m2 : 8|8@1+ (1,0) [0|0] \"\" X\n SG_ unseen m42 : 8|8@1+ (1,0) [0|0] \"\" X\n", "c")
+        assertEquals(listOf("sel", "seen"), AutoDecode.fromCommunity(paged, { null }, listOf("model3dbc" to debug)).map { it.signal.name })
     }
 
     @Test fun keepsSignalStatusesInTheFile() {

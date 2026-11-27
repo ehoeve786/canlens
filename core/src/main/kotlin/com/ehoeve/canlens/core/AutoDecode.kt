@@ -53,8 +53,10 @@ object AutoDecode {
             // that is really part of a counter puts the whole layout in doubt (another model's message under this id)
             val misfits = theirs.signals.filter { it.fits(message.data.size) }.mapNotNull { signal -> misfit(signal, frames)?.let { signal to it } }
             val layout = misfits.firstOrNull { it.second.startsWith("flips") }
+            // a page the selector never shows has nothing to check it against (DIF_debug: a hundred signals, one page sent)
+            val pages = theirs.multiplexor?.takeIf { it.fits(message.data.size) }?.let { mux -> (0 until frames.size).mapTo(HashSet()) { mux.raw(frames.data, it * frames.length).toInt() } }
             for (signal in theirs.signals) {
-                if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.signal.name == signal.name }) continue
+                if (!signal.fits(message.data.size) || signal.bits.any { it in taken } || result.any { it.signal.name == signal.name } || signal.muxValue >= 0 && pages != null && signal.muxValue !in pages) continue
                 val why = misfits.firstOrNull { it.first === signal }?.second ?: layout?.let { "${it.first.name} ${it.second}, so this layout is not this car's" }
                 result += Suggestion(message, signal, "From $source ($name)" + (why?.let { " · doesn't fit: $it" } ?: ""), if (why == null) 0.75 else 0.3, name)
                 answered = true
