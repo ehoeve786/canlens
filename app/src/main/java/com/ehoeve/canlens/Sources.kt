@@ -321,7 +321,7 @@ class DashKitUsb(private val context: Context) : TxLink, Closeable {
                 for (i in 0 until n) {
                     val c = chunk[i].toInt().toChar()
                     if (c == '\n') {
-                        if (line.startsWith("A,")) { if (!DashKitLine.parse(line.toString(), time, payload, sink, busClock)) return } else status.read(line.toString())
+                        if (line.startsWith("A,") || line.startsWith("E,")) { if (!DashKitLine.parse(line.toString(), time, payload, sink, busClock)) return } else status.read(line.toString())
                         line.setLength(0)
                     } else if (c != '\r' && line.length < 200) line.append(c)
                 }
@@ -379,7 +379,7 @@ class DashKitWifi(private val host: String) : Closeable {
             if (c == '\n'.code) {
                 val text = line.toString()
                 line.setLength(0)
-                if (text.startsWith("A,")) { if (!DashKitLine.parse(text, clock.micros(), payload, sink, busClock)) throw IOException("stopped") } else status.read(text)
+                if (text.startsWith("A,") || text.startsWith("E,")) { if (!DashKitLine.parse(text, clock.micros(), payload, sink, busClock)) throw IOException("stopped") } else status.read(text)
             } else if (c != '\r'.code && line.length < MAX_LINE) line.append(c.toChar())
         }
     }

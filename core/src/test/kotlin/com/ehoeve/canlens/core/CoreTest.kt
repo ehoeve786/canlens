@@ -1002,4 +1002,19 @@ class CoreTest {
         for (cut in 10 until datagram.size) assertTrue(DashKitLine.parsePacked(datagram, cut, 0, FrameSink { _, _, _, _, _, _ -> true }, DeviceClock()) <= 7)
         assertEquals(-1L, DashKitLine.parsePacked(datagram, datagram.size - 1, 0, sink, DeviceClock()))   // cut short
     }
+
+    @Test fun framesTheDashKitSentComeOnBus128Up() {
+        fun le(v: Long, n: Int) = ByteArray(n) { (v shr (8 * it)).toByte() }
+        val datagram = byteArrayOf('C'.code.toByte()) + le(1, 4) + le(100, 4) +
+            le(1L shl 15 or (14L shl 11) or 0x2F3, 2) + byteArrayOf(0, 2) + bytes("8909") +                           // sent on bus 1
+            le(14L shl 11, 2) + byteArrayOf(5, 0x41) + le(0x18DAF110, 4) + bytes("AA")                                // sent, extended
+        val frames = ArrayList<Frame>()
+        val sink = FrameSink { t, bus, id, d, o, n -> frames += Frame(t, bus, id, d.copyOfRange(o, o + n)); true }
+        assertEquals(1L, DashKitLine.parsePacked(datagram, datagram.size, 0, sink, DeviceClock()))
+        assertEquals(listOf(129 to 0x2F3, 128 to 0x18DAF110), frames.map { it.bus to it.id })
+        assertArrayEquals(bytes("8909"), frames[0].data)
+        frames.clear()
+        assertTrue(DashKitLine.parse("E,0,334,bf3f1408ff0152a3", 7, ByteArray(8), sink))
+        assertEquals(listOf(128 to 0x334), frames.map { it.bus to it.id })
+    }
 }

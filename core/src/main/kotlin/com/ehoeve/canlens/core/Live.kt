@@ -202,8 +202,9 @@ object DashKitLine {
     /**
      * A datagram of packed frames from the DashKit's Wi-Fi link (wifi_link.h, can_manager.c) into [sink]: a tag, its
      * sequence number, the first frame's bus time, then the frames, all little-endian. 'C' (compact): per frame a u16
-     * (bit 15 bus, bits 11-14 length or 15 for extended, bits 0-10 the id), the µs since the frame before (u8, or 255
-     * and a u16), for an extended one its length (u8) and id (u32), then the data. 'B' (firmware before it): a byte
+     * (bit 15 bus, bits 11-14 length, 15 for extended or 14 for one the DashKit sent, bits 0-10 the id), the µs since
+     * the frame before (u8, or 255 and a u16), for an extended one its length (u8), for a sent one its length with
+     * bit 6 for extended (u8), for either extended kind the id (u32), then the data. Sent frames go on bus 128 + bus. 'B' (firmware before it): a byte
      * (bit 7 bus, bit 6 extended, bits 0-3 length), the µs since the first (u16), the id (u16 or u32), the data.
      * Returns the sequence number, -1 when it isn't such a datagram (or is cut short), -2 when the sink said stop.
      */
@@ -222,15 +223,22 @@ object DashKitLine {
                 if (at + 3 > length) return -1
                 val head = u16(at)
                 var size = head shr 11 and 0x0F
-                val extended = size == 15
+                val sent = size == 14
+                var extended = size == 15
                 var next = at + 3
                 var gap = u8(at + 2)
                 if (gap == 255) { if (next + 2 > length) return -1; gap = u16(next); next += 2 }
                 var id = (head and 0x7FF).toLong()
-                if (extended) { if (next + 5 > length) return -1; size = u8(next); id = u32(next + 1); next += 5 }
+                if (sent || extended) {
+                    if (next + 1 > length) return -1
+                    size = u8(next) and 0x0F
+                    extended = extended || u8(next) and 0x40 != 0
+                    next++
+                }
+                if (extended) { if (next + 4 > length) return -1; id = u32(next); next += 4 }
                 if (size > 8 || next + size > length) return -1
                 time = (time + gap) and 0xFFFFFFFFL
-                if (!sink.frame(clock.micros(time, arrival), head shr 15, CanId.of(id, extended), bytes, next, size)) return -2
+                if (!sink.frame(clock.micros(time, arrival), (head shr 15) + if (sent) 128 else 0, CanId.of(id, extended), bytes, next, size)) return -2
                 at = next + size
             } else {
                 val head = u8(at)
@@ -247,14 +255,18 @@ object DashKitLine {
         return sequence
     }
 
-    /** An "A" line into [sink], at the time it came off the bus when the line has one ([clock]), else at [timeMicros]. */
+    /**
+     * An "A" line into [sink], or an "E" line (a frame the DashKit sent) on bus 128 + its bus, at the time it came off
+     * the bus when the line has one ([clock]), else at [timeMicros].
+     */
     fun parse(line: String, timeMicros: Long, buffer: ByteArray, sink: FrameSink, clock: DeviceClock? = null): Boolean {
-        if (!line.startsWith("A,")) return true
+        val sent = line.startsWith("E,")
+        if (!sent && !line.startsWith("A,")) return true
         val c2 = line.indexOf(',', 2)
         val c3 = line.indexOf(',', c2 + 1)
         if (c2 < 0 || c3 < 0) return true
         val c4 = line.indexOf(',', c3 + 1)
-        val bus = line.substring(2, c2).toIntOrNull() ?: return true
+        val bus = (line.substring(2, c2).toIntOrNull() ?: return true) + if (sent) 128 else 0
         val id = line.substring(c2 + 1, c3).toLongOrNull(16)?.takeIf { it <= 0x1FFFFFFF } ?: return true
         val length = LogReader.hex(line, c3 + 1, if (c4 < 0) line.length else c4, buffer)
         val device = if (c4 < 0 || clock == null) null else line.substring(c4 + 1).toLongOrNull(16)
