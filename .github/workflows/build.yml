@@ -45,6 +45,8 @@ jobs:
         with:
           name: canlens-release
           path: app/build/outputs/apk/release/canlens-release.apk
+          # only the release job needs it, minutes later; the APK itself lives on the release
+          retention-days: 1
 
   lint:
     # beside the build, not in its way: it only reports, until the existing warnings are cleared
