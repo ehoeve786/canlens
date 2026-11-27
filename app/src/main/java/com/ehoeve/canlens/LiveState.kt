@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.AtomicReference
 
 enum class LiveSource { NONE, COMMA, DASHKIT, DASHKIT_WIFI }
 
+/** Phone sensor frames waiting for the car's to pass their time: a few seconds of them; older ones go first. */
+private const val MAX_PENDING = 1000
+
 /**
  * The live stream into [store] and its recording. [onStart] runs when a stream begins, after the store was emptied;
  * [onFrames] a few times a second while frames arrive.
@@ -240,6 +243,9 @@ class LiveState(
         LiveService.stop = { stop() }
         LiveService.begin(context)
         report("Connecting to $name")
+        // the phone's sensor frames, in the stream's clock (the phone's time less the measured offset), wait here until the
+        // car's frames pass their time: in order with them and spaced as they were read, though the stream comes in bursts
+        val pending = ArrayDeque<Pair<Long, Pair<Int, ByteArray>>>()
         val sink = FrameSink { time, bus, id, data, offset, length ->
             synchronized(store) {
                 if (mine != generation) return@FrameSink false
@@ -248,16 +254,20 @@ class LiveState(
                 // the time of day of the stream's clock: the least delayed arrival sets it
                 val wall = System.currentTimeMillis() * 1000 - time
                 if (wall < store.wallOffsetMicros) store.wallOffsetMicros = wall
+                while (pending.isNotEmpty() && pending.first().first <= time) {
+                    val (at, frame) = pending.removeFirst()
+                    store.frame(at, PhoneSensors.PHONE_BUS, frame.first, frame.second, 0, frame.second.size)
+                }
                 store.frame(time, bus, id, data, offset, length)
             }
         }
-        // stamped with the stream's clock: the time of its latest frame, so they line up with the car's; only while it
-        // flows, or they would pile up at its last frame (the comma off the hotspot) and the count would climb
+        // only while the stream flows: with no car frames they would only pile up (the comma off the hotspot)
         if (phoneSensors) sensors = PhoneSensors(context) { id, data ->
             synchronized(store) {
-                if (mine == generation && store.frameCount > 0 && System.nanoTime() - streamNanos < 1_000_000_000L) {
+                if (mine == generation && store.wallOffsetMicros != Long.MAX_VALUE && System.nanoTime() - streamNanos < 1_000_000_000L) {
                     recorder?.write(PhoneSensors.PHONE_BUS, id, data, 0, data.size)
-                    store.frame(store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK, PhoneSensors.PHONE_BUS, id, data, 0, data.size)
+                    pending.addLast(System.currentTimeMillis() * 1000 - store.wallOffsetMicros to (id to data))
+                    if (pending.size > MAX_PENDING) pending.removeFirst()
                 }
             }
         }.also { it.start() }
