@@ -22,8 +22,15 @@ class CommaStatus {
         return true
     }
 
+    private var last = ""
+    private var repeats = 0
+
     private fun add(line: String) {
-        synchronized(log) { log.addLast(line); while (log.size > LOG_LINES) log.removeFirst() }
+        // the same line again (iquploaderd says its queue is empty every second) counts up on the line before
+        synchronized(log) {
+            if (line == last && log.isNotEmpty()) log[log.size - 1] = "$line (×${++repeats + 1})"
+            else { last = line; repeats = 0; log.addLast(line); while (log.size > LOG_LINES) log.removeFirst() }
+        }
         logLines++
         onLine?.invoke("log $line")
     }

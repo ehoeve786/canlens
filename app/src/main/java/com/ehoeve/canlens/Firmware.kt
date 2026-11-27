@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
     val tick by produceState(0) { while (true) { delay(500); value++ } }
+    val wifi = model.live.dashKitWifi != null
     val status = model.live.dashKitWifi?.status ?: model.live.dashKit?.status ?: model.live.commaDashKit
     val lines = remember(tick, status?.logLines) { status?.log().orEmpty() }
     val clipboard = LocalClipboardManager.current
@@ -44,10 +45,10 @@ fun FirmwareSheet(model: AppModel, onClose: () -> Unit) {
             Text(
                 if (status == null) "Not connected"
                 else if (m == null) "Waiting for the first metrics"
-                else "CPU ${m[0]}% · ${m[1]}%   Wi-Fi ${m[11]} dBm   free ${m[12]} KB\n" +
+                else "CPU ${m[0]}% · ${m[1]}%   " + (if (wifi) "Wi-Fi ${m[11]} dBm   " else "") + "free ${m[12]} KB\n" +
                     "Bus 0: ${m[2]}% load, ${m[4]} fps   Bus 1: ${m[3]}% load, ${m[5]} fps\n" +
                     "FIFO overflows ${m[6]} · ${m[7]}   dropped: queue ${m[8]}, USB ${m[9]}, Wi-Fi ${m[10]}\n" +
-                    "Datagrams lost on the way ${status.datagramsLost} of ${status.datagrams + status.datagramsLost}\n" +
+                    (if (wifi) "Datagrams lost on the way ${status.datagramsLost} of ${status.datagrams + status.datagramsLost}\n" else "") +
                     "Transmit: sent ${status.sent}, refused ${status.refused}, no safe moment ${status.expired}" +
                     status.buses.withIndex().joinToString("") { (bus, health) -> if (health == null) "" else "\nBus $bus errors: transmit ${health.transmitErrors}, receive ${health.receiveErrors}" },
                 fontFamily = MONO, fontSize = 12.sp, lineHeight = 16.sp,
