@@ -66,6 +66,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
     @Volatile var originMicros = Long.MIN_VALUE; private set
     @Volatile var lastTime = 0; private set
     @Volatile var frameCount = 0L; private set
+    /**
+     * The wall clock (µs since 1970) minus the source's clock, as a live stream measures it when frames arrive: the
+     * least seen, which is the one least delayed on the way. Long.MAX_VALUE when not measured.
+     */
+    @Volatile var wallOffsetMicros = Long.MAX_VALUE
     /** Set when a log did not fit: the frames after the limit were not loaded. */
     @Volatile var truncated = false; private set
     /** Live streams drop their oldest chunk when full; logs stop loading instead. */
@@ -196,7 +201,21 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
     @Synchronized
     fun clear() {
         held = Held(emptyArray(), emptyArray()); byKey.clear(); gaps = emptyMap(); busLast.fill(Int.MIN_VALUE)
-        originMicros = Long.MIN_VALUE; lastTime = 0; frameCount = 0; truncated = false
+        originMicros = Long.MIN_VALUE; lastTime = 0; frameCount = 0; truncated = false; wallOffsetMicros = Long.MAX_VALUE
+    }
+
+    /**
+     * The time of day of [time], in µs since 1970: through [wallOffsetMicros] for a live stream, as it is for a log
+     * stamped with a real clock (a recording, a candump log); null for one that isn't (an rlog: the comma's uptime).
+     */
+    fun wallMicros(time: Int): Long? {
+        if (originMicros == Long.MIN_VALUE) return null
+        val source = originMicros + time * MICROS_PER_TICK
+        return when {
+            wallOffsetMicros != Long.MAX_VALUE -> source + wallOffsetMicros
+            originMicros > EPOCH_2001 -> source
+            else -> null
+        }
     }
 
     /**
@@ -569,6 +588,8 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         const val MAX_PAYLOAD = 64
         const val MICROS_PER_TICK = 100L
         const val TICKS_PER_SECOND = 10_000.0
+        /** A clock past this (µs) counts as a date, not an uptime: no uptime runs 25 years. */
+        private const val EPOCH_2001 = 978_307_200_000_000L
         /** Ticks with no frame on a bus that count as a gap in its data (2 s; the slowest periodic messages come every second). */
         const val GAP_TICKS = 20_000
     }

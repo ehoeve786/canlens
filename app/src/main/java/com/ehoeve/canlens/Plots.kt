@@ -270,7 +270,10 @@ fun PlotsScreen(model: AppModel) {
                 val change = changes.first[index]
                 Surface(onClick = { moveCursor(change.time) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerLow) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("%.2f s".format(change.time), Modifier.width(88.dp), fontFamily = MONO, style = MaterialTheme.typography.bodyMedium)
+                        Column(Modifier.width(88.dp)) {
+                            Text("%.2f s".format(change.time), fontFamily = MONO, style = MaterialTheme.typography.bodyMedium)
+                            store.clock(ticks(change.time))?.let { Text(it, fontFamily = MONO, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
                         Box(Modifier.size(10.dp).clip(CircleShape).background(change.plot.color))
                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
                             Text(change.plot.key.signal, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)

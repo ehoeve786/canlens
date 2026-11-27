@@ -137,6 +137,15 @@ class CoreTest {
         assertEquals(listOf(1 to listOf(1234, -150, 50, -123), 2 to listOf(40, 55, 250, 500), 3 to listOf(1 or 4 or 16 or (2 shl 8) or (1 shl 12), 2500, 0, 0)), got)
     }
 
+    @Test fun timeOfDay() {
+        val uptime = FrameStore().apply { frame(3_000_000L, 0, 1, byteArrayOf(0), 0, 1) }
+        assertEquals(null, uptime.wallMicros(10_000))                                                               // an rlog's uptime clock
+        uptime.wallOffsetMicros = 1_700_000_000_000_000L
+        assertEquals(1_700_000_004_000_000L, uptime.wallMicros(10_000))                                           // live: measured offset, 1 s in
+        val dated = FrameStore().apply { frame(1_700_000_000_000_000L, 0, 1, byteArrayOf(0), 0, 1) }
+        assertEquals(1_700_000_001_000_000L, dated.wallMicros(10_000))                                            // a recording's own clock
+    }
+
     @Test fun savedLogKeepsTheMarkers() {
         val store = FrameStore()
         for (i in 0 until 5) store.frame(1_000_000L + i * 1_000_000L, 0, 0x100, byteArrayOf(i.toByte()), 0, 1)

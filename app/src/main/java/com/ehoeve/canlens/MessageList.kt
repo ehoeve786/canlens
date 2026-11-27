@@ -477,7 +477,10 @@ fun TimeBar(model: AppModel, modifier: Modifier = Modifier) {
     Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)) {
         Column(modifier.padding(horizontal = 16.dp).padding(top = 8.dp)) {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("%.2f s".format(cursor), Modifier.width(92.dp), fontFamily = MONO, style = MaterialTheme.typography.titleMedium)
+                Column(Modifier.width(92.dp)) {
+                    Text("%.2f s".format(cursor), fontFamily = MONO, style = MaterialTheme.typography.titleMedium)
+                    model.store.clock(model.trace.cursorNow)?.let { Text(it, fontFamily = MONO, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                }
                 FilterChip(selected = model.trace.markA != null, onClick = { model.trace.markA = model.trace.cursorNow }, label = { Text(model.trace.markA?.let { "A  %.2f".format(seconds(it)) } ?: "Mark A") })
                 FilterChip(selected = model.trace.markB != null, onClick = { model.trace.markB = model.trace.cursorNow }, label = { Text(model.trace.markB?.let { "B  %.2f".format(seconds(it)) } ?: "Mark B") })
                 if (model.trace.markA != null || model.trace.markB != null) IconButton(onClick = { model.trace.markA = null; model.trace.markB = null }) { Icon(Icons.Default.Close, "Clear marks") }

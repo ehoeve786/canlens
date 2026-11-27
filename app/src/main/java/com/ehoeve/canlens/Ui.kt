@@ -47,12 +47,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ehoeve.canlens.core.FrameStore
 import com.ehoeve.canlens.core.Signal
 import java.util.Locale
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 
 val MONO = FontFamily.Monospace
 
 fun seconds(time: Int) = time / FrameStore.TICKS_PER_SECOND.toFloat()
 /** To the nearest tick: a time that went through [seconds] comes back as the same tick. */
+private val CLOCK = DateTimeFormatter.ofPattern("HH:mm:ss")
+
+/** The time of day of a store [time] ("10:59:22"), or null when the open data has no clock for it. */
+fun FrameStore.clock(time: Int): String? = wallMicros(time)?.let { Instant.ofEpochMilli(it / 1000).atZone(ZoneId.systemDefault()).format(CLOCK) }
+
 fun ticks(seconds: Float): Int = (seconds * FrameStore.TICKS_PER_SECOND).let { if (it.isNaN()) 0 else it.roundToInt() }
 fun hexId(id: Int) = if (id in 0..0x7FF) "%03X".format(id) else "%08X".format(com.ehoeve.canlens.core.CanId.raw(id))
 fun hexBytes(data: ByteArray) = buildString(data.size * 3) { for (b in data) { append("%02X".format(b.toInt() and 0xFF)).append(' ') } }.trimEnd()

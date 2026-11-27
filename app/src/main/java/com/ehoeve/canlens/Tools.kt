@@ -190,7 +190,10 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
             done.forEach { marker ->
                 Surface(onClick = { model.trace.cursor = marker.time; model.trace.followLive = false; onClose() }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(start = 14.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Text("%.2f s".format(seconds(marker.time)), Modifier.width(88.dp), fontFamily = MONO)
+                        Column(Modifier.width(88.dp)) {
+                            Text("%.2f s".format(seconds(marker.time)), fontFamily = MONO)
+                            model.store.clock(marker.time)?.let { Text(it, fontFamily = MONO, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
                         Text(marker.note, Modifier.weight(1f), maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
                         TextButton(onClick = {
                             model.trace.markA = (marker.time - FrameStore.TICKS_PER_SECOND.toInt()).coerceAtLeast(model.store.firstTime)

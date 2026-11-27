@@ -112,6 +112,8 @@ class LocalApi(private val model: AppModel, private val context: Context, prefer
                 .put("frames", store.frameCount).put("messages", store.messages.size)
                 .put("start", seconds(store.firstTime)).put("end", seconds(store.lastTime))
                 .put("source", model.live.source.name).put("cursor", seconds(model.trace.cursorNow))
+                // the time of day of timeline 0 (ms since 1970), when the data has a clock: any time t is this + t s
+                .put("clockAtZeroMs", store.wallMicros(0)?.div(1000) ?: JSONObject.NULL)
                 .put("markers", JSONArray(model.trace.markers.map { JSONObject().put("t", seconds(it.time)).put("note", it.note) }))
                 .put("plotted", JSONArray(model.plot.keys.map(::key)))
             "/messages" -> {

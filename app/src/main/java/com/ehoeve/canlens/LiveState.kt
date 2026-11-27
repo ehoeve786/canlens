@@ -245,6 +245,9 @@ class LiveState(
                 if (mine != generation) return@FrameSink false
                 recorder?.write(bus, id, data, offset, length)
                 streamNanos = System.nanoTime()
+                // the time of day of the stream's clock: the least delayed arrival sets it
+                val wall = System.currentTimeMillis() * 1000 - time
+                if (wall < store.wallOffsetMicros) store.wallOffsetMicros = wall
                 store.frame(time, bus, id, data, offset, length)
             }
         }
