@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -154,7 +155,8 @@ fun PlotsScreen(model: AppModel) {
         }
     }
     var query by remember { mutableStateOf("") }
-    val matches = remember(query, revision, dbcs, plots) { model.signalsMatching(query, 40) }
+    val list = remember(query) { model.plotList(query) }
+    val matches = remember(query, revision, dbcs, plots) { if (list != null) emptyList() else model.signalsMatching(query, 40) }
     val a = model.trace.markA
     val b = model.trace.markB
     val marked = a != null && b != null
@@ -204,7 +206,9 @@ fun PlotsScreen(model: AppModel) {
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     trailingIcon = if (query.isEmpty()) null else ({ IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear search") } }),
                 )
-                if (query.isNotBlank() && matches.isEmpty()) Hint("No signal or message matches. Signals come from the DBC files and Decode's suggestions.", Modifier.padding(top = 6.dp, start = 4.dp))
+                if (list != null) Button(onClick = { model.applyPlotList(list); query = "" }, Modifier.padding(top = 6.dp)) {
+                    Text("Plot ${list.first.size} signals" + if (list.second.isEmpty()) "" else ", mark ${list.second.size} moments")
+                } else if (query.isNotBlank() && matches.isEmpty()) Hint("No signal or message matches. Signals come from the DBC files and Decode's suggestions.", Modifier.padding(top = 6.dp, start = 4.dp))
             }
             items(matches.size, key = { "match:${matches[it].first}" }) { index ->
                 val (key, messageName) = matches[index]

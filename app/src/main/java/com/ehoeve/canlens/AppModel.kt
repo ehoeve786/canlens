@@ -266,15 +266,38 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         return found
     }
 
-    /** Plots [key]: a DBC signal, or one of Decode's suggestions (kept with its message until it is in a DBC). */
-    fun plot(key: PlotKey) {
+    /** Plots [key]: a DBC signal, or one of Decode's suggestions (kept with its message until it is in a DBC). False when neither has it. */
+    fun plot(key: PlotKey): Boolean {
+        if (key in plot.keys) return true
         if (dbc.decoder(key.bus, key.id)?.signals?.none { it.name == key.signal } != false) {
-            val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return
+            val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return false
             // a paged field is read with its message's selector
             val selector = if (s.signal.muxValue < 0) null else signals.autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
             plot.unsaved[key] = DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOfNotNull(selector, s.signal)) to s.signal
         }
         plot.keys += key
+        return true
+    }
+
+    /**
+     * A plot list pasted into a search, as an assistant writes one or as a CSV export names its columns:
+     * `bus:id:signal` (id in hex) is a signal to plot, `@37.4` or `@37.4=note` a moment (seconds) to mark.
+     * Null when [text] holds neither.
+     */
+    fun plotList(text: String): Pair<List<PlotKey>, List<Marker>>? {
+        val keys = PLOT_ITEM.findAll(text).map { PlotKey(it.groupValues[1].toInt(), it.groupValues[2].toLong(16).toInt() and 0x1FFFFFFF, it.groupValues[3]) }.distinct().toList()
+        val marks = MARK_ITEM.findAll(text).map { Marker(ticks(it.groupValues[1].toFloat()), it.groupValues[2].ifEmpty { "Check" }) }.toList()
+        return if (keys.isEmpty() && marks.isEmpty()) null else keys to marks
+    }
+
+    /** Plots and marks a [plotList]; says what wasn't in the open data. */
+    fun applyPlotList(list: Pair<List<PlotKey>, List<Marker>>) {
+        val missing = list.first.filterNot(::plot)
+        val new = list.second.filter { m -> trace.markers.none { it.time == m.time } }
+        trace.markers += new
+        trace.markers.sortBy { it.time }
+        status = "Plotted ${list.first.size - missing.size} signals, marked ${new.size} moments" +
+            if (missing.isEmpty()) "" else "; not in this log or its DBCs: " + missing.joinToString { it.signal }
     }
 
     /**
@@ -376,6 +399,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     companion object {
         /** A merged recording's buses are numbered from here: bus 1 of the first merged log is bus 11. */
         const val MERGED_BUS = 10
+        private val PLOT_ITEM = Regex("""\b(\d{1,3}):(?:0x)?([0-9A-Fa-f]{1,8}):([A-Za-z_]\w*)""")
+        private val MARK_ITEM = Regex("""@(\d+(?:\.\d+)?)(?:=([^\s,;]+))?""")
         /** Named signals an event's plot adds next to its fields. */
         private const val EVENT_NAMED = 12
         private const val DAY_MICROS = 86_400_000_000L
