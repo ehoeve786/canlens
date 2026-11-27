@@ -56,7 +56,7 @@ fun CommandSheet(model: AppModel, onClose: () -> Unit, onOpen: (FrameStore.Messa
                 if (++messages == MAX_EACH) break
             }
             for ((key, messageName) in model.signalsMatching(text, MAX_EACH))
-                found += Command(key.signal, "Plot the signal · $messageName") { model.plot.keys += key; onTab(Tab.PLOTS) }
+                found += Command(key.signal, "Plot the signal · $messageName") { model.plot(key); onTab(Tab.PLOTS) }
             if (runCatching { Filter.compile(text, store.messages) { model.dbc.decoder(it.bus, it.id) } }.isSuccess)
                 found += Command("Filter the frames", text) { model.trace.filter = text; model.trace.fixed = false; model.trace.keepFilter(); onTab(Tab.FRAMES) }
         }

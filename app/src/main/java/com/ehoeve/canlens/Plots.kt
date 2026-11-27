@@ -204,11 +204,11 @@ fun PlotsScreen(model: AppModel) {
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     trailingIcon = if (query.isEmpty()) null else ({ IconButton(onClick = { query = "" }) { Icon(Icons.Default.Close, "Clear search") } }),
                 )
-                if (query.isNotBlank() && matches.isEmpty()) Hint("No decoded signal with that name. Signals come from the DBC files.", Modifier.padding(top = 6.dp, start = 4.dp))
+                if (query.isNotBlank() && matches.isEmpty()) Hint("No signal or message matches. Signals come from the DBC files and Decode's suggestions.", Modifier.padding(top = 6.dp, start = 4.dp))
             }
             items(matches.size, key = { "match:${matches[it].first}" }) { index ->
                 val (key, messageName) = matches[index]
-                Surface(onClick = { model.plot.keys += key }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                Surface(onClick = { model.plot(key) }, shape = MaterialTheme.shapes.medium, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
                     Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(key.signal, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)

@@ -237,16 +237,19 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Decoded signals in the open data whose name, or whose message's name, contains [query] and that are not plotted yet; with the message's name. */
+    /**
+     * Signals in the open data whose name, or whose message's name or id ("575", "0x575"), contains [query] and that
+     * are not plotted yet; with the message's name. Decoded ones, then Decode's suggestions not in a DBC yet.
+     */
     fun signalsMatching(query: String, limit: Int): List<Pair<PlotKey, String>> {
-        val needle = query.trim().lowercase()
+        val needle = query.trim().lowercase().removePrefix("0x")
         val found = ArrayList<Pair<PlotKey, String>>()
         if (needle.isEmpty()) return found
         for (message in store.messages) {
             // comma buses 128 and up are its own sent frames echoed back: copies that would double every hit
             if (message.bus >= 128) continue
             val decoder = dbc.decoder(message.bus, message.id) ?: continue
-            val wholeMessage = needle in decoder.name.lowercase()
+            val wholeMessage = needle in decoder.name.lowercase() || needle in hexId(message.id).lowercase()
             for (signal in decoder.signals) {
                 if (!wholeMessage && needle !in signal.name.lowercase()) continue
                 val key = PlotKey(message.bus, message.id, signal.name)
@@ -254,7 +257,24 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                 if (found.size == limit) return found
             }
         }
+        for (s in signals.autoResults) {
+            if (s.message.bus >= 128 || (needle !in s.signal.name.lowercase() && needle !in hexId(s.message.id).lowercase())) continue
+            val key = PlotKey(s.message.bus, s.message.id, s.signal.name)
+            if (key !in plot.keys && found.none { it.first == key }) found += key to "Decode's suggestion"
+            if (found.size == limit) break
+        }
         return found
+    }
+
+    /** Plots [key]: a DBC signal, or one of Decode's suggestions (kept with its message until it is in a DBC). */
+    fun plot(key: PlotKey) {
+        if (dbc.decoder(key.bus, key.id)?.signals?.none { it.name == key.signal } != false) {
+            val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return
+            // a paged field is read with its message's selector
+            val selector = if (s.signal.muxValue < 0) null else signals.autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
+            plot.unsaved[key] = DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOfNotNull(selector, s.signal)) to s.signal
+        }
+        plot.keys += key
     }
 
     /**
