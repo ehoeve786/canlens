@@ -140,17 +140,21 @@ class CommaStatus {
         private const val MANAGER_STATE = 76
         private const val PANDA_STATES = 79
         private const val ERROR_LOG_MESSAGE = 83
-        /** A cloudlog JSON line as "LEVEL file: msg", colour codes gone; null for DEBUG (the manager's process list, twice a second). */
+        /** A cloudlog JSON line (Python's or C++'s) as "LEVEL file: msg", colour codes gone; null for DEBUG (the manager's process list, loggerd's counts). */
         fun logLine(line: String, error: Boolean): String? {
-            val level = LEVEL.find(line)?.groupValues?.get(1) ?: if (error) "ERROR" else ""
+            val level = LEVEL.find(line)?.groupValues?.get(1)
+                ?: LEVEL_NUM.find(line)?.groupValues?.get(1)?.toIntOrNull()?.let { listOf("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL").getOrNull(it / 10 - 1) }
+                ?: if (error) "ERROR" else ""
             if (level == "DEBUG") return null
-            val msg = MSG.find(line)?.groupValues?.get(1)?.removeSurrounding("\"") ?: line
-            val file = FILE.find(line)?.groupValues?.get(1)?.removeSuffix(".py")?.let { "$it:" }.orEmpty()
+            val msg = MSG_TEXT.find(line)?.groupValues?.get(1)?.replace("\\\"", "\"") ?: MSG_OBJECT.find(line)?.groupValues?.get(1) ?: line
+            val file = FILE.find(line)?.groupValues?.get(1)?.substringAfterLast('/')?.substringBeforeLast('.')?.let { "$it:" }.orEmpty()
             return listOf(level, file, msg).filter { it.isNotEmpty() }.joinToString(" ").replace(ANSI, "")
         }
 
         private val LEVEL = Regex("\"level\": \"(\\w+)\"")
-        private val MSG = Regex("^\\{\"msg\": (.*?), \"ctx\": ")
+        private val LEVEL_NUM = Regex("\"levelnum\": (\\d+)")
+        private val MSG_TEXT = Regex("\"msg\": \"((?:[^\"\\\\]|\\\\.)*)\"")
+        private val MSG_OBJECT = Regex("\"msg\": (\\{.*?\\}), \"ctx\"")
         private val FILE = Regex("\"filename\": \"([^\"]+)\"")
         private val ANSI = Regex("(\\\\u001b|\u001b)\\[[0-9;]*m")
     }

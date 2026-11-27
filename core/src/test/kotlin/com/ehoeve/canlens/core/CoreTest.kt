@@ -1048,5 +1048,10 @@ class CoreTest {
         val debug = """{"msg": "\u001b[32mui\u001b[0m", "ctx": {"daemon": "manager"}, "level": "DEBUG", "filename": "manager.py"}"""
         assertEquals(null, CommaStatus.logLine(debug, false))
         assertEquals("WARNING manager: ui ok", CommaStatus.logLine(debug.replace("DEBUG", "WARNING").replace("[0m", "[0m ok"), false))
+        val cpp = """{"created": 1.5, "ctx": {"daemon": "loggerd"}, "filename": "iqpilot/system/loggerd/loggerd.cc", "levelnum": 30, "lineno": 56, "msg": "rotated to /data/x \"4\""}"""
+        assertEquals("WARNING loggerd: rotated to /data/x \"4\"", CommaStatus.logLine(cpp, false))
+        assertEquals(null, CommaStatus.logLine(cpp.replace("\"levelnum\": 30", "\"levelnum\": 10"), false))
+        val slc = """{"msg": "SLC debug: mode=1", "ctx": {}, "level": "INFO", "filename": "slc_vcruise.py"}"""
+        assertEquals("INFO slc_vcruise: SLC debug: mode=1", CommaStatus.logLine(slc, false))
     }
 }
