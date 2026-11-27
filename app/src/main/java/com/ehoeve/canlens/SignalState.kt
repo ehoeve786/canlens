@@ -142,7 +142,13 @@ class SignalState(
                 }
             }
             if (started != generation) return@launch
-            autoResults = result.getOrDefault(emptyList())
+            // a name given before (an event's, typed in) stays with the same bits of the same message, though a new run
+            // no longer counts them as an event: they changed again, or the moment was dropped from a long stream
+            val given = autoResults.filter { it.confidence >= NAMED }.associateBy { Triple(it.message, it.signal.start, it.signal.size) }
+            autoResults = result.getOrDefault(emptyList()).map { s ->
+                given[Triple(s.message, s.signal.start, s.signal.size)]?.takeIf { s.confidence < NAMED }
+                    ?.let { Suggestion(s.message, s.signal.renamed(it.signal.name), it.evidence, NAMED, it.messageName, it.at) } ?: s
+            }
             // decoding by itself during a stream: what is new is said, since nobody may be looking at the list
             val fresh = autoResults.filter { it.confidence >= NAMED && key(it) !in named }
             if (keepDecoding && fresh.isNotEmpty()) report("Decode found " + fresh.take(3).joinToString { "${hexId(it.message.id)} ${it.signal.name}" } + if (fresh.size > 3) " and ${fresh.size - 3} more" else "")
