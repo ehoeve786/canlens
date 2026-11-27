@@ -54,7 +54,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     /** A spoken test in the car; it records, so its markers land in the log as well. */
     val guided = GuidedTest(application, viewModelScope) { note -> addMarker(beginMarker(), note, remember = false) }
     val tx = TxState(application, store, viewModelScope, live, dbc)
-    private val api = LocalApi(this, application).also { it.start() }
+    private val api = LocalApi(this, application, preferences).also { it.start() }
     val session = SessionState(this, application, preferences)
 
     /** The log files the open data came from, and those merged onto its timeline after them; a session reopens both. */

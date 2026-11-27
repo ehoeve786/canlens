@@ -21,11 +21,6 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- Termux: the only app the assistant API (LocalApi) answers -->
-    <queries>
-        <package android:name="com.termux" />
-    </queries>
-
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"

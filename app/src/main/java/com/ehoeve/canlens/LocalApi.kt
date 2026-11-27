@@ -1,22 +1,29 @@
 package com.ehoeve.canlens
 
+import android.content.ContentUris
+import android.content.ContentValues
 import android.content.Context
-import android.net.LocalServerSocket
-import android.net.LocalSocket
-import android.net.LocalSocketAddress
+import android.os.Environment
+import android.provider.MediaStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.net.URLDecoder
+import java.security.MessageDigest
+import java.security.SecureRandom
 import kotlin.concurrent.thread
 
 /**
  * What is open in CANLens, for an assistant working through the owner's own Termux (PocketPilot's termux_run):
- * HTTP on the abstract Unix socket [NAME], answered only to Termux's user id, so no other app on the phone can read
- * the car's data or plot through it, and nothing is reachable from the network. With curl:
- * `curl -s --abstract-unix-socket canlens 'http://x/status'`. GET only; JSON back; times in seconds of the timeline.
+ * HTTP on 127.0.0.1:[PORT], nothing reachable from the network, answered only with the token CANLens keeps in
+ * `Download/CANLens/api-token.txt` (an app can't reach another's Unix socket, so the token stands in for who asks:
+ * apps that may read Downloads could read the logs there anyway). With curl:
+ * `curl -s "http://127.0.0.1:62403/status?t=$(cat /sdcard/Download/CANLens/api-token*.txt)"`.
+ * GET only; JSON back; times in seconds of the timeline.
  *
  * - /status: frames, messages, span, source, cursor, markers, what is plotted
  * - /messages?q=: messages whose id or DBC name holds q, with their rates
@@ -26,25 +33,31 @@ import kotlin.concurrent.thread
  * - /plot?list=: a plot list (`bus:id:signal`, `@seconds=note`), plotted and marked on the screen
  * - /stats: the comma's and the DashKit's stats and latest log lines, when streaming from them
  */
-class LocalApi(private val model: AppModel, private val context: Context) {
-    @Volatile private var server: LocalServerSocket? = null
+class LocalApi(private val model: AppModel, private val context: Context, preferences: android.content.SharedPreferences) {
+    @Volatile private var server: ServerSocket? = null
+    private val token = preferences.getString("apiToken", null) ?: ByteArray(16).also { SecureRandom().nextBytes(it) }
+        .joinToString("") { "%02x".format(it) }.also { preferences.edit().putString("apiToken", it).apply() }
 
     fun start() {
-        val server = runCatching { LocalServerSocket(NAME) }.getOrNull() ?: return
+        val server = runCatching { ServerSocket(PORT, 8, InetAddress.getLoopbackAddress()) }.getOrNull() ?: return
         this.server = server
         thread(isDaemon = true, name = "canlens-api") {
-            while (this.server === server) {
+            runCatching { publishToken() }
+            while (true) {
                 val socket = try { server.accept() } catch (e: IOException) { return@thread }
                 runCatching {
                     socket.use {
-                        val termux = runCatching { context.packageManager.getApplicationInfo("com.termux", 0).uid }.getOrDefault(-1)
-                        if (termux < 0 || it.peerCredentials.uid != termux) return@use
                         it.soTimeout = 5000
-                        val (code, body) = try { 200 to answer(requestLine(it.inputStream)) } catch (e: Exception) {
+                        val (code, body) = try {
+                            val target = requestLine(it.inputStream)
+                            val given = Regex("[?&]t=([0-9a-f]+)").find(target)?.groupValues?.get(1).orEmpty()
+                            if (!MessageDigest.isEqual(given.toByteArray(), token.toByteArray())) 403 to JSONObject().put("error", "wrong or missing t= token").toString()
+                            else 200 to answer(target)
+                        } catch (e: Exception) {
                             400 to JSONObject().put("error", e.message ?: e.javaClass.simpleName).toString()
                         }
                         val bytes = body.toByteArray()
-                        it.outputStream.write("HTTP/1.0 $code ${if (code == 200) "OK" else "Bad Request"}\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray() + bytes)
+                        it.outputStream.write("HTTP/1.0 $code ${if (code == 200) "OK" else "Error"}\r\nContent-Type: application/json\r\nContent-Length: ${bytes.size}\r\nConnection: close\r\n\r\n".toByteArray() + bytes)
                         it.outputStream.flush()
                     }
                 }
@@ -52,12 +65,20 @@ class LocalApi(private val model: AppModel, private val context: Context) {
         }
     }
 
-    /** Frees the name for the next model (the app reopened): a connection wakes the accept that close leaves waiting. */
-    fun stop() {
-        val server = server ?: return
-        this.server = null
-        runCatching { server.close() }
-        runCatching { LocalSocket().use { it.connect(LocalSocketAddress(NAME)) } }
+    /** Frees the port for the next model (the app reopened). */
+    fun stop() { runCatching { server?.close() }; server = null }
+
+    /** Writes the token to `Download/CANLens/api-token.txt`, over the app's own copy when it has one. */
+    private fun publishToken() {
+        val resolver = context.contentResolver
+        val folder = Environment.DIRECTORY_DOWNLOADS + "/CANLens/"
+        val existing = resolver.query(MediaStore.Downloads.EXTERNAL_CONTENT_URI, arrayOf(MediaStore.Downloads._ID),
+            "${MediaStore.Downloads.RELATIVE_PATH} = ? AND ${MediaStore.Downloads.DISPLAY_NAME} = ?", arrayOf(folder, TOKEN_FILE), null)
+            ?.use { if (it.moveToFirst()) ContentUris.withAppendedId(MediaStore.Downloads.EXTERNAL_CONTENT_URI, it.getLong(0)) else null }
+        val uri = existing ?: resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, TOKEN_FILE); put(MediaStore.Downloads.MIME_TYPE, "text/plain"); put(MediaStore.Downloads.RELATIVE_PATH, folder)
+        }) ?: return
+        resolver.openOutputStream(uri, "wt")?.use { it.write(token.toByteArray()) }
     }
 
     /** The request's target ("/values?keys=…"), from its first line, 8 KB at most. */
@@ -132,7 +153,8 @@ class LocalApi(private val model: AppModel, private val context: Context) {
     }
 
     companion object {
-        const val NAME = "canlens"
+        const val PORT = 62403
+        private const val TOKEN_FILE = "api-token.txt"
         private const val LIMIT = 500
         private const val POINTS = 2000
         private const val LOG_LINES = 100
