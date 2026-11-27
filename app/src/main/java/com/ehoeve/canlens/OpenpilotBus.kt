@@ -3,12 +3,12 @@ package com.ehoeve.canlens
 import com.ehoeve.canlens.core.Dbc
 
 /**
- * openpilot's own reading of the car (its carState), which dashkitd on the comma sends with the chassis bus as bus
- * [BUS], ten frames a second: references for Decode that cost nothing, already decoded and checked by openpilot.
- * Packed as 16-bit little-endian numbers, flags in [OP_states].
+ * openpilot's own reading of the car (its carState) as bus [BUS]: read from the comma's bridge while streaming from it,
+ * and from an rlog's carState events (100 a second, onroad): references for Decode that cost nothing, already decoded
+ * and checked by openpilot. Packed as 16-bit little-endian numbers, flags in [OP_states].
  */
 object OpenpilotBus {
-    const val BUS = 8
+    const val BUS = com.ehoeve.canlens.core.OPENPILOT_BUS
 
     val DBC: Dbc = Dbc.parse("""
         BO_ 1 OP_motion: 8 OP

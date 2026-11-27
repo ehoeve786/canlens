@@ -97,17 +97,18 @@ class LiveState(
                     if (!done.get()) runCatching { Thread.sleep(2000) }
                 }
             }
-            // its stats and log, a connection per service; a bridge that doesn't publish them just leaves them empty
+            // its stats and log, a connection per service; a bridge that doesn't publish them just leaves them empty.
+            // carState too: openpilot's reading of the car, as bus 8 frames (onroad only)
             val status = CommaStatus().also { s -> s.onLine = { recorder?.note("comma", it) } }
             comma = status
-            val services = CommaStatus.SERVICES.map { service ->
+            val services = (CommaStatus.SERVICES + "carState").map { service ->
                 val current = AtomicReference<CommaStream?>()
                 thread(isDaemon = true) {
                     while (!done.get()) {
                         val stream = CommaStream(host, CommaStream.cerealPort(service), 60_000)
                         current.set(stream)
                         if (done.get()) { stream.close(); break }
-                        runCatching { stream.run(status::read) }
+                        runCatching { if (service == "carState") stream.run(sink) else stream.run(status::read) }
                         if (!done.get()) runCatching { Thread.sleep(10_000) }   // a bridge without it: no busy retrying
                     }
                 }

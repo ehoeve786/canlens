@@ -108,9 +108,11 @@ class CoreTest {
         assertTrue(added.withoutSignal(0x123, "guess").messages[0x123]!!.signals.isEmpty())
     }
 
-    @Test fun rlogGivesTheCanEventsOnly() {
-        val (format, frames) = read(javaClass.getResourceAsStream("/sample.rlog")!!.readBytes())
+    @Test fun rlogGivesTheCanEventsAndCarState() {
+        val (format, all) = read(javaClass.getResourceAsStream("/sample.rlog")!!.readBytes())
         assertEquals("rlog", format)
+        assertEquals(listOf(1, 2, 3), all.filter { it.bus == OPENPILOT_BUS }.map { it.id })                    // its one carState event
+        val frames = all.filter { it.bus != OPENPILOT_BUS }
         assertEquals(listOf(0x118, 0x257, 0x18DAF110, 0x118, 0x3FF), frames.map { it.id })
         assertEquals(listOf(0, 1, 2, 0, 3), frames.map { it.bus })
         assertEquals(listOf(1_000_000L, 1_000_000L, 1_000_000L, 2_000_000L, 2_000_000L), frames.map { it.time })
@@ -118,6 +120,21 @@ class CoreTest {
         assertArrayEquals(bytes("aabbccdd"), frames[1].data)
         assertEquals(0, frames[2].data.size)
         assertArrayEquals(ByteArray(64) { it.toByte() }, frames[4].data)   // from a message in several segments
+    }
+
+    @Test fun carStateIsTheOpenpilotBus() {
+        // made with pycapnp from IQ.Pilot's log.capnp: vEgo 12.34, aEgo -1.5, yawRate 0.05, angle -12.3, torque 40, rate 5.5,
+        // gas 0.25, brake 0.5, left blinker, door open, brake pressed, drive, cruise on at 25 m/s
+        val hex = "00000000260000000000000002000100005ed0b20000000015000000000000000000000016000900a47045410000803e220102000000003fcdcc44c1000020420000b0400000c0bf00000000cdcc4c3d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001800000003000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000000c84100000000000000000000000000000000"
+        val m = ByteArray(hex.length / 2) { hex.substring(2 * it, 2 * it + 2).toInt(16).toByte() }
+        val starts = intArrayOf(8, m.size)
+        val got = ArrayList<Pair<Int, List<Int>>>()
+        assertTrue(Cereal.canFrames(m, starts, 1) { time, bus, id, data, offset, _ ->
+            assertEquals(3_000_000L, time); assertEquals(OPENPILOT_BUS, bus)
+            got += id to (0 until 4).map { (data[offset + 2 * it].toInt() and 0xFF or (data[offset + 2 * it + 1].toInt() shl 8)) }
+            true
+        })
+        assertEquals(listOf(1 to listOf(1234, -150, 50, -123), 2 to listOf(40, 55, 250, 500), 3 to listOf(1 or 4 or 16 or (2 shl 8) or (1 shl 12), 2500, 0, 0)), got)
     }
 
     @Test fun candumpWithDashPilotDiagnosticsAndCanFd() {

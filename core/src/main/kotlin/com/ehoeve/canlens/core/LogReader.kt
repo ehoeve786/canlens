@@ -257,10 +257,17 @@ internal class LineReader(private val input: InputStream, private val max: Int =
     }
 }
 
-/** Just enough Cap'n Proto to take the CAN frames out of an openpilot `Event` (cereal/log.capnp). */
+/**
+ * The bus openpilot's own reading of the car (its carState) goes on, as three frames (the app's OpenpilotBus DBC):
+ * id 1 vEgo, aEgo, yawRate, steering angle; id 2 steering torque and rate, gas, brake; id 3 the flags, gear and cruise.
+ */
+const val OPENPILOT_BUS = 8
+
+/** Just enough Cap'n Proto to take the CAN frames out of an openpilot `Event` (cereal/log.capnp), and its carState. */
 internal object Cereal {
     private const val EVENT_WHICH_OFFSET = 8
     private const val EVENT_CAN = 4
+    private const val EVENT_CAR_STATE = 21
     private const val CAN_SRC_OFFSET = 6
 
     fun int(b: ByteArray, o: Int) =
@@ -283,8 +290,10 @@ internal object Cereal {
             val dataWords = (root ushr 32 and 0xFFFF).toInt()
             val struct = event + 8 + (root.toInt() shr 2) * 8
             if (dataWords < 2 || root ushr 48 and 0xFFFF == 0L) return true
-            if ((word(struct + EVENT_WHICH_OFFSET) and 0xFFFF).toInt() != EVENT_CAN) return true
+            val which = (word(struct + EVENT_WHICH_OFFSET) and 0xFFFF).toInt()
             val time = word(struct) / 1000
+            if (which == EVENT_CAR_STATE) return carState(m, starts, segments, end, struct + dataWords * 8, time, sink)
+            if (which != EVENT_CAN) return true
             val list = follow(m, starts, segments, struct + dataWords * 8, end)
             if (list < 0) return true
             val pointer = word(list)
@@ -309,6 +318,47 @@ internal object Cereal {
             // a pointer outside the message: skip it
         }
         return true
+    }
+
+    /**
+     * The carState whose pointer is at [pointer], as the three [OPENPILOT_BUS] frames. Field offsets from IQ.Pilot's
+     * car.capnp (the same as upstream openpilot's): floats by index, bools by bit, gearShifter a u16 at byte 10,
+     * cruiseState the third pointer (enabled bit 0, speed float 1). A field past an older writer's data reads 0.
+     */
+    private fun carState(m: ByteArray, starts: IntArray, segments: Int, end: Int, pointer: Int, time: Long, sink: FrameSink): Boolean {
+        val at = follow(m, starts, segments, pointer, end)
+        if (at < 0) return true
+        val p = long(m, at)
+        if (p and 3L != 0L) return true
+        val data = at + 8 + (p.toInt() shr 2) * 8
+        val bytes = (p ushr 32 and 0xFFFF).toInt() * 8
+        if (data < 0 || data + bytes + (p ushr 48 and 0xFFFF).toInt() * 8 > end) return true
+        fun f(base: Int, size: Int, i: Int) = if (4 * i + 4 <= size) Float.fromBits(int(m, base + 4 * i)) else 0f
+        fun b(bit: Int) = if (bit / 8 < bytes && (m[data + bit / 8].toInt() shr (bit % 8) and 1) != 0) 1 else 0
+        var cruiseOn = 0
+        var cruiseSpeed = 0f
+        if ((p ushr 48 and 0xFFFF) > 2) {
+            val c = follow(m, starts, segments, data + bytes + 16, end)
+            val q = if (c < 0) 3L else long(m, c)
+            if (q and 3L == 0L) {
+                val cd = c + 8 + (q.toInt() shr 2) * 8
+                val cb = (q ushr 32 and 0xFFFF).toInt() * 8
+                if (cd >= 0 && cd + cb <= end) { cruiseOn = if (cb > 0) m[cd].toInt() and 1 else 0; cruiseSpeed = f(cd, cb, 1) }
+            }
+        }
+        val gear = if (bytes >= 12) (m[data + 10].toInt() and 0xFF) or (m[data + 11].toInt() and 0xFF shl 8) else 0
+        val flags = b(69) or (b(70) shl 1) or (b(72) shl 2) or (b(73) shl 3) or (b(65) shl 4) or (b(64) shl 5) or (b(67) shl 6) or (b(66) shl 7)
+        return sink.frame(time, OPENPILOT_BUS, 1, words(f(data, bytes, 0) * 100, f(data, bytes, 7) * 100, f(data, bytes, 9) * 1000, f(data, bytes, 4) * 10), 0, 8) &&
+            sink.frame(time, OPENPILOT_BUS, 2, words(f(data, bytes, 5), f(data, bytes, 6) * 10, f(data, bytes, 1) * 1000, f(data, bytes, 3) * 1000), 0, 8) &&
+            sink.frame(time, OPENPILOT_BUS, 3, words((flags or (gear and 15 shl 8) or (cruiseOn shl 12)).toFloat(), cruiseSpeed * 100, 0f, 0f), 0, 8)
+    }
+
+    /** Four 16-bit little-endian numbers, rounded and clamped to a signed 16-bit range (the flags word fits). */
+    private fun words(vararg v: Float) = ByteArray(8).also { out ->
+        for (i in 0 until 4) {
+            val r = if (v[i].isNaN()) 0 else Math.round(v[i]).coerceIn(-32768, 32767)
+            out[2 * i] = r.toByte(); out[2 * i + 1] = (r shr 8).toByte()
+        }
     }
 
     /** Offset of the pointer that the pointer at [at] stands for (itself unless it is a far pointer); -1 if null or unsupported. */
