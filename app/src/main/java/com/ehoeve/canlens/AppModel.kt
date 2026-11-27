@@ -2,6 +2,7 @@ package com.ehoeve.canlens
 
 import com.ehoeve.canlens.core.DbcMessage
 import com.ehoeve.canlens.core.Suggestion
+import com.ehoeve.canlens.core.Signal
 import com.ehoeve.canlens.core.AutoDecode
 import android.app.Application
 import android.content.Context
@@ -53,6 +54,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     /** A spoken test in the car; it records, so its markers land in the log as well. */
     val guided = GuidedTest(application, viewModelScope) { note -> addMarker(beginMarker(), note, remember = false) }
     val tx = TxState(application, store, viewModelScope, live, dbc)
+    private val api = LocalApi(this, application).also { it.start() }
     val session = SessionState(this, application, preferences)
 
     /** The log files the open data came from, and those merged onto its timeline after them; a session reopens both. */
@@ -266,18 +268,40 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         return found
     }
 
+    /**
+     * The message and signal [key] stands for: from the DBCs, else plotted unsaved, else one of Decode's suggestions
+     * (a paged one with its message's selector). [saved]: whether it is the DBCs'.
+     */
+    fun signalOf(key: PlotKey): Triple<DbcMessage, Signal, Boolean>? {
+        dbc.decoder(key.bus, key.id)?.let { d -> d.signals.firstOrNull { it.name == key.signal }?.let { return Triple(d, it, true) } }
+        plot.unsaved[key]?.let { return Triple(it.first, it.second, false) }
+        val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return null
+        val selector = if (s.signal.muxValue < 0) null else signals.autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
+        return Triple(DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOfNotNull(selector, s.signal)), s.signal, false)
+    }
+
     /** Plots [key]: a DBC signal, or one of Decode's suggestions (kept with its message until it is in a DBC). False when neither has it. */
     fun plot(key: PlotKey): Boolean {
         if (key in plot.keys) return true
-        if (dbc.decoder(key.bus, key.id)?.signals?.none { it.name == key.signal } != false) {
-            val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return false
-            // a paged field is read with its message's selector
-            val selector = if (s.signal.muxValue < 0) null else signals.autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
-            plot.unsaved[key] = DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOfNotNull(selector, s.signal)) to s.signal
-        }
+        val (message, signal, saved) = signalOf(key) ?: return false
+        if (!saved) plot.unsaved[key] = message to signal
         plot.keys += key
         return true
     }
+
+    /**
+     * The named signals (openpilot's bus 8 among them) that changed between [from] and [to], with how often they
+     * changed in the whole log: only rare ones (a door, a gear; not a speed or a counter), the rarest first. One pass.
+     */
+    fun changedSignals(from: Int, to: Int): List<Pair<PlotKey, Int>> =
+        store.bitActivity(from, to).filterNotNull().flatMap { a ->
+            val decoder = if (a.message.bus >= 128) null else dbc.decoder(a.message.bus, a.message.id)
+            decoder?.signals.orEmpty().mapNotNull { s ->
+                val changes = s.bits.sumOf { if (it < a.inside.size) a.outside[it] + a.inside[it] else 0 }
+                val moved = s.bits.any { it < a.inside.size && a.inside[it] > 0 }
+                if (moved && changes * 20 < a.message.count) PlotKey(a.message.bus, a.message.id, s.name) to changes else null
+            }
+        }.sortedBy { it.second }
 
     /**
      * A plot list pasted into a search, as an assistant writes one or as a CSV export names its columns:
@@ -320,16 +344,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         plot.view.show(seconds(at) - 10, seconds(at) + 10)
         val second = FrameStore.TICKS_PER_SECOND.toInt()
         viewModelScope.launch {
-            val named = withContext(Dispatchers.Default) {
-                store.bitActivity(at - second, at + second).filterNotNull().flatMap { a ->
-                    val decoder = if (a.message.bus >= 128) null else dbc.decoder(a.message.bus, a.message.id)
-                    decoder?.signals.orEmpty().mapNotNull { s ->
-                        val changes = s.bits.sumOf { if (it < a.inside.size) a.outside[it] + a.inside[it] else 0 }
-                        val moved = s.bits.any { it < a.inside.size && a.inside[it] > 0 }
-                        if (moved && changes * 20 < a.message.count) PlotKey(a.message.bus, a.message.id, s.name) to changes else null
-                    }
-                }.sortedBy { it.second }.take(EVENT_NAMED).map { it.first }
-            }
+            val named = withContext(Dispatchers.Default) { changedSignals(at - second, at + second).take(EVENT_NAMED).map { it.first } }
             if (trace.cursor == at) plot.keys += named.filter { it !in plot.keys }
         }
     }
@@ -392,7 +407,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
 
     fun clearCompare() { other = null; mine = null; otherName = "" }
 
-    override fun onCleared() { tx.close(); guided.close(); live.stop() }
+    override fun onCleared() { tx.close(); guided.close(); live.stop(); api.stop() }
 
     init { session.restore() }
 
