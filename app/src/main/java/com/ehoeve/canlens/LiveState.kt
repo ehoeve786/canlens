@@ -66,6 +66,8 @@ class LiveState(
     private var job: Job? = null
     private var connection: Closeable? = null
     private var sensors: PhoneSensors? = null
+    /** When the stream's latest frame came in (System.nanoTime), under the store's lock. */
+    private var streamNanos = 0L
     @Volatile private var recorder: Recorder? = null
     /** Changes with every stream start and stop, so a stream that is still shutting down can't write into the next one's data. */
     @Volatile private var generation = 0
@@ -241,13 +243,15 @@ class LiveState(
             synchronized(store) {
                 if (mine != generation) return@FrameSink false
                 recorder?.write(bus, id, data, offset, length)
+                streamNanos = System.nanoTime()
                 store.frame(time, bus, id, data, offset, length)
             }
         }
-        // stamped with the stream's clock: the time of its latest frame, so they line up with the car's
+        // stamped with the stream's clock: the time of its latest frame, so they line up with the car's; only while it
+        // flows, or they would pile up at its last frame (the comma off the hotspot) and the count would climb
         if (phoneSensors) sensors = PhoneSensors(context) { id, data ->
             synchronized(store) {
-                if (mine == generation && store.frameCount > 0) {
+                if (mine == generation && store.frameCount > 0 && System.nanoTime() - streamNanos < 1_000_000_000L) {
                     recorder?.write(PhoneSensors.PHONE_BUS, id, data, 0, data.size)
                     store.frame(store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK, PhoneSensors.PHONE_BUS, id, data, 0, data.size)
                 }
