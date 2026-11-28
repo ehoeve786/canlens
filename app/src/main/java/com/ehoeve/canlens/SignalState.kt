@@ -138,7 +138,16 @@ class SignalState(
             val result = withContext(Dispatchers.Default) {
                 runCatching {
                     val known = { message: FrameStore.Message -> dbc.decoder(message.bus, message.id) }
-                    (AutoDecode.fromReadings(store, known, readings) + AutoDecode.run(store, known, done) { step -> launch(Dispatchers.Main) { if (started == generation) autoStatus = step } }).filter { key(it) !in rejected }
+                    val found = (AutoDecode.fromReadings(store, known, readings) + AutoDecode.run(store, known, done) { step -> launch(Dispatchers.Main) { if (started == generation) autoStatus = step } }).filter { key(it) !in rejected }
+                    // a message no DBC defines for its bus that one of them defines for another (the party bus carries the
+                    // chassis' DAS_status): that definition, checked against these frames, in place of Decode's own guesses
+                    val missing = store.messages.filter { it.bus < 128 && known(it) == null }
+                    val loaded = dbc.files.map { it.dbc }
+                    val ids = missing.mapTo(HashSet()) { it.id }.filterTo(HashSet()) { id -> loaded.any { id in it.messages } }
+                    val copies = if (ids.isEmpty()) emptyList() else AutoDecode.fromCommunity(store, known, loaded.map { d -> d.name to Dbc(d.name, d.messages.filterKeys { it in ids }) })
+                        .filter { known(it.message) == null && key(it) !in rejected }
+                    val copied = copies.filter { it.confidence >= NAMED }.mapTo(HashSet()) { it.message }
+                    copies + found.filter { it.message !in copied }
                 }
             }
             if (started != generation) return@launch
