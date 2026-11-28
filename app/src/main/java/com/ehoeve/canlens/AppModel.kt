@@ -301,8 +301,24 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             claudeStatus = runCatching {
                 val report = withContext(Dispatchers.Default) { eventReport(events) }
                 claudeNames = withContext(Dispatchers.IO) { Claude.nameEvents(key, report) }
-                "Claude named ${claudeNames.count { it.value.first != "unclear" }} of ${events.size} events: check them on a plot before you use them"
+                // each named event's fields get the name (DBC style), found again by their bits: a decode may have run meanwhile
+                val now = signals.events().entries.associate { (number, fields) -> fields.joinToString { signals.key(it) } to number }
+                val named = claudeNames.count { (number, answer) ->
+                    val current = events[number]?.let { fields -> now[fields.joinToString { signals.key(it) }] }
+                    (answer.first != "unclear" && current != null).also { if (it) signals.nameEvent(current!!, answer.first) }
+                }
+                "Claude named $named of ${events.size} events: check them on a plot before you add them"
             }.getOrElse { "Claude: ${it.message ?: it.javaClass.simpleName}" }
+        }
+    }
+
+    /** Events already sent to Claude, by their fields' bits: a stream's next decode doesn't ask about them again. */
+    private val asked = HashSet<String>()
+
+    init {
+        // after each decode, the events not asked about yet go to Claude, when a key is set
+        signals.afterDecode = {
+            if (claudeKey.isNotEmpty()) askClaude(signals.events().filterValues { fields -> asked.add(fields.joinToString { signals.key(it) }) })
         }
     }
 

@@ -145,10 +145,10 @@ class SignalState(
             // a name given before (an event's, typed in) stays with the same bits of the same message, though a new run
             // no longer counts them as an event: they changed again, or the moment was dropped from a long stream
             val given = autoResults.filter { it.confidence >= NAMED }.associateBy { Triple(it.message, it.signal.start, it.signal.size) }
-            autoResults = result.getOrDefault(emptyList()).map { s ->
+            autoResults = properNames(result.getOrDefault(emptyList()).map { s ->
                 given[Triple(s.message, s.signal.start, s.signal.size)]?.takeIf { s.confidence < NAMED }
                     ?.let { Suggestion(s.message, s.signal.renamed(it.signal.name), it.evidence, NAMED, it.messageName, it.at) } ?: s
-            }
+            })
             // decoding by itself during a stream: what is new is said, since nobody may be looking at the list
             val fresh = autoResults.filter { it.confidence >= NAMED && key(it) !in named }
             if (keepDecoding && fresh.isNotEmpty()) report("Decode found " + fresh.take(3).joinToString { "${hexId(it.message.id)} ${it.signal.name}" } + if (fresh.size > 3) " and ${fresh.size - 3} more" else "")
@@ -157,7 +157,48 @@ class SignalState(
                 { "Decoding failed: ${it.message ?: it.javaClass.simpleName}" },
             )
             decoding = false
+            if (result.isSuccess) afterDecode?.invoke()
         }
+    }
+
+    /** Called after each decode that worked: the app asks Claude about events it hasn't asked about. */
+    var afterDecode: (() -> Unit)? = null
+
+    /** The events among the suggestions (fields that changed together once), by number. */
+    fun events(): Map<Int, List<Suggestion>> =
+        autoResults.filter { it.at != null }.groupBy { EVENT.find(it.signal.name)?.groupValues?.get(1)?.toInt() ?: 0 }.filterKeys { it > 0 }.toSortedMap()
+
+    /** The prefix the DBCs give [message]'s signals (VCSEC); UNK_<id> for a message they don't name or call UNK_ or NEW_. */
+    fun prefixOf(message: FrameStore.Message): String {
+        val name = dbc.decoder(message.bus, message.id)?.name
+        return if (name == null || name.startsWith("UNK_") || name.startsWith("NEW_")) "UNK_${hexId(message.id)}" else name.substringBefore('_')
+    }
+
+    /**
+     * Decode's own names in the DBCs' style (message prefix, camelCase): COUNTER_0 becomes UNK_26D_counter, MUX_8 its
+     * index, FLAG_33 flag33, M3_STATE_12 (page 3) m3State12, and a field that follows a known signal takes that signal's
+     * name under this message's prefix (with Rate or Total when it follows its rate or running total). Events keep
+     * theirs until they are named; two that come out the same in one message get their start bit.
+     */
+    private fun properNames(list: List<Suggestion>): List<Suggestion> {
+        val renamed = list.map { s ->
+            val name = s.signal.name
+            val like = LIKE.find(name)
+            val plain = PLAIN.find(name)
+            val own = when {
+                like != null -> like.groupValues[2].substringAfter('_') + when (like.groupValues[1]) { "RATE_" -> "Rate"; "TOTAL_" -> "Total"; else -> "" }
+                plain != null -> {
+                    val (page, kind, start) = plain.destructured
+                    val word = KINDS.getValue(kind) + if (kind in NUMBERED) start else ""
+                    if (page.isEmpty()) word else "m$page" + word.replaceFirstChar(Char::uppercaseChar)
+                }
+                else -> null
+            }
+            if (own == null) s else Suggestion(s.message, s.signal.renamed("${prefixOf(s.message)}_$own"), s.evidence, s.confidence, s.messageName, s.at)
+        }
+        val seen = renamed.groupingBy { it.message to it.signal.name }.eachCount()
+        return renamed.map { s -> if ((seen[s.message to s.signal.name] ?: 0) < 2) s
+            else Suggestion(s.message, s.signal.renamed(s.signal.name + s.signal.start), s.evidence, s.confidence, s.messageName, s.at) }
     }
 
     /**
@@ -229,11 +270,11 @@ class SignalState(
         val fields = autoResults.filter { it.signal.name.startsWith("E${number}_") }
         autoResults = autoResults.map { s ->
             if (s !in fields) return@map s
-            val prefix = dbc.decoder(s.message.bus, s.message.id)?.signals?.firstNotNullOfOrNull { it.name.substringBefore('_', "").ifEmpty { null } }
-            val own = if (prefix != null && words.size > 1 && words[0].equals(prefix, true)) words.drop(1) else words
+            val prefix = prefixOf(s.message)
+            val own = if (words.size > 1 && words[0].equals(prefix, true)) words.drop(1) else words
             val camel = own[0].replaceFirstChar(Char::lowercaseChar) + own.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
             val twin = fields.count { it.message === s.message } > 1
-            Suggestion(s.message, s.signal.renamed(prefix?.let { "${it}_" }.orEmpty() + camel + if (twin) s.signal.start.toString() else ""), s.evidence, NAMED, at = s.at)
+            Suggestion(s.message, s.signal.renamed("${prefix}_" + camel + if (twin) s.signal.start.toString() else ""), s.evidence, NAMED, at = s.at)
         }
     }
 
@@ -258,6 +299,12 @@ class SignalState(
     }
 
     companion object {
+        private val EVENT = Regex("^E(\\d+)_")
+        private val LIKE = Regex("^(?:LIKE|COPY)_(RATE_|TOTAL_)?(.+)_\\d+$")
+        private val PLAIN = Regex("^(?:M(\\d+)_)?(COUNTER|CHECKSUM|CRC|MUX|FLAG|STATE|FIELD)_?(\\d*)$")
+        private val KINDS = mapOf("COUNTER" to "counter", "CHECKSUM" to "checksum", "CRC" to "crc", "MUX" to "index", "FLAG" to "flag", "STATE" to "state", "FIELD" to "value")
+        /** Kinds a message can have several of: their name carries the start bit. */
+        private val NUMBERED = setOf("FLAG", "STATE", "FIELD")
         private val COMMUNITY = listOf(
             "opendbc party" to "https://raw.githubusercontent.com/commaai/opendbc/master/opendbc/dbc/tesla_model3_party.dbc",
             "opendbc vehicle" to "https://raw.githubusercontent.com/commaai/opendbc/master/opendbc/dbc/tesla_model3_vehicle.dbc",
