@@ -43,7 +43,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     @Volatile var cancelling = false
     /** Goes up whenever the store's content changed; composables read it to refresh. */
     var revision by mutableIntStateOf(0); private set
-    var status by mutableStateOf("Open a log or start a live stream"); private set
+    var status by mutableStateOf("Open a log or start a live stream")
     var busy by mutableStateOf(false); private set
 
     val plot = PlotState()
@@ -282,6 +282,49 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         val s = signals.autoResults.firstOrNull { it.message.bus == key.bus && it.message.id == key.id && it.signal.name == key.signal } ?: return null
         val selector = if (s.signal.muxValue < 0) null else signals.autoResults.firstOrNull { it.message === s.message && it.signal.isMultiplexor }?.signal
         return Triple(DbcMessage(s.message.id, "NEW_${hexId(s.message.id)}", s.message.data.size, listOfNotNull(selector, s.signal)), s.signal, false)
+    }
+
+    /** Claude's names for Decode's events (number to name and why), from [askClaude], and how asking went. */
+    var claudeNames by mutableStateOf<Map<Int, Pair<String, String>>>(emptyMap()); private set
+    var claudeStatus by mutableStateOf(""); private set
+    /** The user's Anthropic API key: kept in the app's own storage (not backed up), sent only to api.anthropic.com. */
+    var claudeKey: String
+        get() = preferences.getString("claudeKey", null).orEmpty()
+        set(value) { preferences.edit().putString("claudeKey", value.trim()).apply() }
+
+    /** Asks Claude what each of [events] was, from what changed then: its fields and the rare named signals around it. */
+    fun askClaude(events: Map<Int, List<Suggestion>>) {
+        val key = claudeKey
+        if (key.isEmpty() || events.isEmpty()) return
+        claudeStatus = "Asking Claude…"
+        viewModelScope.launch {
+            claudeStatus = runCatching {
+                val report = withContext(Dispatchers.Default) { eventReport(events) }
+                claudeNames = withContext(Dispatchers.IO) { Claude.nameEvents(key, report) }
+                "Claude named ${claudeNames.count { it.value.first != "unclear" }} of ${events.size} events: check them on a plot before you use them"
+            }.getOrElse { "Claude: ${it.message ?: it.javaClass.simpleName}" }
+        }
+    }
+
+    /** Each event's moment, its fields' values before and after it, and the rare named signals that changed within a second. */
+    private fun eventReport(events: Map<Int, List<Suggestion>>): String = buildString {
+        val second = FrameStore.TICKS_PER_SECOND.toInt()
+        fun change(key: PlotKey, at: Int): String? {
+            val (decoder, signal) = signalOf(key) ?: return null
+            val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return null
+            val s = store.series(message, decoder, signal, at - 2 * second, at + 2 * second)
+            if (s.size == 0) return null
+            fun v(x: Float) = signal.valueNames[x.toLong()] ?: "%g".format(x)
+            return "bus ${key.bus} 0x${hexId(key.id)} ${decoder.name}.${key.signal} (bits ${signal.start}+${signal.size}): ${v(s.values[0])} -> ${v(s.values[s.size - 1])}"
+        }
+        append("Car: Tesla Model Y. Times in seconds from the log's start; values 2 s before -> 2 s after each moment.\n")
+        for ((number, fields) in events) {
+            val at = fields[0].at ?: continue
+            append("\nEvent $number at %.2f s%s\nIts undocumented fields:\n".format(seconds(at), store.clock(at)?.let { " ($it)" }.orEmpty()))
+            for (f in fields) change(PlotKey(f.message.bus, f.message.id, f.signal.name), at)?.let { append("  $it\n") }
+            append("Documented signals that changed within a second of it and rarely otherwise:\n")
+            for ((k, _) in changedSignals(at - second, at + second).take(15)) change(k, at)?.let { append("  $it\n") }
+        }
     }
 
     /** Plots [key]: a DBC signal, or one of Decode's suggestions (kept with its message until it is in a DBC). False when neither has it. */

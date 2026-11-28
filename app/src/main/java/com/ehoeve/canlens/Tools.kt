@@ -50,6 +50,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.runtime.produceState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -210,7 +212,7 @@ fun MarkerSheet(model: AppModel, onClose: () -> Unit) {
 private val EVENT = Regex("^E(\\d+)_")
 
 /** Runs the automatic decoder and lists what it proposes, to be reviewed and added to the DBC. */
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, onPick: (Suggestion) -> Unit) {
     var showPlain by remember { mutableStateOf(false) }
@@ -232,9 +234,28 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
         value = withContext(Dispatchers.Default) { numbers.zip(model.namedAt(numbers.map { events[it]!![0].at!! }.toIntArray())).toMap() }
     }
     var naming by remember { mutableStateOf<Int?>(null) }
+    var keying by remember { mutableStateOf(false) }
+    if (keying) {
+        var key by remember { mutableStateOf(model.claudeKey) }
+        AlertDialog(
+            onDismissRequest = { keying = false },
+            title = { Text("Name the events with Claude") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Hint("Claude is sent what changed at each event (its fields and the named signals around it), not the log. It needs an Anthropic API key " +
+                        "(console.anthropic.com, API keys): a Max or Ultra plan's monthly API credits cover it once its Console organization is linked to the plan. " +
+                        "The key stays on this phone and goes only to Anthropic.")
+                    OutlinedTextField(key, { key = it }, singleLine = true, label = { Text("API key") }, visualTransformation = PasswordVisualTransformation())
+                }
+            },
+            confirmButton = { TextButton(enabled = key.isNotBlank(), onClick = { model.claudeKey = key; keying = false; model.askClaude(events) }) { Text("Ask Claude") } },
+            dismissButton = { TextButton(onClick = { keying = false }) { Text("Cancel") } },
+        )
+    }
     naming?.let { number ->
         val at = events[number]?.first()?.at
-        var name by remember(number) { mutableStateOf("") }
+        val claude = model.claudeNames[number]
+        var name by remember(number) { mutableStateOf(claude?.first?.takeIf { it != "unclear" }.orEmpty()) }
         if (at == null) naming = null else AlertDialog(
             onDismissRequest = { naming = null },
             title = { Text("Event $number at %.1f s".format(seconds(at))) },
@@ -242,6 +263,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Hint("${events[number]!!.size} fields changed here and hardly ever else. Plot them to see what happened; name it and they are all listed under that name, ticked.")
                     hints[number]?.let { Hint("$it changed within half a second of them, and rarely otherwise: likely what this was. Check it on the plot.") }
+                    claude?.let { (what, why) -> Hint("Claude: $what. $why") }
                     OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("What happened") }, placeholder = { Text("plug in") })
                     // not something done in the car (a module's log entry, a wake-up): gone, also from later decodes
                     TextButton(onClick = { model.signals.reject(events[number]!!); naming = null }) { Text("Reject this event") }
@@ -289,6 +311,11 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                         }
                     }) { Text("Share a report") }
                 }
+                // Claude names the events; the key is asked for the first time, and can be changed with a long press
+                if (events.isNotEmpty()) Text(if (model.claudeStatus == "Asking Claude…") "Asking Claude…" else "Name the events with Claude",
+                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp).combinedClickable(onLongClick = { keying = true }) { if (model.claudeKey.isEmpty()) keying = true else model.askClaude(events) },
+                    color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                if (model.claudeStatus.isNotEmpty() && model.claudeStatus != "Asking Claude…") Hint(model.claudeStatus)
                 // a live stream: decode again every 15 s as frames come in
                 if (model.live.source != LiveSource.NONE) FilterChip(selected = model.signals.keepDecoding, onClick = { model.signals.keepDecoding(!model.signals.keepDecoding) }, label = { Text("Keep decoding while streaming") })
                 if (model.signals.autoStatus.isNotEmpty()) Hint(model.signals.autoStatus, Modifier.padding(top = 8.dp))
@@ -300,7 +327,8 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                         label = { Text(if (ticked.size == shown.size) "Untick all" else "Tick all") })
                 }
                 if (events.isNotEmpty() || model.signals.rejectedCount > 0) FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for ((number, fields) in events) AssistChip(onClick = { naming = number }, label = { Text("E$number · ${fields.size} fields · %.0f s".format(seconds(fields[0].at!!)) + hints[number]?.let { " · $it" }.orEmpty()) })
+                    for ((number, fields) in events) AssistChip(onClick = { naming = number }, label = { Text("E$number · ${fields.size} fields · %.0f s".format(seconds(fields[0].at!!)) +
+                        (model.claudeNames[number]?.let { " · Claude: ${it.first}" } ?: hints[number]?.let { " · $it" }).orEmpty()) })
                     // turned down before: they stay away until asked back
                     if (model.signals.rejectedCount > 0) AssistChip(enabled = !model.signals.decoding, onClick = { model.signals.restoreRejected() }, label = { Text("Bring back ${model.signals.rejectedCount} rejected") })
                 }
