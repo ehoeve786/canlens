@@ -91,6 +91,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             val problems = ArrayList<String>()
             val notes = ArrayList<Pair<Long, String>>()
             var stopped = false
+            var dashKit = emptyList<Pair<String, Uri>>()
             withContext(Dispatchers.IO) {
                 store.clear()
                 store.dropOldest = false
@@ -99,7 +100,10 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                 var read = 0L
                 val sink = FrameSink { time, bus, id, data, offset, length -> read++; !cancelling && ((from != null && time < from) || store.frame(time, bus, id, data, offset, length)) }
                 // route segments in order: natural sort puts --2-- before --10--
-                val files = uris.map { context.displayName(it) to it }.sortedWith { a, b -> naturalCompare(a.first, b.first) }
+                val picked = uris.map { context.displayName(it) to it }.sortedWith { a, b -> naturalCompare(a.first, b.first) }
+                // a DashKit's log (no Autopilot side, bus 2) picked with the comma's is read after them, on the comma's numbering
+                dashKit = if (picked.size < 2) emptyList() else picked.filter { 2 !in busesOf(it.second) }.takeIf { it.size < picked.size }.orEmpty()
+                val files = picked - dashKit.toSet()
                 for ((index, file) in files.withIndex()) {
                     if (cancelling) { stopped = true; break }
                     withContext(Dispatchers.Main) { status = "Reading ${file.first} (${index + 1}/${files.size})" }
@@ -120,6 +124,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     if (store.truncated) { problems += "memory limit reached, the rest was not loaded"; break }
                 }
             }
+            if (dashKit.isNotEmpty() && !stopped && !store.truncated) withContext(Dispatchers.IO) { runCatching { addDashKit(dashKit) }.onFailure { problems += "DashKit log: ${it.message}" }.getOrNull() }?.let { problems += it }
             if (stopped && !store.truncated) problems += "cancelled, the rest was not loaded"
             // after Cancel too the rest can be loaded as the next part: from the last frame kept, or from where this part began
             val end = if (store.frameCount > 0) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else from
@@ -134,6 +139,30 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             revision++
             then()
         }
+    }
+
+    /** The buses in the first frames of a log: enough to tell a comma's (party, vehicle, Autopilot side) from a DashKit's. */
+    private fun busesOf(uri: Uri): Set<Int> {
+        val seen = HashSet<Int>()
+        var n = 0
+        runCatching { context.openDecompressed(uri).use { LogReader.read(it, FrameSink { _, bus, _, _, _, _ -> seen += bus; ++n < 50_000 }) } }
+        return seen
+    }
+
+    /**
+     * Adds DashKit logs to comma logs already read: their clock matched on the frames both recorded (the vehicle bus), their
+     * chassis bus put where a comma stream has it (3) and their sent frames on 131 / 132; their vehicle bus, which the comma
+     * recorded too, is left out. Says how the clocks were matched.
+     */
+    private fun addDashKit(files: List<Pair<String, Uri>>): String {
+        val other = FrameStore(maxOf(1, maxChunks - store.chunks.size))
+        for ((_, uri) in files) context.openDecompressed(uri).use { LogReader.read(it, other) }
+        if (other.frameCount == 0L) return "DashKit log: no CAN frames"
+        val matched = Align.offsetMicros(store, other)
+        val shift = matched ?: if (Math.abs(store.originMicros - other.originMicros) < DAY_MICROS) 0L else store.originMicros - other.originMicros
+        val vehicle = store.messages.any { it.bus == 1 }
+        store.merge(other, shift) { when (it) { 0 -> 3; 1 -> if (vehicle) -1 else 1; 128 -> 131; 129 -> 132; else -> it } }
+        return "DashKit log added: chassis as bus 3, " + if (matched != null) "clocks matched on shared frames (%+.3f s)".format(matched / 1e6) else "no shared frames, so its times are as recorded"
     }
 
     /** Empties the workspace: no data, no plots, no marks. */
@@ -181,7 +210,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     // without frames in common: trust the two clocks if they are within a day, else line up the starts
                     val shift = matched ?: if (Math.abs(store.originMicros - other.originMicros) < DAY_MICROS) 0L else store.originMicros - other.originMicros
                     val added = other.frameCount
-                    Triple(store.merge(other, shift, busOffset), matched, added)
+                    Triple(store.merge(other, shift) { it + busOffset }, matched, added)
                 }
             }
             result.onSuccess { (moved, matched, added) ->

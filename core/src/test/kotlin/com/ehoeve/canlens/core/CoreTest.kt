@@ -684,7 +684,7 @@ class CoreTest {
         assertEquals(-5_432_100L, shift)
         assertNull(Align.offsetMicros(car, FrameStore().apply { for (i in 0 until 100) frame(i * 1000L, 0, 0x129, bytes("00000000"), 0, 4) }))
         val before = car.frameCount
-        assertEquals(0, car.merge(phone, shift, 10))
+        assertEquals(0, car.merge(phone, shift) { it + 10 })
         assertEquals(before + phone.frameCount, car.frameCount)
         assertEquals(listOf(0 to 0x129, 0 to 0x3C2, 13 to 0x129, 13 to 0x3C2), car.messages.map { it.bus to it.id })
         val both = car.RowScan(Filter.compile("id=129 t=5-5.0101", car.messages) { null }).update()
@@ -695,7 +695,7 @@ class CoreTest {
         for (row in 0 until all.size) { assertTrue(all.time(row) >= last); last = all.time(row) }
         // a recording that starts earlier moves time 0: older times shift by the difference
         val early = FrameStore().apply { frame(999_000_000L, 0, 0x55, bytes("01"), 0, 1) }
-        assertEquals(10_000, car.merge(early, 0, 20))
+        assertEquals(10_000, car.merge(early, 0) { it + 20 })
         assertEquals(0x55, car.messages[0].id)
     }
 

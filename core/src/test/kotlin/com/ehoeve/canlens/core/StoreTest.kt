@@ -54,11 +54,23 @@ class StoreTest {
         var time = 1L
         while (other.frame(time++, 0, 2, data, 0, 1)) Unit
         assertEquals(FrameStore.CAPACITY.toLong(), other.frameCount)
-        store.merge(other, 0, 10)
+        store.merge(other, 0) { it + 10 }
         assertEquals(1, store.chunks.size)
         assertTrue(store.truncated)
         assertEquals(FrameStore.CAPACITY.toLong(), store.frameCount)
         assertEquals(2, store.messages.size)
+    }
+
+    @Test fun mergeMovesAndLeavesOutBuses() {
+        val comma = FrameStore()
+        comma.frame(1_000_000, 1, 0x100, bytes("01"), 0, 1)
+        val dashKit = FrameStore()
+        dashKit.frame(1_000_100, 0, 0x131, bytes("02"), 0, 1)   // chassis: to 3
+        dashKit.frame(1_000_200, 1, 0x100, bytes("01"), 0, 1)   // vehicle, the comma has it: left out
+        dashKit.frame(1_000_300, 129, 0x3E2, bytes("03"), 0, 1) // sent on the vehicle bus: to 132
+        comma.merge(dashKit, 0) { when (it) { 0 -> 3; 1 -> -1; 129 -> 132; else -> it } }
+        assertEquals(3L, comma.frameCount)
+        assertEquals(setOf(1 to 0x100, 3 to 0x131, 132 to 0x3E2), comma.messages.map { it.bus to it.id }.toSet())
     }
 
     @Test fun scaledSignalsEqualTheDecimalWritten() {

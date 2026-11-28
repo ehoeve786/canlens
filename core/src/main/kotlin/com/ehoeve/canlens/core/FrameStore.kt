@@ -151,11 +151,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
      * frames past [maxChunks] are left out and the store is marked [truncated].
      */
     @Synchronized
-    fun merge(other: FrameStore, shiftMicros: Long, busOffset: Int): Int {
+    fun merge(other: FrameStore, shiftMicros: Long, bus: (Int) -> Int): Int {
         val merged = FrameStore(maxChunks)
         val oldOrigin = originMicros
-        val mine = Cursor(this, 0, 0)
-        val theirs = Cursor(other, shiftMicros, busOffset)
+        val mine = Cursor(this, 0)
+        val theirs = Cursor(other, shiftMicros, bus)
         while (mine.micros != Long.MAX_VALUE || theirs.micros != Long.MAX_VALUE) {
             val next = if (mine.micros <= theirs.micros) mine else theirs
             if (!next.moveInto(merged)) break
@@ -167,8 +167,11 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
         return if (oldOrigin == Long.MIN_VALUE || originMicros == Long.MIN_VALUE) 0 else ((oldOrigin - originMicros) / MICROS_PER_TICK).toInt()
     }
 
-    /** Walks a store's frames in order; [micros] is the current frame's shifted time, Long.MAX_VALUE after the last. */
-    private class Cursor(private val store: FrameStore, private val shiftMicros: Long, private val busOffset: Int) {
+    /**
+     * Walks a store's frames in order; [micros] is the current frame's shifted time, Long.MAX_VALUE after the last. [bus]
+     * gives each frame its bus in the merged data; a negative one leaves the frame out.
+     */
+    private class Cursor(private val store: FrameStore, private val shiftMicros: Long, private val bus: (Int) -> Int = { it }) {
         private val held = store.held
         private val chunks = held.chunks
         private val known = held.messages
@@ -188,7 +191,8 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
             val from = chunks[chunk]
             val message = known[from.message[index].toInt() and 0xFFFF]
             val start = from.start(index)
-            val taken = sink.frame(micros, message.bus + busOffset, message.id, from.blob, start, from.end[index] - start)
+            val to = bus(message.bus)
+            val taken = to < 0 || sink.frame(micros, to, message.id, from.blob, start, from.end[index] - start)
             index++
             settle()
             return taken
