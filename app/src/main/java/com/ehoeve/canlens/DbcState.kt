@@ -95,6 +95,20 @@ class DbcState(
         if (source == OpenpilotBus.BUS) return OpenpilotBus.DBC.messages[id]
         return files.firstOrNull { it.bus == source && id in it.dbc.messages }?.dbc?.messages?.get(id)
             ?: files.firstOrNull { it.bus == ALL_BUSES && id in it.dbc.messages }?.dbc?.messages?.get(id)
+            ?: unique()[id]
+    }
+
+    private var uniqueOf = 0 to emptyMap<Int, DbcMessage>()
+
+    /**
+     * Messages that only one of the DBCs defines, whatever its bus: a frame on a bus whose DBC lacks it (the party bus
+     * carries chassis messages, say) is read with it. An id that two DBCs define differently is left alone.
+     */
+    private fun unique(): Map<Int, DbcMessage> {
+        val stamp = files.hashCode()
+        if (uniqueOf.first != stamp) uniqueOf = stamp to files.flatMap { it.dbc.messages.values }.groupBy { it.id }
+            .filterValues { list -> list.distinctBy { it.name }.size == 1 }.mapValues { it.value.first() }
+        return uniqueOf.second
     }
 
     fun open(uri: Uri) {

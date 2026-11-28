@@ -313,7 +313,7 @@ fun AutoDecodeScreen(model: AppModel, onBack: () -> Unit, onPlots: () -> Unit, o
                 }
                 // Claude names the events; the key is asked for the first time, and can be changed with a long press
                 if (events.isNotEmpty()) Text(if (model.claudeStatus == "Asking Claude…") "Asking Claude…" else "Name the events with Claude",
-                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp).combinedClickable(onLongClick = { keying = true }) { if (model.claudeKey.isEmpty()) keying = true else model.askClaude(events) },
+                    Modifier.padding(horizontal = 12.dp, vertical = 6.dp).combinedClickable(onLongClick = { keying = true }) { if (model.claudeKey.isEmpty()) keying = true else model.askClaude(events.entries.take(8).associate { it.toPair() }) },
                     color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
                 if (model.claudeStatus.isNotEmpty() && model.claudeStatus != "Asking Claude…") Hint(model.claudeStatus)
                 // a live stream: decode again every 15 s as frames come in

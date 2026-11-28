@@ -340,7 +340,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     init {
         // after each decode, the events not asked about yet go to Claude, when a key is set
         signals.afterDecode = {
-            if (claudeKey.isNotEmpty()) askClaude(signals.events().filterValues { fields -> asked.add(fields.joinToString { signals.key(it) }) })
+            // a batch at a time (a long answer is cut off): the rest go with the next decode
+            if (claudeKey.isNotEmpty()) askClaude(signals.events().filterValues { fields -> fields.joinToString { signals.key(it) } !in asked }
+                .entries.take(CLAUDE_BATCH).associate { (number, fields) -> asked += fields.joinToString { signals.key(it) }; number to fields })
         }
     }
 
@@ -362,7 +364,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         for ((number, fields) in events) {
             val at = fields[0].at ?: continue
             append("\nEvent $number at %.2f s%s\nIts undocumented fields:\n".format(seconds(at), store.clock(at)?.let { " ($it)" }.orEmpty()))
-            fields.forEachIndexed { i, f -> changes(PlotKey(f.message.bus, f.message.id, f.signal.name))?.let { append("  F${i + 1} $it\n") } }
+            fields.take(CLAUDE_FIELDS).forEachIndexed { i, f -> changes(PlotKey(f.message.bus, f.message.id, f.signal.name))?.let { append("  F${i + 1} $it\n") } }
             append("Documented signals that changed within a second of it, and rarely otherwise:\n")
             for ((k, _) in changedSignals(at - second, at + second).take(15)) changes(k)?.let { append("  ${k.signal} $it\n") }
         }
@@ -528,6 +530,9 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         const val MERGED_BUS = 10
         private val PLOT_ITEM = Regex("""\b(\d{1,3}):(?:0x)?([0-9A-Fa-f]{1,8}):([A-Za-z_]\w*)""")
         private val MARK_ITEM = Regex("""@(\d+(?:\.\d+)?)(?:=([^\s,;]+))?""")
+        /** Events asked about in one request, and fields shown of each: Claude's answer has to fit. */
+        private const val CLAUDE_BATCH = 8
+        private const val CLAUDE_FIELDS = 20
         /** Named signals an event's plot adds next to its fields. */
         private const val EVENT_NAMED = 12
         private const val DAY_MICROS = 86_400_000_000L

@@ -23,7 +23,7 @@ object Claude {
 
     /** Claude's answer for the events in [report], one object per event. Blocking: call it off the main thread. */
     fun ask(key: String, report: String): List<JSONObject> {
-        val body = JSONObject().put("model", MODEL).put("max_tokens", 4000).put("system", SYSTEM)
+        val body = JSONObject().put("model", MODEL).put("max_tokens", 16000).put("system", SYSTEM)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", report)))
         val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpsURLConnection
         c.requestMethod = "POST"
