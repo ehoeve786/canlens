@@ -67,6 +67,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     var otherName by mutableStateOf(""); private set
 
     private fun liveStarted() {
+        dbc.dashKitLayout = live.source == LiveSource.DASHKIT || live.source == LiveSource.DASHKIT_WIFI
         logs = emptyList(); mergedLogs = emptyList(); nextPart = null; session.part = null
         reset(0, true, ChartView(0f, LIVE_WINDOW_SECONDS))
     }
@@ -123,6 +124,8 @@ class AppModel(application: Application) : AndroidViewModel(application) {
             // after Cancel too the rest can be loaded as the next part: from the last frame kept, or from where this part began
             val end = if (store.frameCount > 0) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else from
             nextPart = if (store.truncated || stopped) end else null
+            // a DashKit's log has no Autopilot side (bus 2): its buses are the DashKit's, and the DBCs take their buses for that
+            if (store.frameCount > 0) dbc.dashKitLayout = store.messages.none { sourceBus(it.bus) == 2 }
             reset(store.firstTime, false, ChartView(seconds(store.firstTime), seconds(store.lastTime)))
             if (store.frameCount > 0) trace.markers += notes.map { Marker(((it.first - store.originMicros) / FrameStore.MICROS_PER_TICK).toInt(), it.second) }.sortedBy { it.time }
             status = "${store.frameCount} frames, ${store.messages.size} messages, ${"%.1f".format(store.lastTime / FrameStore.TICKS_PER_SECOND)} s" +

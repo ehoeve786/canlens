@@ -60,12 +60,29 @@ class DbcState(
 
     val files = mutableStateListOf<LoadedDbc>()
 
+    /**
+     * Whether the open data numbers its buses as the DashKit does (0 chassis, 1 vehicle) rather than as the comma (0 party,
+     * 1 vehicle, 2 Autopilot side, 3 the DashKit's chassis): each DBC keeps its bus for each, and switches with the data.
+     */
+    var dashKitLayout = false
+        set(value) {
+            if (field == value) return
+            field = value
+            for (i in files.indices) files[i] = LoadedDbc(files[i].dbc, busFor(files[i].dbc.name))
+        }
+
+    private fun busKey(name: String) = (if (dashKitLayout) "busDashKit:" else "bus:") + name
+
+    /** A DBC's bus in this layout. Not set for the DashKit yet: the comma's, with its chassis (3) and party (0) buses swapped. */
+    private fun busFor(name: String): Int = preferences.getInt(busKey(name), preferences.getInt("bus:$name", ALL_BUSES)
+        .let { if (!dashKitLayout) it else when (it) { 3 -> 0; 0 -> 3; else -> it } })
+
     init {
         // parsed off the main thread (a big DBC takes a second); in place before anything opened meanwhile
         scope.launch {
             val loaded = withContext(Dispatchers.Default) {
                 folder.listFiles().orEmpty().filterNot { it.name.endsWith(PART_FILE) }.sortedBy { it.name }
-                    .mapNotNull { file -> runCatching { LoadedDbc(Dbc.parse(file.readText(), file.name), preferences.getInt("bus:" + file.name, ALL_BUSES)) }.getOrNull() }
+                    .mapNotNull { file -> runCatching { LoadedDbc(Dbc.parse(file.readText(), file.name), busFor(file.name)) }.getOrNull() }
             }
             files.addAll(0, loaded.filter { old -> files.none { it.dbc.name == old.dbc.name } })
         }
@@ -99,7 +116,7 @@ class DbcState(
                 // the app's earlier versions of a file by this name are not this one's
                 forget(name)
                 files.removeAll { it.dbc.name == name }
-                files += LoadedDbc(dbc, preferences.getInt("bus:$name", ALL_BUSES))
+                files += LoadedDbc(dbc, busFor(name))
             } catch (e: Exception) {
                 report("DBC: ${e.message}")
             }
@@ -109,13 +126,13 @@ class DbcState(
     fun setBus(index: Int, bus: Int) {
         val old = files[index]
         files[index] = LoadedDbc(old.dbc, bus)
-        preferences.edit().putInt("bus:" + old.dbc.name, bus).apply()
+        preferences.edit().putInt(busKey(old.dbc.name), bus).apply()
     }
 
     fun remove(index: Int) {
         val old = files.removeAt(index)
         File(folder, old.dbc.name).delete()
-        preferences.edit().remove("bus:" + old.dbc.name).remove("uri:" + old.dbc.name).remove("seen:" + old.dbc.name).apply()
+        preferences.edit().remove("bus:" + old.dbc.name).remove("busDashKit:" + old.dbc.name).remove("uri:" + old.dbc.name).remove("seen:" + old.dbc.name).apply()
         // Undo doesn't bring a removed DBC back
         forget(old.dbc.name)
     }
@@ -253,7 +270,7 @@ class DbcState(
 
     private fun write(index: Int, value: LoadedDbc) {
         if (index >= 0) files[index] = value else files += value
-        preferences.edit().putInt("bus:" + value.dbc.name, value.bus).apply()
+        preferences.edit().putInt(busKey(value.dbc.name), value.bus).apply()
         val text = value.dbc.write()
         val name = value.dbc.name
         val first = backedUp.add(name)
