@@ -162,7 +162,11 @@ object LogReader {
         private val firstByte = names.indexOf("d1")
         private val extended = names.indexOf("extended")
 
-        init { if (time < 0 || id < 0 || (data < 0 && firstByte < 0)) throw IOException("Unknown CSV columns: $header") }
+        init {
+            // CANLens's own Plots export holds decoded values, not frames: there is nothing to read back as a log
+            if (header.replace(" ", "").equals("time,signal,value", true)) throw IOException("a signal export from Plots (decoded values, not frames): open the log it came from instead")
+            if (time < 0 || id < 0 || (data < 0 && firstByte < 0)) throw IOException("Unknown CSV columns: $header")
+        }
 
         fun row(line: String, buffer: ByteArray, sink: FrameSink): Boolean {
             // quoted cells ("123") are read without their quotes; a comma inside quotes doesn't occur in these exports
