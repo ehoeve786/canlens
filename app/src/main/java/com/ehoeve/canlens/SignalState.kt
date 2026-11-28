@@ -292,14 +292,17 @@ class SignalState(
      * really one with it) are merged into it, from the lowest bit to the highest. A name its message already has gets the start bit.
      */
     fun nameField(s: Suggestion, words: String, values: Map<Long, String>, same: List<Suggestion>) {
-        val parts = listOf(s) + same.filter { it.message === s.message && it !== s }
+        // only side by side (a bit's gap at most) and 16 bits at most: a merge across other fields would swallow them
+        val parts = (listOf(s) + same.filter { it.message === s.message && it !== s && it.signal.muxValue == s.signal.muxValue }).sortedBy { it.signal.start }
+            .takeIf { p -> p.zipWithNext().all { (a, b) -> b.signal.start - (a.signal.start + a.signal.size) in 0..1 } && p.last().signal.start + p.last().signal.size - p[0].signal.start <= 16 }
+            ?: listOf(s)
         var name = dbcName(s.message, words)
         if (autoResults.any { it.message === s.message && it !in parts && it.signal.name == name }) name += parts.minOf { it.signal.start }
         val signal = if (parts.size == 1) s.signal.renamed(name).also { it.valueNames = values } else {
             val low = parts.minOf { it.signal.start }
             Signal(name, low, parts.maxOf { it.signal.start + it.signal.size } - low, true, false, 1.0, 0.0, "", s.signal.muxValue, false)
         }
-        val merged = parts.drop(1).toSet()
+        val merged = parts.filter { it !== s }.toSet()
         autoResults = autoResults.filter { it !in merged }.map { if (it === s) Suggestion(it.message, signal, it.evidence, NAMED, it.messageName, it.at) else it }
     }
 
