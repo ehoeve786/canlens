@@ -120,7 +120,7 @@ class Recorder(context: Context, source: String, folder: String? = null) : Close
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             // octet-stream: Android keeps the .zst name instead of adding .txt
             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens/" + this.folder)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens/" + this@Recorder.folder)
         }
         uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
         // zstd as it is written: about a tenth of the size, and the reader takes it as it is, a cut-off end included
