@@ -292,7 +292,11 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         get() = preferences.getString("claudeKey", null).orEmpty()
         set(value) { preferences.edit().putString("claudeKey", value.trim()).apply() }
 
-    /** Asks Claude what each of [events] was, from what changed then: its fields and the rare named signals around it. */
+    /**
+     * Asks Claude what each of [events] was and what each of its fields means; each field gets that meaning as its name (DBC
+     * style) with value names, and fields Claude says are one are merged. Fields are found again by their bits: a decode may
+     * have run meanwhile.
+     */
     fun askClaude(events: Map<Int, List<Suggestion>>) {
         val key = claudeKey
         if (key.isEmpty() || events.isEmpty()) return
@@ -300,14 +304,26 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             claudeStatus = runCatching {
                 val report = withContext(Dispatchers.Default) { eventReport(events) }
-                claudeNames = withContext(Dispatchers.IO) { Claude.nameEvents(key, report) }
-                // each named event's fields get the name (DBC style), found again by their bits: a decode may have run meanwhile
-                val now = signals.events().entries.associate { (number, fields) -> fields.joinToString { signals.key(it) } to number }
-                val named = claudeNames.count { (number, answer) ->
-                    val current = events[number]?.let { fields -> now[fields.joinToString { signals.key(it) }] }
-                    (answer.first != "unclear" && current != null).also { if (it) signals.nameEvent(current!!, answer.first) }
+                val answers = withContext(Dispatchers.IO) { Claude.ask(key, report) }
+                claudeNames = answers.associate { it.optInt("event") to (it.optString("name") to it.optString("why")) }
+                var named = 0
+                for (answer in answers) {
+                    val fields = events[answer.optInt("event")] ?: continue
+                    fun field(label: String) = label.removePrefix("F").toIntOrNull()?.let { fields.getOrNull(it - 1) }
+                        ?.let { f -> signals.autoResults.firstOrNull { signals.key(it) == signals.key(f) } }
+                    val list = answer.optJSONArray("fields") ?: continue
+                    for (i in 0 until list.length()) {
+                        val f = list.getJSONObject(i)
+                        val name = f.optString("name")
+                        val s = field(f.optString("field")) ?: continue
+                        if (name.isBlank() || name == "unclear") continue
+                        val values = f.optJSONObject("values")?.let { v -> v.keys().asSequence().mapNotNull { k -> k.toLongOrNull()?.let { it to v.getString(k) } }.toMap() }.orEmpty()
+                        val same = f.optJSONArray("same")?.let { a -> (0 until a.length()).mapNotNull { field(a.getString(it)) } }.orEmpty()
+                        signals.nameField(s, name, values, same)
+                        named++
+                    }
                 }
-                "Claude named $named of ${events.size} events: check them on a plot before you add them"
+                "Claude named $named fields of ${events.size} events: check them on a plot before you add them"
             }.getOrElse { "Claude: ${it.message ?: it.javaClass.simpleName}" }
         }
     }
@@ -322,24 +338,27 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    /** Each event's moment, its fields' values before and after it, and the rare named signals that changed within a second. */
+    /** Each event's moment, and every change over the whole log of its fields and of the rare named signals that changed with it. */
     private fun eventReport(events: Map<Int, List<Suggestion>>): String = buildString {
         val second = FrameStore.TICKS_PER_SECOND.toInt()
-        fun change(key: PlotKey, at: Int): String? {
+        fun changes(key: PlotKey): String? {
             val (decoder, signal) = signalOf(key) ?: return null
             val message = store.messages.firstOrNull { it.bus == key.bus && it.id == key.id } ?: return null
-            val s = store.series(message, decoder, signal, at - 2 * second, at + 2 * second)
+            val s = store.series(message, decoder, signal)
             if (s.size == 0) return null
             fun v(x: Float) = signal.valueNames[x.toLong()] ?: "%g".format(x)
-            return "bus ${key.bus} 0x${hexId(key.id)} ${decoder.name}.${key.signal} (bits ${signal.start}+${signal.size}): ${v(s.values[0])} -> ${v(s.values[s.size - 1])}"
+            val moves = (1 until s.size).filter { s.values[it] != s.values[it - 1] }
+            return "bus ${key.bus} 0x${hexId(key.id)} ${decoder.name} bits ${signal.start}+${signal.size}: starts ${v(s.values[0])}" +
+                moves.take(12).joinToString("") { ", %.1f s -> %s".format(s.times[it], v(s.values[it])) } +
+                if (moves.size > 12) " (${moves.size} changes in all)" else ""
         }
-        append("Car: Tesla Model Y. Times in seconds from the log's start; values 2 s before -> 2 s after each moment.\n")
+        append("Car: Tesla Model Y. Times in seconds from the log's start (%.0f s long); each line: the value at the start, then every change.\n".format(seconds(store.lastTime)))
         for ((number, fields) in events) {
             val at = fields[0].at ?: continue
             append("\nEvent $number at %.2f s%s\nIts undocumented fields:\n".format(seconds(at), store.clock(at)?.let { " ($it)" }.orEmpty()))
-            for (f in fields) change(PlotKey(f.message.bus, f.message.id, f.signal.name), at)?.let { append("  $it\n") }
-            append("Documented signals that changed within a second of it and rarely otherwise:\n")
-            for ((k, _) in changedSignals(at - second, at + second).take(15)) change(k, at)?.let { append("  $it\n") }
+            fields.forEachIndexed { i, f -> changes(PlotKey(f.message.bus, f.message.id, f.signal.name))?.let { append("  F${i + 1} $it\n") } }
+            append("Documented signals that changed within a second of it, and rarely otherwise:\n")
+            for ((k, _) in changedSignals(at - second, at + second).take(15)) changes(k)?.let { append("  ${k.signal} $it\n") }
         }
     }
 

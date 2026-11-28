@@ -6,25 +6,28 @@ import java.io.IOException
 import java.net.URL
 import javax.net.ssl.HttpsURLConnection
 
-/** Asks Claude (the Anthropic API, with the user's own key) what Decode's events were. */
+/** Asks Claude (the Anthropic API, with the user's own key) what Decode's events were and what their fields mean. */
 object Claude {
     private const val MODEL = "claude-sonnet-5-5"
     private const val SYSTEM = "You help reverse-engineer the CAN messages of the user's car. Each event is a moment when some " +
-        "undocumented fields changed together; with them come the documented signals that changed around the same moment. " +
-        "Say what the driver or the car most likely did then. Answer with only a JSON array, one object per event: " +
-        "{\"event\": its number, \"name\": two to four plain lowercase words for what happened (\"shift out of park\", " +
-        "\"driver door opened\"), \"why\": one short sentence naming the signals that show it}. When the signals don't make it " +
-        "clear, the name is \"unclear\"."
+        "undocumented fields (labelled F1, F2, ...) changed together. You get every change of each field over the whole log, and " +
+        "the same for the documented signals that changed around that moment. Say what happened at the event, and for each field " +
+        "what the field itself means over the whole log: its states, not the moment (a bit that is 1 from getting in until " +
+        "parking is \"drive ready\", not \"car powered down\"). Answer with only a JSON array, one object per event: " +
+        "{\"event\": its number, \"name\": two to four plain words for what happened, \"why\": one short sentence naming the signals " +
+        "that show it, \"fields\": [{\"field\": its label, \"name\": two to four plain words for what it means, \"values\": " +
+        "{\"0\": \"OFF\", \"1\": \"READY\"} (a short upper-case name for each value it takes), \"same\": [labels of other fields of " +
+        "this event in the same message that are really one field with it]}]}. Use \"unclear\" for any name you can't tell from the data."
 
-    /** Event number to Claude's name for it and why, for the events in [report]. Blocking: call it off the main thread. */
-    fun nameEvents(key: String, report: String): Map<Int, Pair<String, String>> {
-        val body = JSONObject().put("model", MODEL).put("max_tokens", 2000).put("system", SYSTEM)
+    /** Claude's answer for the events in [report], one object per event. Blocking: call it off the main thread. */
+    fun ask(key: String, report: String): List<JSONObject> {
+        val body = JSONObject().put("model", MODEL).put("max_tokens", 4000).put("system", SYSTEM)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", report)))
         val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpsURLConnection
         c.requestMethod = "POST"
         c.doOutput = true
         c.connectTimeout = 15_000
-        c.readTimeout = 120_000
+        c.readTimeout = 180_000
         c.setRequestProperty("x-api-key", key)
         c.setRequestProperty("anthropic-version", "2023-06-01")
         c.setRequestProperty("content-type", "application/json")
@@ -39,7 +42,7 @@ object Claude {
             val end = answer.lastIndexOf(']')
             if (start < 0 || end < start) throw IOException("no answer in the reply")
             val events = JSONArray(answer.substring(start, end + 1))
-            return (0 until events.length()).map { events.getJSONObject(it) }.associate { it.getInt("event") to (it.getString("name") to it.optString("why")) }
+            return (0 until events.length()).map { events.getJSONObject(it) }
         } finally {
             c.disconnect()
         }

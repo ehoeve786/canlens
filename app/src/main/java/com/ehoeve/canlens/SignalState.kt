@@ -278,6 +278,30 @@ class SignalState(
         }
     }
 
+    /** [words] as a name of [message] in the DBCs' style: its prefix, then camelCase ("drive ready" -> IBST_driveReady). */
+    fun dbcName(message: FrameStore.Message, words: String): String {
+        val list = words.split(Regex("[^A-Za-z0-9]+")).filter { it.isNotEmpty() }.map { if (it == it.uppercase()) it.lowercase() else it }
+        val prefix = prefixOf(message)
+        val own = if (list.size > 1 && list[0].equals(prefix, true)) list.drop(1) else list
+        return "${prefix}_" + own[0].replaceFirstChar(Char::lowercaseChar) + own.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
+    }
+
+    /**
+     * Names [s] for what it means ([words], DBC style) with [values] as its value names; [same] (fields of its message that are
+     * really one with it) are merged into it, from the lowest bit to the highest. A name its message already has gets the start bit.
+     */
+    fun nameField(s: Suggestion, words: String, values: Map<Long, String>, same: List<Suggestion>) {
+        val parts = listOf(s) + same.filter { it.message === s.message && it !== s }
+        var name = dbcName(s.message, words)
+        if (autoResults.any { it.message === s.message && it !in parts && it.signal.name == name }) name += parts.minOf { it.signal.start }
+        val signal = if (parts.size == 1) s.signal.renamed(name).also { it.valueNames = values } else {
+            val low = parts.minOf { it.signal.start }
+            Signal(name, low, parts.maxOf { it.signal.start + it.signal.size } - low, true, false, 1.0, 0.0, "", s.signal.muxValue, false)
+        }
+        val merged = parts.drop(1).toSet()
+        autoResults = autoResults.filter { it !in merged }.map { if (it === s) Suggestion(it.message, signal, it.evidence, NAMED, it.messageName, it.at) else it }
+    }
+
     /** Gives [old] another [signal] (a name, value names), as the user or the assistant chose: listed with the named ones. */
     fun rename(old: Suggestion, signal: Signal) {
         autoResults = autoResults.map { if (it === old) Suggestion(it.message, signal, it.evidence, maxOf(it.confidence, NAMED), it.messageName, it.at) else it }
