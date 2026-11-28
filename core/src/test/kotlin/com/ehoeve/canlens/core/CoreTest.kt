@@ -241,6 +241,31 @@ class CoreTest {
         assertEquals(0, store.bitActivity(4500, 5500)[store.messages.first { it.id == 0x257 }.index]!!.onlyInside)
     }
 
+    @Test fun bitActivityWindowMatchesFullScan() {
+        val store = FrameStore()
+        val random = java.util.Random(1)
+        val data = ByteArray(8)
+        // 10 ticks a frame; 0x105 only from tick 150000, 0x104 with changing lengths, and a payload that mostly repeats
+        for (n in 0 until 20_000) {
+            if (random.nextInt(4) == 0) random.nextBytes(data)
+            val id = if (n >= 15_000 && n % 7 == 0) 0x105 else 0x100 + random.nextInt(5)
+            store.frame(n * 1000L + random.nextInt(500), 0, id, data, 0, if (id == 0x104) 2 + random.nextInt(7) else 8)
+        }
+        val windows = listOf(-5 to 3, 0 to 0, 50_000 to 50_010, 149_990 to 160_000, 150_000 to 199_995, 199_999 to 300_000, 500_000 to 600_000, Int.MIN_VALUE to 80_000)
+        for ((from, to) in windows) repeat(2) {
+            val fast = store.bitActivity(from, to)
+            store.dropOldest = true  // takes the full scan
+            val full = store.bitActivity(from, to)
+            store.dropOldest = false
+            assertEquals(full.size, fast.size)
+            for (m in full.indices) {
+                assertArrayEquals("inside $from..$to #$m", full[m]!!.inside, fast[m]!!.inside)
+                assertArrayEquals("outside $from..$to #$m", full[m]!!.outside, fast[m]!!.outside)
+                assertEquals(full[m]!!.frames, fast[m]!!.frames)
+            }
+        }
+    }
+
     @Test fun storeMultiplexedSeriesAndLimits() {
         val store = FrameStore(maxChunks = 1)
         val m = dbc.messages[0x18FEF110]!!

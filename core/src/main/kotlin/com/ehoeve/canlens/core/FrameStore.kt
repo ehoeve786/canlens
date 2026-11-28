@@ -181,7 +181,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
             val next = if (mine.micros <= theirs.micros) mine else theirs
             if (!next.moveInto(merged)) break
         }
-        held = merged.held
+        held = merged.held; totals = null
         byKey.clear(); byKey.putAll(merged.byKey)
         gaps = merged.gaps; merged.busLast.copyInto(busLast)
         originMicros = merged.originMicros; lastTime = merged.lastTime; frameCount = merged.frameCount; truncated = truncated || merged.truncated
@@ -225,7 +225,7 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
 
     @Synchronized
     fun clear() {
-        held = Held(emptyArray(), emptyArray()); byKey.clear(); gaps = emptyMap(); busLast.fill(Int.MIN_VALUE)
+        held = Held(emptyArray(), emptyArray()); totals = null; byKey.clear(); gaps = emptyMap(); busLast.fill(Int.MIN_VALUE)
         originMicros = Long.MIN_VALUE; lastTime = 0; frameCount = 0; truncated = false; wallOffsetMicros = Long.MAX_VALUE
     }
 
@@ -308,36 +308,87 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
      */
     fun bitActivity(fromTime: Int = Int.MIN_VALUE, toTime: Int = Int.MAX_VALUE, only: Message? = null): Array<BitActivity?> {
         val held = held
+        if (only != null || dropOldest || (fromTime == Int.MIN_VALUE && toTime == Int.MAX_VALUE)) return scan(held, fromTime, toTime, only)
+        // a log's whole-log flips once, then only the window: outside = whole log - inside
+        val key = held to frameCount
+        val all = totals?.takeIf { it.first == key }?.second ?: scan(held, Int.MIN_VALUE, Int.MAX_VALUE, null).also { totals = key to it }
+        val known = held.messages
+        val chunks = held.chunks
+        val result = arrayOfNulls<BitActivity>(known.size)
+        val previous = arrayOfNulls<ByteArray>(known.size)
+        val previousLength = IntArray(known.size)
+        // the window's first frame: chunks and the frames in them are in time order
+        var c = chunks.indexOfFirst { it.size > 0 && it.time[it.size - 1] >= fromTime }
+        if (c < 0) c = chunks.size
+        var i = 0
+        if (c < chunks.size) { var high = chunks[c].size - 1; while (i < high) { val mid = (i + high) ushr 1; if (chunks[c].time[mid] >= fromTime) high = mid else i = mid + 1 } }
+        // each message's last frame before the window, back until every message seen before it has one
+        var needed = known.count { it.firstTime < fromTime }
+        var bc = c; var bi = i - 1
+        while (needed > 0 && bc >= 0) {
+            if (bi < 0) { if (--bc >= 0) bi = chunks[bc].size - 1; continue }
+            val chunk = chunks[bc]
+            val m = chunk.message[bi].toInt() and 0xFFFF
+            if (m < known.size && previous[m] == null) {
+                val start = chunk.start(bi)
+                previous[m] = ByteArray(MAX_PAYLOAD).also { System.arraycopy(chunk.blob, start, it, 0, chunk.end[bi] - start) }
+                previousLength[m] = chunk.end[bi] - start
+                needed--
+            }
+            bi--
+        }
+        while (c < chunks.size) {
+            val chunk = chunks[c]
+            if (i >= chunk.size) { c++; i = 0; continue }
+            if (chunk.time[i] > toTime) break
+            val m = chunk.message[i].toInt() and 0xFFFF
+            if (m < known.size) flips(chunk, i, m, known, result, previous, previousLength, true)
+            i++
+        }
+        for (m in known.indices) {
+            val whole = all.getOrNull(m) ?: continue
+            val activity = result[m] ?: BitActivity(known[m], MAX_PAYLOAD * 8).also { result[m] = it }
+            for (k in activity.outside.indices) activity.outside[k] = (whole.inside[k] - activity.inside[k]).coerceAtLeast(0)
+        }
+        return result
+    }
+
+    /** A log's whole-log [bitActivity], with the frames it was counted on. */
+    @Volatile private var totals: Pair<Pair<Held, Long>, Array<BitActivity?>>? = null
+
+    private fun scan(held: Held, fromTime: Int, toTime: Int, only: Message?): Array<BitActivity?> {
         val known = held.messages
         val result = arrayOfNulls<BitActivity>(known.size)
         val previous = arrayOfNulls<ByteArray>(known.size)
         val previousLength = IntArray(known.size)
         val wanted = only?.index ?: -1
         for (chunk in held.chunks) {
-            val size = chunk.size
-            for (i in 0 until size) {
+            for (i in 0 until chunk.size) {
                 val m = chunk.message[i].toInt() and 0xFFFF
-                if (m >= known.size || (wanted >= 0 && m != wanted)) continue
-                val start = chunk.start(i)
-                val length = chunk.end[i] - start
-                val last = previous[m] ?: ByteArray(MAX_PAYLOAD).also { previous[m] = it; result[m] = BitActivity(known[m], MAX_PAYLOAD * 8) }
-                val activity = result[m]!!
-                val t = chunk.time[i]
-                val counts = if (t in fromTime..toTime) activity.inside else activity.outside
-                if (t in fromTime..toTime) activity.frames++
-                for (b in 0 until minOf(length, previousLength[m])) {
-                    var changed = (chunk.blob[start + b].toInt() xor last[b].toInt()) and 0xFF
-                    while (changed != 0) {
-                        val bit = Integer.numberOfTrailingZeros(changed)
-                        counts[b * 8 + bit]++
-                        changed = changed and (changed - 1)
-                    }
-                }
-                System.arraycopy(chunk.blob, start, last, 0, length)
-                previousLength[m] = length
+                if (m < known.size && (wanted < 0 || m == wanted)) flips(chunk, i, m, known, result, previous, previousLength, chunk.time[i] in fromTime..toTime)
             }
         }
         return result
+    }
+
+    /** Counts frame [i]'s bit flips against its message's frame before it, as [inside] the window or outside it. */
+    private fun flips(chunk: Chunk, i: Int, m: Int, known: Array<Message>, result: Array<BitActivity?>, previous: Array<ByteArray?>,
+                      previousLength: IntArray, inside: Boolean) {
+        val start = chunk.start(i)
+        val length = chunk.end[i] - start
+        val last = previous[m] ?: ByteArray(MAX_PAYLOAD).also { previous[m] = it }
+        val activity = result[m] ?: BitActivity(known[m], MAX_PAYLOAD * 8).also { result[m] = it }
+        val counts = if (inside) activity.inside else activity.outside
+        if (inside) activity.frames++
+        for (b in 0 until minOf(length, previousLength[m])) {
+            var changed = (chunk.blob[start + b].toInt() xor last[b].toInt()) and 0xFF
+            while (changed != 0) {
+                counts[b * 8 + Integer.numberOfTrailingZeros(changed)]++
+                changed = changed and (changed - 1)
+            }
+        }
+        System.arraycopy(chunk.blob, start, last, 0, length)
+        previousLength[m] = length
     }
 
     /**
