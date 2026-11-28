@@ -282,7 +282,8 @@ class SignalState(
     fun dbcName(message: FrameStore.Message, words: String): String {
         val list = words.split(Regex("[^A-Za-z0-9]+")).filter { it.isNotEmpty() }.map { if (it == it.uppercase()) it.lowercase() else it }
         val prefix = prefixOf(message)
-        val own = if (list.size > 1 && list[0].equals(prefix, true)) list.drop(1) else list
+        // the prefix isn't doubled, and a trailing "flag" only says what kind of field it is (DBC names leave it out)
+        val own = (if (list.size > 1 && list[0].equals(prefix, true)) list.drop(1) else list).let { if (it.size > 1 && it.last().equals("flag", true)) it.dropLast(1) else it }
         return "${prefix}_" + own[0].replaceFirstChar(Char::lowercaseChar) + own.drop(1).joinToString("") { it.replaceFirstChar(Char::uppercaseChar) }
     }
 

@@ -17,7 +17,9 @@ object Claude {
         "{\"event\": its number, \"name\": two to four plain words for what happened, \"why\": one short sentence naming the signals " +
         "that show it, \"fields\": [{\"field\": its label, \"name\": two to four plain words for what it means, \"values\": " +
         "{\"0\": \"OFF\", \"1\": \"READY\"} (a short upper-case name for each value it takes), \"same\": [labels of other fields of " +
-        "this event in the same message that are really one field with it]}]}. Use \"unclear\" for any name you can't tell from the data."
+        "this event in the same message that are really one field with it]}]}. Use \"unclear\" for any name you can't tell from the data: " +
+        "never a placeholder (no letters or numbers to tell fields apart, no \"status flag A\"), and no words like flag or state that " +
+        "only repeat what kind of field it is."
 
     /** Claude's answer for the events in [report], one object per event. Blocking: call it off the main thread. */
     fun ask(key: String, report: String): List<JSONObject> {
