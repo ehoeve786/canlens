@@ -312,11 +312,14 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     fun field(label: String) = label.removePrefix("F").toIntOrNull()?.let { fields.getOrNull(it - 1) }
                         ?.let { f -> signals.autoResults.firstOrNull { signals.key(it) == signals.key(f) } }
                     val list = answer.optJSONArray("fields") ?: continue
+                    // one name for several separate fields of a message says nothing about each (they'd only differ by bit number)
+                    val shared = (0 until list.length()).map { list.getJSONObject(it) }.filter { (it.optJSONArray("same")?.length() ?: 0) == 0 }
+                        .groupingBy { (field(it.optString("field"))?.message?.id ?: -1) to it.optString("name").lowercase() }.eachCount().filterValues { it > 1 }.keys
                     for (i in 0 until list.length()) {
                         val f = list.getJSONObject(i)
                         val name = f.optString("name")
                         val s = field(f.optString("field")) ?: continue
-                        if (name.isBlank() || name == "unclear") continue
+                        if (name.isBlank() || name == "unclear" || (s.message.id to name.lowercase()) in shared) continue
                         val values = f.optJSONObject("values")?.let { v -> v.keys().asSequence().mapNotNull { k -> k.toLongOrNull()?.let { it to v.getString(k) } }.toMap() }.orEmpty()
                         val same = f.optJSONArray("same")?.let { a -> (0 until a.length()).mapNotNull { field(a.getString(it)) } }.orEmpty()
                         signals.nameField(s, name, values, same)
