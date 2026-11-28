@@ -124,7 +124,14 @@ class AppModel(application: Application) : AndroidViewModel(application) {
                     if (store.truncated) { problems += "memory limit reached, the rest was not loaded"; break }
                 }
             }
-            if (dashKit.isNotEmpty() && !stopped && !store.truncated) withContext(Dispatchers.IO) { runCatching { addDashKit(dashKit) }.onFailure { problems += "DashKit log: ${it.message}" }.getOrNull() }?.let { problems += it }
+            // a DashKit log goes with the first part only, and only where the comma logs leave room: read again with each
+            // next part it would fill memory every time, and the part after would never come
+            if (dashKit.isNotEmpty()) problems += when {
+                from != null -> "DashKit log not added to this part: only the first part has it"
+                stopped -> "DashKit log not added: cancelled"
+                store.truncated -> "DashKit log not added: the comma logs fill memory (open fewer of their segments with it)"
+                else -> withContext(Dispatchers.IO) { runCatching { addDashKit(dashKit) }.getOrElse { "DashKit log: ${it.message}" } }
+            }
             if (stopped && !store.truncated) problems += "cancelled, the rest was not loaded"
             // after Cancel too the rest can be loaded as the next part: from the last frame kept, or from where this part began
             val end = if (store.frameCount > 0) store.originMicros + store.lastTime * FrameStore.MICROS_PER_TICK else from
@@ -158,6 +165,7 @@ class AppModel(application: Application) : AndroidViewModel(application) {
         val other = FrameStore(maxOf(1, maxChunks - store.chunks.size))
         for ((_, uri) in files) context.openDecompressed(uri).use { LogReader.read(it, other) }
         if (other.frameCount == 0L) return "DashKit log: no CAN frames"
+        if (other.truncated) return "DashKit log not added: too big to fit beside the comma logs (open fewer of their segments with it)"
         val matched = Align.offsetMicros(store, other)
         val shift = matched ?: if (Math.abs(store.originMicros - other.originMicros) < DAY_MICROS) 0L else store.originMicros - other.originMicros
         val vehicle = store.messages.any { it.bus == 1 }
