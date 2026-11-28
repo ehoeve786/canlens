@@ -103,13 +103,13 @@ class Clock {
 }
 
 /**
- * Writes a live stream to `Download/CANLens/<folder>/can-log-<source>-<time>.log.zst` (source: comma or dashkit) in candump
- * format, zstd-compressed, stamped with the phone's clock. [folder] holds a recording's files; a new recording's is named
- * after its first file.
+ * Writes a live stream to `Download/CANLens/<source>/<recording>/can-log-<source>-<time>.log.zst` (source: comma or dashkit)
+ * in candump format, zstd-compressed, stamped with the phone's clock. [folder] (`<source>/<recording>`) holds all of a
+ * recording's files; `<recording>` is named after its first file.
  */
 class Recorder(context: Context, source: String, folder: String? = null) : Closeable {
     val name = "can-log-$source-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log.zst"
-    val folder = folder ?: name.removeSuffix(".log.zst")
+    val folder = folder ?: "$source/" + name.removeSuffix(".log.zst")
     private val clock = Clock()
     private val line = StringBuilder(160)
     val uri: Uri
