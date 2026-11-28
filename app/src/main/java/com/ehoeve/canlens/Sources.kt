@@ -103,11 +103,13 @@ class Clock {
 }
 
 /**
- * Writes a live stream to `Download/CANLens/can-log-<source>-<time>.log.zst` (source: comma or dashkit) in candump format,
- * zstd-compressed, stamped with the phone's clock.
+ * Writes a live stream to `Download/CANLens/<folder>/can-log-<source>-<time>.log.zst` (source: comma or dashkit) in candump
+ * format, zstd-compressed, stamped with the phone's clock. [folder] holds a recording's files; a new recording's is named
+ * after its first file.
  */
-class Recorder(context: Context, source: String) : Closeable {
+class Recorder(context: Context, source: String, folder: String? = null) : Closeable {
     val name = "can-log-$source-" + SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.US).format(Date()) + ".log.zst"
+    val folder = folder ?: name.removeSuffix(".log.zst")
     private val clock = Clock()
     private val line = StringBuilder(160)
     val uri: Uri
@@ -118,7 +120,7 @@ class Recorder(context: Context, source: String) : Closeable {
             put(MediaStore.Downloads.DISPLAY_NAME, name)
             // octet-stream: Android keeps the .zst name instead of adding .txt
             put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens")
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/CANLens/" + this@Recorder.folder)
         }
         uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Can't create $name in Downloads")
         // zstd as it is written: about a tenth of the size, and the reader takes it as it is, a cut-off end included

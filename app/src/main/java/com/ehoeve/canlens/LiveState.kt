@@ -72,6 +72,8 @@ class LiveState(
     /** When the stream's latest frame came in (System.nanoTime), under the store's lock. */
     private var streamNanos = 0L
     @Volatile private var recorder: Recorder? = null
+    /** Frames in the recording's file so far: a new file starts at 3/4 of what this phone loads at once, so every file opens whole. */
+    private var recordedFrames = 0L
     /** Changes with every stream start and stop, so a stream that is still shutting down can't write into the next one's data. */
     @Volatile private var generation = 0
 
@@ -250,6 +252,7 @@ class LiveState(
             synchronized(store) {
                 if (mine != generation) return@FrameSink false
                 recorder?.write(bus, id, data, offset, length)
+                if (recorder != null && ++recordedFrames >= store.maxChunks * 3L * FrameStore.CAPACITY / 4) { val folder = recorder?.folder; setRecording(false); setRecording(true, folder) }
                 streamNanos = System.nanoTime()
                 // the time of day of the stream's clock: the least delayed arrival sets it
                 val wall = System.currentTimeMillis() * 1000 - time
@@ -311,10 +314,12 @@ class LiveState(
         }
     }
 
-    fun setRecording(on: Boolean) {
+    /** [folder]: the recording's folder when it goes on in a new file. */
+    fun setRecording(on: Boolean, folder: String? = null) {
         if (on == (recorder != null)) return
+        recordedFrames = 0
         if (on) {
-            try { recorder = Recorder(context, if (source == LiveSource.COMMA) "comma" else "dashkit").also { recording = it.name; recorded = it.uri } } catch (e: Exception) { report("Recording failed: ${e.message}") }
+            try { recorder = Recorder(context, if (source == LiveSource.COMMA) "comma" else "dashkit", folder).also { recording = it.folder + "/" + it.name; recorded = it.uri } } catch (e: Exception) { report("Recording failed: ${e.message}") }
         } else {
             val old = recorder
             recorder = null; recording = null
