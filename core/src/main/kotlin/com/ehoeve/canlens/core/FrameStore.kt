@@ -1,5 +1,8 @@
 package com.ehoeve.canlens.core
 
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+
 /**
  * Receives CAN frames. `data[offset until offset + length]` is only valid during the call.
  * Returns false to make the producer stop.
@@ -23,22 +26,40 @@ object CanId {
 
 /**
  * All frames of the open logs or the live stream, in arrival order, in fixed-size chunks of primitive arrays
- * (about 19 bytes a frame, no object per frame). One writer thread, any number of readers: a reader takes
+ * (about 19 bytes a frame, no object per frame: the 8 payload bytes on the heap, the other 11 in buffers from [allocate],
+ * which the app takes from outside its heap). One writer thread, any number of readers: a reader takes
  * [chunks] and each chunk's [Chunk.size] once and may read everything below them without locking.
  * Readers rely on the frames being in time order: a log is read as written, and a live store keeps it so (see [frame]).
  */
 class FrameStore(val maxChunks: Int = 40) : FrameSink {
 
+    /** Arrays kept in a buffer from [allocate], read and written like arrays. Absolute access: readers on other threads are safe. */
+    class Ints(n: Int) {
+        private val b = allocate(n * 4).order(ByteOrder.nativeOrder()).asIntBuffer()
+        operator fun get(i: Int): Int = b.get(i)
+        operator fun set(i: Int, v: Int) { b.put(i, v) }
+    }
+    class Shorts(n: Int) {
+        private val b = allocate(n * 2).order(ByteOrder.nativeOrder()).asShortBuffer()
+        operator fun get(i: Int): Short = b.get(i)
+        operator fun set(i: Int, v: Short) { b.put(i, v) }
+    }
+    class Bytes(n: Int) {
+        private val b = allocate(n)
+        operator fun get(i: Int): Byte = b.get(i)
+        operator fun set(i: Int, v: Byte) { b.put(i, v) }
+    }
+
     class Chunk {
         /** Time since [originMicros] in units of 100 µs. */
-        @JvmField val time = IntArray(CAPACITY)
+        @JvmField val time = Ints(CAPACITY)
         /** Index into [messages], as an unsigned short. */
-        @JvmField val message = ShortArray(CAPACITY)
+        @JvmField val message = Shorts(CAPACITY)
         /** End of each frame's payload in [blob]; it starts where the previous one ends. */
-        @JvmField val end = IntArray(CAPACITY)
+        @JvmField val end = Ints(CAPACITY)
         @JvmField val blob = ByteArray(CAPACITY * 8)
         /** Bit b: byte b differs from the message's previous frame; bit 7 stands for byte 7 and all after it. 0 for a message's first frame. */
-        @JvmField val changed = ByteArray(CAPACITY)
+        @JvmField val changed = Bytes(CAPACITY)
         @Volatile @JvmField var size = 0
 
         fun start(index: Int) = if (index == 0) 0 else end[index - 1]
@@ -587,8 +608,12 @@ class FrameStore(val maxChunks: Int = 40) : FrameSink {
     companion object {
         const val CHUNK_BITS = 18
         const val CAPACITY = 1 shl CHUNK_BITS
-        /** Memory one [Chunk] takes: time, message, end, 8 payload bytes and the change mask per frame. */
-        const val CHUNK_BYTES = CAPACITY * 19L
+        /** Heap one [Chunk] takes: its 8 payload bytes a frame. */
+        const val CHUNK_BYTES = CAPACITY * 8L
+        /** What it takes from [allocate]: time, message, end and the change mask, 11 bytes a frame. */
+        const val CHUNK_BUFFER_BYTES = CAPACITY * 11L
+        /** Where a chunk's other arrays are kept: the heap here; the app sets memory outside its heap (shared memory). */
+        @Volatile @JvmStatic var allocate: (Int) -> ByteBuffer = { ByteBuffer.allocate(it) }
         const val MAX_PAYLOAD = 64
         const val MICROS_PER_TICK = 100L
         const val TICKS_PER_SECOND = 10_000.0

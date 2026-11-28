@@ -35,7 +35,13 @@ class AppModel(application: Application) : AndroidViewModel(application) {
     private val preferences = application.getSharedPreferences("canlens", Context.MODE_PRIVATE)
 
     /** As many chunks as 40 % of the heap holds: the rest is room for decoding, plotting and merging what is loaded. */
-    private val maxChunks = (Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES).toInt().coerceAtLeast(8)
+    // frames: their payloads take 2/5 of the heap; their other arrays live outside it (shared memory), a quarter of what the
+    // phone has free at most
+    private val maxChunks = run {
+        FrameStore.allocate = { size -> android.os.SharedMemory.create(null, size).use { it.mapReadWrite() } }  // the mapping outlives the closed descriptor
+        val free = android.app.ActivityManager.MemoryInfo().also { (application.getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager).getMemoryInfo(it) }.availMem
+        minOf(Runtime.getRuntime().maxMemory() * 2 / 5 / FrameStore.CHUNK_BYTES, free / 4 / FrameStore.CHUNK_BUFFER_BYTES).toInt().coerceAtLeast(8)
+    }
     val store = FrameStore(maxChunks)
     /** Where the open logs stopped loading (source clock), so the next part can be loaded; null when they loaded whole. */
     var nextPart: Long? by mutableStateOf(null); private set
