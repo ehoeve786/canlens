@@ -8,7 +8,7 @@ import javax.net.ssl.HttpsURLConnection
 
 /** Asks Claude (the Anthropic API, with the user's own key) what Decode's events were and what their fields mean. */
 object Claude {
-    private const val MODEL = "claude-sonnet-5-5"
+    private const val MODEL = "claude-opus-5-5"
     private const val SYSTEM = "You help reverse-engineer the CAN messages of the user's car. Each event is a moment when some " +
         "undocumented fields (labelled F1, F2, ...) changed together. You get every change of each field over the whole log, and " +
         "the same for the documented signals that changed around that moment. Say what happened at the event, and for each field " +
