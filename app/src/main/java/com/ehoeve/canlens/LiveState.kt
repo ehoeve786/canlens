@@ -314,7 +314,7 @@ class LiveState(
     fun setRecording(on: Boolean) {
         if (on == (recorder != null)) return
         if (on) {
-            try { recorder = Recorder(context).also { recording = it.name; recorded = it.uri } } catch (e: Exception) { report("Recording failed: ${e.message}") }
+            try { recorder = Recorder(context, if (source == LiveSource.COMMA) "comma" else "dashkit").also { recording = it.name; recorded = it.uri } } catch (e: Exception) { report("Recording failed: ${e.message}") }
         } else {
             val old = recorder
             recorder = null; recording = null
